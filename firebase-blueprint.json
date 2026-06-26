@@ -1,0 +1,198 @@
+{
+  "entities": {
+    "Patient": {
+      "title": "Patient Record",
+      "description": "Patient clinic record",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "contactNumber": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "birthday": { "type": "string" },
+        "age": { "type": "number" },
+        "gender": { "type": "string" },
+        "address": { "type": "string" },
+        "mainConcern": { "type": "string" },
+        "skinType": { "type": "string" },
+        "medicalNotes": { "type": "string" },
+        "treatmentHistory": { "type": "string" },
+        "assignedStaffId": { "type": "string" },
+        "nextAppointment": { "type": "string", "format": "date-time" },
+        "status": { "type": "string" },
+        "homeBranchId": { "type": "string" },
+        "homeBranchName": { "type": "string" },
+        "createdBranchId": { "type": "string" },
+        "createdBranchName": { "type": "string" },
+        "lastUpdatedBranchId": { "type": "string" },
+        "lastUpdatedBranchName": { "type": "string" },
+        "lastVisitDate": { "type": "string", "format": "date-time" },
+        "lastVisitBranch": { "type": "string" },
+        "totalVisits": { "type": "number" },
+        "firstVisitDate": { "type": "string", "format": "date-time" },
+        "totalCompletedVisits": { "type": "number" },
+        "totalNoShowVisits": { "type": "number" },
+        "currentPatientStatus": { "type": "string" }
+      },
+      "required": ["name", "email", "assignedStaffId"]
+    },
+    "Visit": {
+      "title": "Visit History Record",
+      "description": "Patient visit history record",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string" },
+        "patientName": { "type": "string" },
+        "visitDate": { "type": "string", "format": "date-time" },
+        "branchId": { "type": "string" },
+        "doctorId": { "type": "string" },
+        "visitType": { "type": "string", "enum": ["Initial Consultation", "Follow-up", "Treatment Session", "Assessment"] },
+        "mainConcern": { "type": "string" },
+        "treatmentService": { "type": "string" },
+        "notes": { "type": "string" },
+        "status": { "type": "string", "enum": ["Completed", "For Follow-up", "No Show", "Cancelled", "Archived"] },
+        "visitSource": { "type": "string", "enum": ["Appointment", "Walk-In"] },
+        "nextVisitDate": { "type": "string", "format": "date" },
+        "followUpInstructions": { "type": "string" },
+        "appointmentId": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["patientId", "patientName", "visitDate", "branchId", "doctorId", "visitType", "status"]
+    },
+    "Appointment": {
+      "title": "Appointment Record",
+      "description": "Patient appointment record",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string" },
+        "patientName": { "type": "string" },
+        "appointmentDate": { "type": "string", "format": "date-time" },
+        "branchId": { "type": "string" },
+        "doctorId": { "type": "string" },
+        "visitType": { "type": "string", "enum": ["Initial Consultation", "Follow-up", "Treatment Session", "Assessment"] },
+        "mainConcern": { "type": "string" },
+        "notes": { "type": "string" },
+        "status": { "type": "string", "enum": ["Scheduled", "Confirmed", "Rescheduled", "Cancelled", "Completed", "Arrived"] },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "createdByUid": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "updatedByUid": { "type": "string" },
+        "updatedByName": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "lastStatusChangedByUid": { "type": "string" },
+        "lastStatusChangedByName": { "type": "string" },
+        "lastStatusChangedAt": { "type": "string", "format": "date-time" },
+        "visitHistoryId": { "type": "string" },
+        "visitHistoryCreated": { "type": "boolean" }
+      },
+      "required": ["patientId", "patientName", "appointmentDate", "branchId", "doctorId", "visitType", "status", "createdByUid", "createdByName", "createdAt"]
+    },
+    "Branch": {
+      "title": "Branch",
+      "description": "Clinic branch",
+      "type": "object",
+      "properties": {
+        "branchId": { "type": "string" },
+        "branchName": { "type": "string" },
+        "address": { "type": "string" },
+        "contactNumber": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["branchName", "address", "contactNumber", "status"]
+    },
+    "User": {
+      "title": "User",
+      "description": "System user",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string" },
+        "fullName": { "type": "string" },
+        "assignedBranches": { "type": "array", "items": { "type": "string" } },
+        "defaultBranchId": { "type": "string" },
+        "defaultBranchName": { "type": "string" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["email", "role"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "System settings",
+      "type": "object",
+      "properties": {
+        "allowedTypes": { "type": "string" },
+        "maxSizeMB": { "type": "number" }
+      },
+      "required": ["allowedTypes", "maxSizeMB"]
+    },
+    "AuditLog": {
+      "title": "Audit Log",
+      "description": "HIPAA-compliant system activity log tracking actions on patient records and appointments",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userRole": { "type": "string" },
+        "action": { "type": "string", "enum": ["CREATE", "UPDATE", "DELETE", "VIEW", "AUTH"] },
+        "resource": { "type": "string", "enum": ["Patient", "Appointment", "Visit", "User", "Settings", "Branch", "PrivateNote"] },
+        "resourceId": { "type": "string" },
+        "resourceName": { "type": "string" },
+        "details": { "type": "string" },
+        "ipAddress": { "type": "string" },
+        "userAgent": { "type": "string" }
+      },
+      "required": ["timestamp", "userId", "userEmail", "action", "resource", "resourceId"]
+    },
+    "PrivateNote": {
+      "title": "Private Patient Note",
+      "description": "Internal, private notes regarding a patient",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "note": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["patientId", "authorId", "authorName", "note", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/patients/{patientId}": {
+      "schema": { "$ref": "Patient" },
+      "description": "Collection of patient records"
+    },
+    "/patients/{patientId}/privateNotes/{noteId}": {
+      "schema": { "$ref": "PrivateNote" },
+      "description": "Sub-collection of private notes for a specific patient"
+    },
+    "/visits/{visitId}": {
+      "schema": { "$ref": "Visit" },
+      "description": "Collection of patient visits"
+    },
+    "/appointments/{appointmentId}": {
+      "schema": { "$ref": "Appointment" },
+      "description": "Collection of patient appointments"
+    },
+    "/branches/{branchId}": {
+      "schema": { "$ref": "Branch" },
+      "description": "Collection of clinics"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "User" },
+      "description": "Collection of system user roles"
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "Settings" },
+      "description": "System settings"
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "AuditLog" },
+      "description": "Chronological audit trail for HIPAA compliance"
+    }
+  }
+}

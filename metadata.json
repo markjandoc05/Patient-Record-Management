@@ -1,0 +1,6 @@
+{
+  "name": "Vine Patient Management App",
+  "description": "Patient records management for a skin clinic.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

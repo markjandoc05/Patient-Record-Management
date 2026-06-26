@@ -1,0 +1,86 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    function getUserRole(uid) {
+      let userDoc = get(/databases/$(database)/documents/users/$(uid));
+      return userDoc.exists ? userDoc.data().role : null;
+    }
+
+    function isSupportDeveloper() {
+      return getUserRole(request.auth.uid) == 'support_developer';
+    }
+
+    function isAdmin() {
+      return getUserRole(request.auth.uid) == 'admin';
+    }
+
+    match /users/{userId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && (
+        request.auth.uid == userId || 
+        getUserRole(request.auth.uid) in ['admin', 'manager', 'support_developer']
+      );
+      allow delete: if request.auth != null && (getUserRole(request.auth.uid) == 'admin');
+    }
+    
+    match /appointments/{appointmentId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'staff', 'doctor', 'support', 'support_developer']);
+      allow update: if request.auth != null;
+      allow delete: if request.auth != null && (getUserRole(request.auth.uid) == 'admin');
+    }
+
+    match /visits/{visitId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'staff', 'doctor', 'support', 'support_developer']);
+      allow update: if request.auth != null;
+      allow delete: if request.auth != null && (getUserRole(request.auth.uid) == 'admin');
+    }
+
+    match /patients/{patientId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'staff', 'doctor', 'support', 'support_developer']);
+      allow update: if request.auth != null;
+      allow delete: if request.auth != null && (getUserRole(request.auth.uid) == 'admin');
+      
+      match /privateNotes/{noteId} {
+        allow read, create, update: if request.auth != null;
+        allow delete: if request.auth != null && (getUserRole(request.auth.uid) == 'admin');
+      }
+    }
+
+    match /branches/{branchId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && (getUserRole(request.auth.uid) == 'admin');
+    }
+
+    match /settings/footer {
+      allow read: if request.auth != null;
+      allow write: if getUserRole(request.auth.uid) == 'admin';
+    }
+
+    match /settings/branding {
+      allow read: if true;
+      allow write: if request.auth != null && (request.auth.token.email == 'markjandoc@gmail.com' || getUserRole(request.auth.uid) in ['admin', 'support_developer']);
+    }
+
+    match /settings/{document=**} {
+      allow read: if true;
+      allow write: if request.auth != null && (request.auth.token.email == 'markjandoc@gmail.com' || getUserRole(request.auth.uid) in ['admin', 'support_developer']);
+    }
+    
+    match /audit_logs {
+      allow list: if request.auth != null;
+      match /{logId} {
+        allow read, create: if request.auth != null;
+        allow update, delete: if false;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

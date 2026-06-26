@@ -1,0 +1,31 @@
+@import "tailwindcss";
+@import "react-big-calendar/lib/css/react-big-calendar.css";
+
+@theme {
+  --color-teal-50: color-mix(in srgb, var(--primary-color) 10%, #ffffff);
+  --color-teal-100: color-mix(in srgb, var(--primary-color) 20%, #ffffff);
+  --color-teal-200: color-mix(in srgb, var(--primary-color) 40%, #ffffff);
+  --color-teal-200\/60: color-mix(in srgb, var(--primary-color) 40%, #ffffff);
+  --color-teal-300: color-mix(in srgb, var(--primary-color) 60%, #ffffff);
+  --color-teal-400: color-mix(in srgb, var(--primary-color) 80%, #ffffff);
+  --color-teal-500: var(--accent-color);
+  --color-teal-500\/10: color-mix(in srgb, var(--accent-color) 10%, transparent);
+  --color-teal-500\/20: color-mix(in srgb, var(--accent-color) 20%, transparent);
+  --color-teal-600: var(--primary-color);
+  --color-teal-700: var(--secondary-color);
+  --color-teal-750: var(--secondary-color);
+  --color-teal-800: color-mix(in srgb, var(--secondary-color) 85%, #000000);
+  --color-teal-900: color-mix(in srgb, var(--primary-color) 70%, #000000);
+  --color-teal-950: color-mix(in srgb, var(--primary-color) 90%, #000000);
+}
+
+.rbc-toolbar button {
+  @apply bg-white border border-slate-300 px-4 py-2 rounded-lg text-sm text-slate-700 hover:bg-slate-100;
+}
+.rbc-toolbar .rbc-active {
+  @apply bg-teal-600 text-white border-transparent;
+}
+
+.rbc-slot-unavailable {
+  @apply bg-slate-100;
+}
