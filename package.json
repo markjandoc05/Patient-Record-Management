@@ -7,7 +7,10 @@
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:rules": "node scripts/test-firestore-rules.mjs",
+    "test:rbac": "node --import tsx scripts/test-rbac.ts",
+    "test:audit": "node --import tsx scripts/test-audit-policy.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

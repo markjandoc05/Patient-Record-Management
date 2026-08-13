@@ -1,15 +1,35 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
-import { db } from '../firebase';
+import { auth, db } from '../firebase';
 import AppointmentForm from './AppointmentForm';
 import VisitForm from './VisitForm';
 import CalendarView from './CalendarView';
 import { hasPermission, Role } from '../rbac';
 import { formatDateTime } from '../utils';
-import { Calendar, CheckCircle, Clock, CheckSquare } from 'lucide-react';
-import { getAccessibleBranches, subscribeToBranchScopedCollection } from '../utils/branchAccess';
+import { Archive, Calendar, CalendarCheck2, CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, Eye, Inbox, LayoutList, MapPin, Plus, RotateCcw, Search, Stethoscope, UserRound, X } from 'lucide-react';
+import { getAccessibleBranches, subscribeToBranchScopedCollection, subscribeToSharedCollection } from '../utils/branchAccess';
+import { archiveRecord, restoreRecord } from '../utils/recordApi';
+import { getActiveDatePrefix } from '../utils/timezone';
 
-export default function AppointmentsDashboard({ role, userProfile }: { role: string | null, userProfile: any }) {
+function appointmentInitials(name?: string) {
+  return String(name || 'Patient')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map(part => part[0])
+    .join('')
+    .toUpperCase() || 'P';
+}
+
+function appointmentStatusClass(status?: string) {
+  if (status === 'Completed') return 'bg-emerald-50 text-emerald-700 ring-emerald-600/10';
+  if (status === 'Confirmed') return 'bg-blue-50 text-blue-700 ring-blue-600/10';
+  if (status === 'Arrived') return 'bg-violet-50 text-violet-700 ring-violet-600/10';
+  if (status === 'Cancelled' || status === 'No Show') return 'bg-rose-50 text-rose-700 ring-rose-600/10';
+  return 'bg-amber-50 text-amber-700 ring-amber-600/10';
+}
+
+export default function AppointmentsDashboard({ role, userProfile, activeBranchId }: { role: string | null, userProfile: any, activeBranchId?: string }) {
   const [appointments, setAppointments] = useState<any[]>([]);
   const [visits, setVisits] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
@@ -27,20 +47,27 @@ export default function AppointmentsDashboard({ role, userProfile }: { role: str
   const [filterBranch, setFilterBranch] = useState('All');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [showArchived, setShowArchived] = useState(false);
   
   const canCreate = role ? hasPermission(role as Role, 'appointment', 'create') : false;
   const canCreateVisit = role ? hasPermission(role as Role, 'visitHistory', 'create') : false;
+  const canArchive = role ? hasPermission(role as Role, 'appointment', 'delete') : false;
 
   useEffect(() => {
-    const unsubAppointments = subscribeToBranchScopedCollection(db, 'appointments', 'branchId', userProfile, setAppointments);
+    const unsubAppointments = subscribeToBranchScopedCollection(db, 'appointments', 'branchId', userProfile, setAppointments, undefined, [], true);
     const unsubVisits = subscribeToBranchScopedCollection(db, 'visits', 'branchId', userProfile, setVisits);
-    const unsubPatients = subscribeToBranchScopedCollection(db, 'patients', 'homeBranchId', userProfile, setPatients);
+    const unsubPatients = subscribeToSharedCollection(db, 'patients', setPatients);
     const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => setUsers(snap.docs.map(d => ({id: d.id, ...d.data()}))));
     const unsubBranches = onSnapshot(collection(db, 'branches'), (snap) => setBranches(snap.docs.map(d => ({id: d.id, ...d.data()}))));
     
     Promise.all([unsubAppointments, unsubVisits, unsubPatients, unsubUsers, unsubBranches]).then(() => setLoading(false));
     return () => { unsubAppointments(); unsubVisits(); unsubPatients(); unsubUsers(); unsubBranches(); };
   }, [userProfile]);
+
+  useEffect(() => {
+    setFilterBranch(activeBranchId || 'All');
+    setCurrentPage(1);
+  }, [activeBranchId]);
 
   const accessibleBranches = getAccessibleBranches(branches, userProfile);
 
@@ -54,8 +81,19 @@ export default function AppointmentsDashboard({ role, userProfile }: { role: str
     setCurrentPage(1);
   };
 
+  const doctorName = (appointment: any) => (
+    users.find(user => user.id === appointment.doctorId)?.fullName
+    || users.find(user => user.id === appointment.doctorId)?.name
+    || 'Not assigned'
+  );
+
+  const branchName = (appointment: any) => branches.find(branch => branch.id === appointment.branchId)?.branchName || appointment.branchName || 'Not assigned';
+
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+
   const filteredAppointments = appointments.filter(a =>
-    (a.patientName?.toLowerCase()?.includes(searchTerm.toLowerCase())) &&
+    (showArchived ? a.isArchived === true : a.isArchived !== true) &&
+    ([a.patientName, a.visitType, doctorName(a), branchName(a), a.id].filter(Boolean).join(' ').toLowerCase().includes(normalizedSearch)) &&
     (filterStatus === 'All' || a.status === filterStatus) &&
     (filterBranch === 'All' || a.branchId === filterBranch)
   ).sort((a, b) => {
@@ -67,58 +105,134 @@ export default function AppointmentsDashboard({ role, userProfile }: { role: str
   // Pagination calculations
   const totalItems = filteredAppointments.length;
   const totalPages = Math.ceil(totalItems / itemsPerPage) || 1;
-  const startIndex = (currentPage - 1) * itemsPerPage;
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const startIndex = (safeCurrentPage - 1) * itemsPerPage;
   const paginatedAppointments = filteredAppointments.slice(startIndex, startIndex + itemsPerPage);
 
-  const today = new Date().toISOString().split('T')[0];
-  const kpiStats = useMemo(() => {
-    const total = filteredAppointments.length;
-    const confirmed = filteredAppointments.filter(a => a.status === 'Confirmed').length;
-    const completed = filteredAppointments.filter(a => a.status === 'Completed').length;
-    const upcoming = filteredAppointments.filter(a => a.appointmentDate > today && (a.status === 'Scheduled' || a.status === 'Confirmed')).length;
-    
-    return [
-      { label: 'Total Appointments', value: total, icon: Calendar },
-      { label: 'Confirmed', value: confirmed, icon: CheckCircle },
-      { label: 'Upcoming', value: upcoming, icon: Clock },
-      { label: 'Completed', value: completed, icon: CheckSquare },
-    ];
-  }, [filteredAppointments, today]);
+  const today = getActiveDatePrefix();
+  const activeScopedAppointments = appointments.filter(appointment =>
+    appointment.isArchived !== true && (filterBranch === 'All' || appointment.branchId === filterBranch)
+  );
+  const todayAppointments = activeScopedAppointments.filter(appointment => appointment.appointmentDate?.startsWith(today));
+  const arrivedToday = todayAppointments.filter(appointment => appointment.status === 'Arrived').length;
+  const completedToday = todayAppointments.filter(appointment => appointment.status === 'Completed').length;
+  const upcomingAppointments = activeScopedAppointments.filter(appointment =>
+    appointment.appointmentDate >= `${today}T00:00`
+    && ['Scheduled', 'Confirmed'].includes(appointment.status)
+  ).length;
+  const defaultBranchFilter = activeBranchId || 'All';
+  const hasActiveFilters = Boolean(searchTerm || filterStatus !== 'All' || filterBranch !== defaultBranchFilter);
+
+  const clearFilters = () => {
+    setSearchTerm('');
+    setFilterStatus('All');
+    setFilterBranch(defaultBranchFilter);
+    setCurrentPage(1);
+  };
 
   const handleCreateVisit = (appointment: any) => {
     setSelectedAppointment(appointment);
     setShowVisitForm(true);
   };
 
+  const handleArchive = async (appointment: any) => {
+    const reason = window.prompt('Why are you archiving this appointment? This reason will be recorded in the audit trail.');
+    if (!reason) return;
+    try {
+      await archiveRecord('appointments', appointment.id, reason);
+    } catch (error: any) {
+      window.alert(error.message || 'Appointment could not be archived.');
+    }
+  };
+
+  const handleRestore = async (appointment: any) => {
+    if (!window.confirm('Restore this appointment?')) return;
+    try {
+      await restoreRecord('appointments', appointment.id);
+    } catch (error: any) {
+      window.alert(error.message || 'Appointment could not be restored.');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-5" aria-label="Loading appointment schedule">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {[0, 1, 2, 3].map(item => <div key={item} className="h-28 animate-pulse rounded-2xl border border-slate-200 bg-white" />)}
+        </div>
+        <div className="h-80 animate-pulse rounded-2xl border border-slate-200 bg-white" />
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-6">
-      {/* KPI Section */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {kpiStats.map(kpi => (
-          <div key={kpi.label} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-            <div className="flex items-center gap-2 text-slate-500 text-xs font-semibold uppercase">
-                <kpi.icon size={16} />{kpi.label}
+    <div className="space-y-5">
+      <section aria-label="Appointment summary" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {[
+          { label: "Today's appointments", value: todayAppointments.length, detail: 'Scheduled for today', icon: Calendar, tone: 'bg-teal-50 text-teal-700' },
+          { label: 'Arrived today', value: arrivedToday, detail: 'Waiting for care', icon: UserRound, tone: 'bg-violet-50 text-violet-700' },
+          { label: 'Upcoming care', value: upcomingAppointments, detail: 'Scheduled or confirmed', icon: CalendarClock, tone: 'bg-blue-50 text-blue-700' },
+          { label: 'Completed today', value: completedToday, detail: 'Visits completed', icon: CheckCircle2, tone: 'bg-emerald-50 text-emerald-700' },
+        ].map(stat => (
+          <div key={stat.label} className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm shadow-slate-200/30 sm:p-5">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-slate-500 sm:text-sm">{stat.label}</p>
+                <p className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-950 sm:text-3xl">{stat.value}</p>
+              </div>
+              <span className={`hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl sm:flex ${stat.tone}`}>
+                <stat.icon className="h-4.5 w-4.5" />
+              </span>
             </div>
-            <div className="text-2xl font-bold mt-2">{kpi.value}</div>
+            <p className="mt-1 text-[11px] text-slate-400 sm:text-xs">{stat.detail}</p>
           </div>
         ))}
-      </div>
+      </section>
 
-      <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
-        <div className="flex flex-col gap-2 w-full sm:w-auto">
-          <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
-            <input 
-              placeholder="Search by patient..." 
+      <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/30">
+        <div className="flex flex-col gap-4 border-b border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+          <div>
+            <h2 className="text-base font-semibold tracking-[-0.01em] text-slate-950">{showArchived ? 'Archived appointments' : 'Appointment schedule'}</h2>
+            <p className="mt-0.5 text-xs text-slate-500">{totalItems} {totalItems === 1 ? 'appointment' : 'appointments'} shown · Scoped to authorized clinic access</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {canArchive && (
+              <button onClick={() => { setShowArchived(value => !value); setCurrentPage(1); }} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
+                {showArchived ? <RotateCcw className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
+                {showArchived ? 'Active appointments' : `Archived (${appointments.filter(item => item.isArchived === true).length})`}
+              </button>
+            )}
+            {canCreate && !showArchived && (
+              <button onClick={() => { setSelectedAppointment(null); setFormMode('edit'); setShowAddForm(true); }} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700">
+                <Plus className="h-4 w-4" /> New appointment
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="grid gap-3 border-b border-slate-100 bg-slate-50/50 p-4 sm:grid-cols-2 xl:grid-cols-[auto_minmax(260px,1fr)_180px_210px_auto] xl:items-center">
+          <div className="flex h-11 rounded-xl bg-slate-200/70 p-1 sm:col-span-2 xl:col-span-1" aria-label="Appointment view">
+            <button type="button" onClick={() => setView('list')} className={`inline-flex flex-1 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition ${view === 'list' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}><LayoutList className="h-4 w-4" /> List</button>
+            <button type="button" onClick={() => setView('calendar')} className={`inline-flex flex-1 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition ${view === 'calendar' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}><Calendar className="h-4 w-4" /> Calendar</button>
+          </div>
+          <label className="relative block sm:col-span-2 xl:col-span-1">
+            <span className="sr-only">Search appointments</span>
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              placeholder="Search patient, provider, service, or ID"
               value={searchTerm}
-              className="w-full sm:w-64 border border-slate-300 px-3.5 py-2 rounded-xl text-sm outline-none transition-all focus:ring-4 focus:ring-teal-500/10 focus:border-teal-500 text-slate-800 placeholder:text-slate-400" 
-              onChange={e => handleSearchChange(e.target.value)} 
+              className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10"
+              onChange={event => handleSearchChange(event.target.value)}
             />
-            <select 
-              className="w-full sm:w-48 border border-slate-300 px-3.5 py-2 rounded-xl text-sm bg-white outline-none transition-all focus:ring-4 focus:ring-teal-500/10 focus:border-teal-500 text-slate-700" 
+          </label>
+          <label>
+            <span className="sr-only">Filter by appointment status</span>
+            <select
+              className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3.5 text-sm text-slate-700 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10"
               value={filterStatus}
-              onChange={e => handleStatusChange(e.target.value)}
+              onChange={event => handleStatusChange(event.target.value)}
             >
-              <option value="All">All Statuses</option>
+              <option value="All">All statuses</option>
               <option value="Scheduled">Scheduled</option>
               <option value="Confirmed">Confirmed</option>
               <option value="Arrived">Arrived</option>
@@ -126,226 +240,147 @@ export default function AppointmentsDashboard({ role, userProfile }: { role: str
               <option value="Cancelled">Cancelled</option>
               <option value="No Show">No Show</option>
             </select>
-            <select 
-              className="w-full sm:w-48 border border-slate-300 px-3.5 py-2 rounded-xl text-sm bg-white outline-none transition-all focus:ring-4 focus:ring-teal-500/10 focus:border-teal-500 text-slate-700" 
+          </label>
+          <label>
+            <span className="sr-only">Filter by clinic branch</span>
+            <select
+              className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3.5 text-sm text-slate-700 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10"
               value={filterBranch}
-              onChange={e => setFilterBranch(e.target.value)}
+              onChange={event => { setFilterBranch(event.target.value); setCurrentPage(1); }}
             >
-              <option value="All">All Branches</option>
-              {accessibleBranches.map(b => (
-                <option key={b.id} value={b.id}>{b.branchName}</option>
+              <option value="All">All clinic branches</option>
+              {accessibleBranches.map(branch => (
+                <option key={branch.id} value={branch.id}>{branch.branchName}</option>
               ))}
             </select>
-          </div>
-          <div className="text-xs text-slate-500 font-medium">
-            Total Results: <span className="font-bold text-slate-800">{totalItems} appointment{totalItems === 1 ? '' : 's'} found</span>
+          </label>
+          <div className="flex justify-end">
+            {hasActiveFilters && <button type="button" onClick={clearFilters} className="inline-flex h-10 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold text-slate-500 hover:bg-slate-100 hover:text-slate-800"><X className="h-3.5 w-3.5" /> Clear</button>}
           </div>
         </div>
-        {canCreate && (
-          <button onClick={() => setShowAddForm(true)} className="w-full sm:w-auto px-5 py-2.5 bg-teal-600 hover:bg-teal-750 text-white font-medium text-sm rounded-xl shadow-sm hover:shadow transition-all duration-150">New Appointment</button>
-        )}
-      </div>
-
-      <div className="flex gap-2">
-        <button 
-          onClick={() => setView('list')} 
-          className={`px-4 py-2 text-xs font-semibold rounded-lg transition-all ${view === 'list' ? 'bg-slate-800 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
-        >
-          List View
-        </button>
-        <button 
-          onClick={() => setView('calendar')} 
-          className={`px-4 py-2 text-xs font-semibold rounded-lg transition-all ${view === 'calendar' ? 'bg-slate-800 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
-        >
-          Calendar View
-        </button>
-      </div>
 
       {view === 'list' ? (
-        <div className="space-y-4">
-          {/* Mobile View: List of Cards */}
-          <div className="block md:hidden space-y-3">
+        <div className="space-y-4 p-3 sm:p-4">
+          {/* Compact cards keep appointment details readable on laptops and tablets. */}
+          <div className="space-y-3 xl:hidden">
             {paginatedAppointments.length > 0 ? (
-              paginatedAppointments.map(a => {
-                const docName = users.find(u => u.id === a.doctorId)?.fullName || users.find(u => u.id === a.doctorId)?.name || 'N/A';
-                return (
-                  <div key={a.id} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <div className="font-semibold text-slate-900 text-base">{a.patientName}</div>
-                        <div className="text-xs text-slate-500">{formatDateTime(a.appointmentDate)}</div>
+              paginatedAppointments.map(a => (
+                  <article key={a.id} className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 transition hover:border-slate-300 hover:shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-100 text-sm font-semibold text-slate-700">{appointmentInitials(a.patientName)}</div>
+                        <div className="min-w-0">
+                          <h3 className="truncate text-sm font-semibold text-slate-950 sm:text-base">{a.patientName || 'Unnamed patient'}</h3>
+                          <p className="mt-0.5 truncate text-xs text-slate-400">{a.visitType || 'Clinic appointment'}</p>
+                        </div>
                       </div>
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${
-                        a.status === 'Completed' 
-                          ? 'bg-green-50 text-green-700 border border-green-100' 
-                          : a.status === 'Cancelled' 
-                            ? 'bg-red-50 text-red-700 border border-red-100'
-                            : 'bg-teal-50 text-teal-700 border border-teal-100'
-                      }`}>
-                        {a.status}
-                      </span>
+                      <span className={`inline-flex shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ring-1 ring-inset ${appointmentStatusClass(a.status)}`}>{a.status || 'Unknown'}</span>
                     </div>
-                    
-                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 text-xs">
-                      <div>
-                        <span className="text-slate-400 block font-medium uppercase tracking-wider text-[9px]">Provider / Doctor</span>
-                        <span className="text-slate-700 font-medium">{docName}</span>
+
+                    <div className="grid grid-cols-2 gap-3 rounded-xl bg-slate-50 p-3 text-xs">
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-medium uppercase tracking-[0.08em] text-slate-400">Date and time</p>
+                        <p className="mt-1 font-medium text-slate-700">{formatDateTime(a.appointmentDate)}</p>
                       </div>
-                      <div>
-                        <span className="text-slate-400 block font-medium uppercase tracking-wider text-[9px]">Visit Type</span>
-                        <span className="text-slate-700 font-medium">{a.visitType}</span>
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-medium uppercase tracking-[0.08em] text-slate-400">Clinic</p>
+                        <p className="mt-1 truncate font-medium text-slate-700">{branchName(a)}</p>
                       </div>
                     </div>
 
-                    <div className="flex gap-2 pt-2 border-t border-slate-100">
-                      <button 
-                        onClick={() => { setSelectedAppointment(a); setFormMode('view'); setShowAddForm(true); }} 
-                        className="flex-1 text-center py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 font-semibold text-xs rounded-lg transition-all"
-                      >
-                        Details
+                    <div className="flex min-w-0 items-center gap-2 text-xs text-slate-600"><Stethoscope className="h-3.5 w-3.5 shrink-0 text-slate-400" /><span className="truncate">{doctorName(a)}</span></div>
+
+                    <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+                      <button onClick={() => { setSelectedAppointment(a); setFormMode('view'); setShowAddForm(true); }} className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-xs font-semibold text-white transition hover:bg-slate-800">
+                        <Eye className="h-4 w-4" /> View details
                       </button>
-                      {(a.status === 'Arrived' || a.status === 'Completed') && !a.visitHistoryCreated && canCreateVisit && (
-                        <button 
-                          onClick={() => handleCreateVisit(a)} 
-                          className="flex-1 text-center py-2 bg-teal-50 hover:bg-teal-100 text-teal-700 font-semibold text-xs rounded-lg transition-all"
-                        >
-                          Create Visit
+                      {!a.isArchived && (a.status === 'Arrived' || a.status === 'Completed') && !a.visitHistoryCreated && canCreateVisit && (role !== 'doctor' || a.doctorId === auth.currentUser?.uid) && (
+                        <button onClick={() => handleCreateVisit(a)} className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-teal-50 px-3 text-xs font-semibold text-teal-700 transition hover:bg-teal-100">
+                          <CalendarCheck2 className="h-4 w-4" /> Create visit
                         </button>
                       )}
+                      {canArchive && (a.isArchived ? (
+                        <button onClick={() => handleRestore(a)} aria-label={`Restore appointment for ${a.patientName}`} title="Restore appointment" className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-emerald-200 text-emerald-700 transition hover:bg-emerald-50"><RotateCcw className="h-4 w-4" /></button>
+                      ) : (
+                        <button onClick={() => handleArchive(a)} aria-label={`Archive appointment for ${a.patientName}`} title="Archive appointment" className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700"><Archive className="h-4 w-4" /></button>
+                      ))}
                     </div>
-                  </div>
-                );
-              })
+                  </article>
+              ))
             ) : (
-              <div className="text-center py-12 bg-white rounded-xl border border-slate-200 text-slate-500 text-sm">No appointments found matching filters.</div>
+              <div className="rounded-xl border border-dashed border-slate-200 px-5 py-14 text-center"><Inbox className="mx-auto h-9 w-9 text-slate-300" /><h3 className="mt-3 text-sm font-semibold text-slate-800">No appointments found</h3><p className="mt-1 text-xs text-slate-500">Try changing the search, status, or clinic filter.</p></div>
             )}
           </div>
 
-          {/* Desktop View: Styled Table */}
-          <div className="hidden md:block bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          {/* Wide desktop appointment table */}
+          <div className="hidden overflow-hidden rounded-xl border border-slate-200 xl:block">
             <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wider font-semibold border-b border-slate-200">
+              <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">
                 <tr>
-                  <th className="px-6 py-3.5 flex items-center gap-1.5 font-bold">
-                    <span>Date & Time</span>
-                    <span className="text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded text-[9px] font-extrabold normal-case tracking-normal">Newest First ↓</span>
-                  </th>
-                  <th className="px-6 py-3.5">Patient</th>
-                  <th className="px-6 py-3.5">Branch</th>
-                  <th className="px-6 py-3.5">Status</th>
-                  <th className="px-6 py-3.5 text-right">Action</th>
+                  <th className="px-5 py-3.5">Date and time</th>
+                  <th className="px-5 py-3.5">Patient and service</th>
+                  <th className="px-5 py-3.5">Provider</th>
+                  <th className="px-5 py-3.5">Clinic and status</th>
+                  <th className="px-5 py-3.5 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {paginatedAppointments.length > 0 ? (
                   paginatedAppointments.map(a => (
-                    <tr key={a.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-6 py-4 text-slate-600 font-medium">{formatDateTime(a.appointmentDate)}</td>
-                      <td className="px-6 py-4 font-semibold text-slate-900">{a.patientName}</td>
-                      <td className="px-6 py-4 text-slate-700">
-                        {branches.find(b => b.id === a.branchId)?.branchName || 'N/A'}
+                    <tr key={a.id} className="transition-colors hover:bg-slate-50/70">
+                      <td className="px-5 py-4"><p className="font-medium text-slate-800">{formatDateTime(a.appointmentDate)}</p><p className="mt-0.5 text-xs text-slate-400">Newest appointments first</p></td>
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700">{appointmentInitials(a.patientName)}</div><div className="min-w-0"><p className="max-w-52 truncate font-semibold text-slate-950">{a.patientName || 'Unnamed patient'}</p><p className="mt-0.5 max-w-52 truncate text-xs text-slate-400">{a.visitType || 'Clinic appointment'}</p></div></div>
                       </td>
-                      <td className="px-6 py-4">
-                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-                          a.status === 'Completed' 
-                            ? 'bg-green-50 text-green-700 ring-1 ring-green-600/10' 
-                            : a.status === 'Cancelled'
-                              ? 'bg-red-50 text-red-700 ring-1 ring-red-600/10'
-                              : 'bg-slate-100 text-slate-800'
-                        }`}>
-                          {a.status}
-                        </span>
+                      <td className="px-5 py-4"><p className="max-w-44 truncate font-medium text-slate-700">{doctorName(a)}</p><p className="mt-0.5 text-xs text-slate-400">Assigned provider</p></td>
+                      <td className="px-5 py-4">
+                        <p className="flex items-center gap-1.5 text-xs font-medium text-slate-600"><MapPin className="h-3 w-3 text-slate-400" />{branchName(a)}</p>
+                        <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset ${appointmentStatusClass(a.status)}`}>{a.status || 'Unknown'}</span>
                       </td>
-                      <td className="px-6 py-4 text-right">
-                        <div className="inline-flex items-center gap-3">
-                          <button 
-                            onClick={() => { setSelectedAppointment(a); setFormMode('view'); setShowAddForm(true); }} 
-                            className="text-teal-600 hover:text-teal-800 font-semibold text-xs transition-colors"
-                          >
-                            View
-                          </button>
-                          {(a.status === 'Arrived' || a.status === 'Completed') && !a.visitHistoryCreated && canCreateVisit && (
-                            <button 
-                              onClick={() => handleCreateVisit(a)} 
-                              className="px-3 py-1 bg-teal-50 hover:bg-teal-100 text-teal-700 rounded-lg font-semibold text-xs transition-colors"
-                            >
-                              Create Visit
-                            </button>
+                      <td className="px-5 py-4 text-right">
+                        <div className="inline-flex items-center gap-1.5">
+                          <button onClick={() => { setSelectedAppointment(a); setFormMode('view'); setShowAddForm(true); }} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-slate-900 px-3 text-xs font-semibold text-white transition hover:bg-slate-800"><Eye className="h-3.5 w-3.5" /> View</button>
+                          {!a.isArchived && (a.status === 'Arrived' || a.status === 'Completed') && !a.visitHistoryCreated && canCreateVisit && (role !== 'doctor' || a.doctorId === auth.currentUser?.uid) && (
+                            <button onClick={() => handleCreateVisit(a)} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-teal-50 px-2.5 text-xs font-semibold text-teal-700 transition hover:bg-teal-100"><CalendarCheck2 className="h-3.5 w-3.5" /> Create visit</button>
                           )}
+                          {canArchive && (a.isArchived ? (
+                            <button onClick={() => handleRestore(a)} aria-label={`Restore appointment for ${a.patientName}`} title="Restore appointment" className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-emerald-200 text-emerald-700 transition hover:bg-emerald-50"><RotateCcw className="h-3.5 w-3.5" /></button>
+                          ) : (
+                            <button onClick={() => handleArchive(a)} aria-label={`Archive appointment for ${a.patientName}`} title="Archive appointment" className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700"><Archive className="h-3.5 w-3.5" /></button>
+                          ))}
                         </div>
                       </td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={5} className="text-center py-12 text-slate-500 font-medium">No appointments found matching filters.</td>
+                    <td colSpan={5} className="py-14 text-center"><Inbox className="mx-auto h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">No appointments found</p><p className="mt-1 text-xs text-slate-400">Try changing the search, status, or clinic filter.</p></td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
 
-          {/* Gorgeous Pagination Footer */}
           {totalItems > 0 && (
-            <div className="flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm text-sm">
-              <div className="flex items-center gap-4 text-slate-500">
-                <span>
-                  Showing <strong className="font-semibold text-slate-800">{Math.min(startIndex + 1, totalItems)}</strong> to{' '}
-                  <strong className="font-semibold text-slate-800">{Math.min(startIndex + itemsPerPage, totalItems)}</strong> of{' '}
-                  <strong className="font-semibold text-slate-800">{totalItems}</strong> entries
-                </span>
-                
-                <div className="hidden sm:flex items-center gap-1.5 border-l border-slate-200 pl-4 text-xs font-medium text-slate-400 uppercase tracking-wider">
-                  <span>Show:</span>
-                  <select 
-                    value={itemsPerPage} 
-                    onChange={e => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1); }} 
-                    className="border border-slate-200 rounded-lg bg-white px-2 py-1 text-slate-700 font-bold focus:border-teal-500 focus:outline-none transition-all"
-                  >
-                    {[5, 10, 25, 50].map(size => (
-                      <option key={size} value={size}>{size}</option>
-                    ))}
-                  </select>
-                </div>
+            <div className="flex flex-col items-center justify-between gap-3 border-t border-slate-100 px-1 pt-4 text-xs text-slate-500 sm:flex-row">
+              <div className="flex items-center gap-3">
+                <span>Showing <strong className="font-semibold text-slate-800">{startIndex + 1}–{Math.min(startIndex + itemsPerPage, totalItems)}</strong> of <strong className="font-semibold text-slate-800">{totalItems}</strong></span>
+                <label className="flex items-center"><span className="sr-only">Appointments per page</span><select value={itemsPerPage} onChange={event => { setItemsPerPage(Number(event.target.value)); setCurrentPage(1); }} className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 outline-none focus:border-teal-500">{[5, 10, 25, 50].map(size => <option key={size} value={size}>{size} per page</option>)}</select></label>
               </div>
-
-              <div className="flex items-center gap-1.5">
-                <button 
-                  onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} 
-                  disabled={currentPage === 1}
-                  className="px-3.5 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 text-xs font-semibold transition-all"
-                >
-                  Prev
-                </button>
-                {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-                  <button 
-                    key={page} 
-                    onClick={() => setCurrentPage(page)}
-                    className={`h-8 w-8 rounded-xl text-xs font-semibold transition-all ${
-                      currentPage === page 
-                        ? 'bg-slate-800 text-white shadow' 
-                        : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    {page}
-                  </button>
-                ))}
-                <button 
-                  onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))} 
-                  disabled={currentPage === totalPages}
-                  className="px-3.5 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 text-xs font-semibold transition-all"
-                >
-                  Next
-                </button>
+              <div className="flex items-center gap-2">
+                <span className="px-1">Page {safeCurrentPage} of {totalPages}</span>
+                <button aria-label="Previous page" onClick={() => setCurrentPage(previous => Math.max(previous - 1, 1))} disabled={safeCurrentPage === 1} className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"><ChevronLeft className="h-4 w-4" /></button>
+                <button aria-label="Next page" onClick={() => setCurrentPage(previous => Math.min(previous + 1, totalPages))} disabled={safeCurrentPage === totalPages} className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"><ChevronRight className="h-4 w-4" /></button>
               </div>
             </div>
           )}
         </div>
       ) : (
-        <CalendarView appointments={appointments} onSelectEvent={(event) => { setSelectedAppointment(event.resource); setFormMode('view'); setShowAddForm(true); }} />
+        <div className="p-4"><CalendarView appointments={filteredAppointments} onSelectEvent={(event) => { setSelectedAppointment(event.resource); setFormMode('view'); setShowAddForm(true); }} /></div>
       )}
-      {showAddForm && <AppointmentForm patients={patients} branches={accessibleBranches} users={users} onClose={() => { setShowAddForm(false); setSelectedAppointment(null); }} onSave={() => { setShowAddForm(false); setSelectedAppointment(null); }} appointment={selectedAppointment} mode={formMode} appointments={appointments} />}
-      {showVisitForm && <VisitForm patients={patients} branches={accessibleBranches} users={users} onClose={() => setShowVisitForm(false)} onSave={() => setShowVisitForm(false)} appointment={selectedAppointment} userRole={role} visits={visits} appointments={appointments} />}
+      </section>
+      {showAddForm && <AppointmentForm patients={patients} branches={accessibleBranches} users={users} defaultBranchId={activeBranchId !== 'All' ? activeBranchId : undefined} onClose={() => { setShowAddForm(false); setSelectedAppointment(null); }} onSave={() => { setShowAddForm(false); setSelectedAppointment(null); }} appointment={selectedAppointment} mode={formMode} appointments={appointments} />}
+      {showVisitForm && <VisitForm patients={patients} branches={accessibleBranches} users={users} defaultBranchId={activeBranchId !== 'All' ? activeBranchId : undefined} onClose={() => setShowVisitForm(false)} onSave={() => setShowVisitForm(false)} appointment={selectedAppointment} userRole={role} visits={visits} appointments={appointments} />}
     </div>
   );
 }

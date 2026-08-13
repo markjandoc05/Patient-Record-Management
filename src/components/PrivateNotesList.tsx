@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { db, auth } from '../firebase';
 import { collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, limit } from 'firebase/firestore';
+import { formatDateTime } from '../utils';
+import { logActivity } from '../utils/auditLogger';
 
-export default function PrivateNotesList({ patientId }: { patientId: string }) {
+export default function PrivateNotesList({ patientId, userRole }: { patientId: string; userRole?: string }) {
   const [notes, setNotes] = useState<any[]>([]);
   const [newNote, setNewNote] = useState('');
   const [user, setUser] = useState(auth.currentUser);
@@ -39,6 +41,13 @@ export default function PrivateNotesList({ patientId }: { patientId: string }) {
       note: newNote,
       createdAt: serverTimestamp()
     });
+    await logActivity({
+      action: 'UPDATE',
+      resource: 'Patient',
+      resourceId: patientId,
+      changes: [{ field: 'privateNotes', oldValue: null, newValue: null }],
+      userProfile: { role: userRole },
+    });
     setNewNote('');
   };
 
@@ -57,7 +66,7 @@ export default function PrivateNotesList({ patientId }: { patientId: string }) {
         {notes.map(n => (
           <div key={n.id} className="bg-slate-50 p-3 rounded-lg text-sm">
             <p className="text-slate-800">{n.note}</p>
-            <div className="text-[10px] text-slate-400 mt-1">{n.authorName} • {n.createdAt?.toDate().toLocaleString()}</div>
+            <div className="text-[10px] text-slate-400 mt-1">{n.authorName} • {n.createdAt?.toDate ? formatDateTime(n.createdAt.toDate()) : 'Saving…'}</div>
           </div>
         ))}
         {hasMore && (

@@ -7,7 +7,7 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
   const visitsPerPage = 5;
 
   const patientVisits = visits
-    .filter(visit => visit.patientId === patientId)
+    .filter(visit => visit.patientId === patientId && visit.isArchived !== true)
     .sort((a, b) => (b.visitDate || '').localeCompare(a.visitDate || ''));
 
   const totalPages = Math.ceil(patientVisits.length / visitsPerPage);
@@ -28,32 +28,40 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
   };
 
   return (
-    <div className="border-t pt-4">
-      <h3 className="font-bold text-lg mb-4 text-slate-800">Visit History Timeline</h3>
+    <div className="min-w-0">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h3 className="text-base font-bold text-slate-900 sm:text-lg">Visit history</h3>
+          <p className="mt-0.5 text-xs text-slate-500">Consultations and treatments, newest first.</p>
+        </div>
+        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+          {patientVisits.length} record{patientVisits.length === 1 ? '' : 's'}
+        </span>
+      </div>
       {patientVisits.length === 0 ? (
-        <p className="text-sm text-slate-500">No visit history.</p>
+        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">No visit history available.</div>
       ) : (
         <div className="space-y-4">
           <div className="space-y-3">
             {paginatedVisits.map((c) => (
               <div 
                 key={c.id} 
-                className="group border border-slate-200 rounded-xl p-5 cursor-pointer hover:border-teal-500 hover:shadow-sm bg-white transition duration-150"
+                className="group cursor-pointer rounded-xl border border-slate-200 bg-white p-4 transition duration-150 hover:border-teal-500 hover:shadow-sm sm:p-5"
                 onClick={() => setSelectedVisit(c)}
               >
-                <div className="flex justify-between items-center gap-4 pb-2.5">
-                  <div>
+                <div className="flex flex-col gap-2 pb-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                  <div className="min-w-0">
                     <span className="text-slate-400 block font-semibold uppercase tracking-wider text-[9px]">Date & Time</span>
                     <div className="text-sm sm:text-base text-slate-900 font-bold group-hover:text-teal-600 transition-all leading-tight">
                       {formatDateTime(c.visitDate)}
                     </div>
                   </div>
-                  <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${getStatusColor(c.status)}`}>
+                  <span className={`w-fit shrink-0 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${getStatusColor(c.status)}`}>
                     {c.status}
                   </span>
                 </div>
                 
-                <div className="grid grid-cols-2 gap-x-6 mt-3 pt-3 border-t border-slate-100 text-xs text-left">
+                <div className="mt-3 grid grid-cols-1 gap-3 border-t border-slate-100 pt-3 text-left text-xs sm:grid-cols-2 sm:gap-x-6">
                   {/* Column 1 */}
                   <div className="space-y-2.5">
                     <div>
@@ -74,8 +82,8 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
                   <div className="space-y-2.5">
                     <div>
                       <span className="text-slate-400 block font-semibold uppercase tracking-wider text-[9px]">Service / Treatment</span>
-                      <span className="text-slate-800 font-semibold text-sm block">
-                        {c.servicePerformed || 'Consultation'}
+                      <span className="block break-words text-sm font-semibold text-slate-800">
+                        {c.treatmentService || c.servicePerformed || 'Consultation'}
                       </span>
                     </div>
                     <div>
@@ -116,7 +124,7 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
       
       {selectedVisit && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden max-w-lg w-full transform scale-100 transition duration-200">
+          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-xl transition duration-200">
             <div className="bg-slate-50 px-6 py-4 flex justify-between items-center border-b border-slate-100">
               <h3 className="text-base font-bold text-slate-900">Visit Detail Card</h3>
               <button 
@@ -141,7 +149,7 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Doctor / Provider</span>
                   <span className="font-semibold text-slate-800">
@@ -156,10 +164,10 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4 pt-2">
+              <div className="grid grid-cols-1 gap-4 pt-2 sm:grid-cols-2">
                 <div>
                   <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Service Performed</span>
-                  <span className="font-semibold text-slate-800">{selectedVisit.servicePerformed || 'Consultation'}</span>
+                  <span className="font-semibold text-slate-800">{selectedVisit.treatmentService || selectedVisit.servicePerformed || 'Consultation'}</span>
                 </div>
                 <div>
                   <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Visit Source</span>

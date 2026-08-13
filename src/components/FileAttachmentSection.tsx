@@ -1,18 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { LayoutGrid, List, X } from 'lucide-react';
-import imageCompression from 'browser-image-compression';
 import { db } from '../firebase';
 import Lightbox from './Lightbox';
 import ConfirmationModal from './ConfirmationModal';
-import { deleteAttachment, downloadAttachment, fetchAttachmentBlob, isImageAttachment, openAttachment, uploadAttachment } from '../utils/attachmentApi';
+import { deleteAttachment, downloadAttachment, fetchAttachmentBlob, isImageAttachment, isOptimizableImageUpload, openAttachment, uploadAttachment } from '../utils/attachmentApi';
+import { DEFAULT_MEDIA_SETTINGS, IMAGE_OPTIMIZATION, normalizeMediaSettings } from '../mediaSettings';
  
 export default function FileAttachmentSection({ patientId, appointmentId, visitId, isGeneral = false }: { patientId: string, appointmentId: string | null, visitId: string | null, isGeneral?: boolean }) {
   const [files, setFiles] = useState<any[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<{file: File, note: string}[]>([]);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [settings, setSettings] = useState({ allowedExtensions: ['.png', '.jpg', '.pdf'], maxFileSizeMB: 1, maxFilesPerAppointment: 5 });
+  const [settings, setSettings] = useState({ ...DEFAULT_MEDIA_SETTINGS });
   const [uploading, setUploading] = useState(false);
   const [fileToRemoveIndex, setFileToRemoveIndex] = useState<number | null>(null);
   const [fileToDelete, setFileToDelete] = useState<any | null>(null);
@@ -22,15 +22,9 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
   useEffect(() => {
     const unsub = onSnapshot(doc(db, 'settings', 'media'), (doc) => {
         if (doc.exists()) {
-            const data = doc.data();
-            setSettings({
-                allowedExtensions: ['.png', '.jpg', '.pdf'],
-                maxFileSizeMB: 1,
-                maxFilesPerAppointment: 5,
-                ...data
-            } as any);
+            setSettings(normalizeMediaSettings(doc.data()));
         }
-    });
+    }, (error) => console.error('Failed to load attachment settings:', error));
     return unsub;
   }, []);
 
@@ -78,8 +72,8 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
     
     const newFiles = Array.from(fileList);
 
-    if (files.length + selectedFiles.length + newFiles.length > settings.maxFilesPerAppointment) {
-        alert(`Maximum of ${settings.maxFilesPerAppointment} files reached.`);
+    if (files.length + selectedFiles.length + newFiles.length > settings.maxFilesPerRecord) {
+        alert(`Maximum of ${settings.maxFilesPerRecord} files reached for this record.`);
         return;
     }
 
@@ -88,14 +82,13 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
             alert(`File ${file.name} not allowed.`);
             return false;
         }
-        // Increase the allowed selection size for images because we will compress them before upload
-        const isImage = file.name.match(/\.(jpg|jpeg|png|webp)$/i);
+        const isImage = isOptimizableImageUpload(file, file.name);
         if (!isImage && file.size > settings.maxFileSizeMB * 1024 * 1024) {
-            alert(`File ${file.name} too large.`);
+            alert(`File ${file.name} exceeds the ${settings.maxFileSizeMB} MB limit.`);
             return false;
         }
-        // For images, we allow up to 20MB for selection since we will compress it to < 500KB
-        if (isImage && file.size > 20 * 1024 * 1024) {
+        // Large source images are processed locally and never sent to Cloud Run.
+        if (isImage && file.size > IMAGE_OPTIMIZATION.maxSourceBytes) {
             alert(`Image ${file.name} is too large (max 20MB for processing).`);
             return false;
         }
@@ -109,39 +102,27 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
     if (selectedFiles.length === 0 || !resourceId || !patientId) return;
 
     setUploading(true);
+    const pendingFiles = [...selectedFiles];
+    let uploadedCount = 0;
     try {
-        for (const { file, note } of selectedFiles) {
-            let fileToUpload: File | Blob = file;
-            
-            // Compress image if it's an image
-            if (file.name.match(/\.(jpg|jpeg|png|webp)$/i)) {
-                console.log(`Compressing ${file.name}... original size: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
-                const options = {
-                    maxSizeMB: 0.5, // Max 500KB as requested
-                    maxWidthOrHeight: 1920,
-                    useWebWorker: true,
-                };
-                try {
-                    fileToUpload = await imageCompression(file, options);
-                    console.log(`Compression success for ${file.name}. New size: ${(fileToUpload.size / 1024 / 1024).toFixed(2)}MB`);
-                } catch (compressionError) {
-                    console.error("Compression failed, uploading original:", compressionError);
-                }
-            }
-
+        for (const { file, note } of pendingFiles) {
             await uploadAttachment({
-              file: fileToUpload,
+              file,
               originalName: file.name,
+              maxFileSizeMB: settings.maxFileSizeMB,
               note,
               patientId,
               resourceType,
               resourceId,
             });
+            uploadedCount += 1;
         }
         
         setSelectedFiles([]);
     } catch (e: any) {
         console.error("Upload error:", e);
+        // Keep only files that have not yet uploaded so retrying cannot create duplicates.
+        setSelectedFiles(pendingFiles.slice(uploadedCount));
         alert(`File upload failed: ${e.message || 'Unknown error'}`);
     } finally {
         setUploading(false);
@@ -199,7 +180,7 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
   return (
     <section className="space-y-4">
         <div className="flex justify-between items-center border-b border-teal-100 pb-1">
-            <h3 className="font-bold text-sm uppercase tracking-wider text-teal-800">Attachments ({files.length}/{settings.maxFilesPerAppointment})</h3>
+            <h3 className="font-bold text-sm uppercase tracking-wider text-teal-800">Attachments ({files.length}/{settings.maxFilesPerRecord})</h3>
             <div className="flex gap-1">
                 <button type="button" onClick={() => setViewMode('list')} className={`p-1 rounded ${viewMode === 'list' ? 'bg-teal-100 text-teal-800' : 'text-slate-400'}`}><List size={16}/></button>
                 <button type="button" onClick={() => setViewMode('grid')} className={`p-1 rounded ${viewMode === 'grid' ? 'bg-teal-100 text-teal-800' : 'text-slate-400'}`}><LayoutGrid size={16}/></button>
@@ -217,6 +198,8 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
                 </button>
             )}
         </div>
+        <p className="text-[10px] text-slate-400">Allowed: {settings.allowedExtensions.join(', ')} · Up to {settings.maxFileSizeMB} MB each · {settings.maxFilesPerRecord} files per record</p>
+        <p className="text-[10px] font-medium text-emerald-600">Images are resized to {IMAGE_OPTIMIZATION.maxWidthOrHeight}px and optimized below 500 KB before upload.</p>
         
         {selectedFiles.length > 0 && (
             <div className="space-y-2">

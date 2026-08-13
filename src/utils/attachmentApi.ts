@@ -1,4 +1,6 @@
 import { auth } from '../firebase';
+import imageCompression from 'browser-image-compression';
+import { DEFAULT_MEDIA_SETTINGS, IMAGE_OPTIMIZATION } from '../mediaSettings';
 
 export interface StoredAttachment {
   id: string;
@@ -9,6 +11,48 @@ export interface StoredAttachment {
   size?: number;
   uploadedAt?: string;
   uploadedByUid?: string;
+}
+
+export function isOptimizableImageUpload(file: File | Blob, originalName: string) {
+  return file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(originalName);
+}
+
+export async function optimizeAttachmentImage(file: File | Blob, originalName: string, maxFileSizeMB: number) {
+  if (file.size > IMAGE_OPTIMIZATION.maxSourceBytes) {
+    throw new Error('Image is too large to optimize. Choose an image smaller than 20 MB.');
+  }
+
+  const sourceFile = file instanceof File
+    ? file
+    : new File([file], originalName, { type: file.type || 'application/octet-stream' });
+
+  let optimizedFile: File;
+  try {
+    optimizedFile = await imageCompression(sourceFile, {
+      maxSizeMB: IMAGE_OPTIMIZATION.targetSizeMB,
+      maxWidthOrHeight: IMAGE_OPTIMIZATION.maxWidthOrHeight,
+      initialQuality: 0.82,
+      maxIteration: 15,
+      preserveExif: false,
+      useWebWorker: true,
+    });
+  } catch (error) {
+    console.error('Patient attachment image optimization failed:', error);
+    throw new Error('Image optimization failed. The original image was not uploaded.');
+  }
+
+  const configuredLimitMB = Number.isFinite(maxFileSizeMB) && maxFileSizeMB > 0
+    ? maxFileSizeMB
+    : DEFAULT_MEDIA_SETTINGS.maxFileSizeMB;
+  const storedLimitBytes = Math.min(
+    Math.floor(configuredLimitMB * 1024 * 1024),
+    IMAGE_OPTIMIZATION.maxStoredBytes,
+  );
+  if (optimizedFile.size > storedLimitBytes) {
+    throw new Error('The image could not be optimized below the storage limit. Try a smaller image.');
+  }
+
+  return optimizedFile;
 }
 
 async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
@@ -32,13 +76,17 @@ async function getErrorMessage(response: Response, fallback: string) {
 export async function uploadAttachment(options: {
   file: File | Blob;
   originalName: string;
+  maxFileSizeMB: number;
   note: string;
   patientId: string;
   resourceType: 'patient' | 'appointment' | 'visit';
   resourceId: string;
 }) {
+  const fileToUpload = isOptimizableImageUpload(options.file, options.originalName)
+    ? await optimizeAttachmentImage(options.file, options.originalName, options.maxFileSizeMB)
+    : options.file;
   const formData = new FormData();
-  formData.append('file', options.file, options.originalName);
+  formData.append('file', fileToUpload, options.originalName);
   formData.append('note', options.note);
   formData.append('patientId', options.patientId);
   formData.append('resourceType', options.resourceType);

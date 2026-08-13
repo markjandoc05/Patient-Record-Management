@@ -3,19 +3,12 @@ import { ChevronDown, ChevronRight, FileText, Image as ImageIcon, Calendar } fro
 import Lightbox from './Lightbox';
 import { useTimezone } from '../contexts/TimezoneContext';
 import { downloadAttachment, fetchAttachmentBlob, isImageAttachment, openAttachment } from '../utils/attachmentApi';
+import { formatTimezone } from '../utils/timezone';
 
 export default function PatientMediaTab({ patientId, users, branches, visits }: { patientId: string, users: any[], branches: any[], visits: any[] }) {
     const timezone = useTimezone();
 const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleString(undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: 'numeric',
-        hour12: timezone?.format === '12h'
-    });
+    return formatTimezone(dateString, timezone);
 };
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
@@ -23,7 +16,7 @@ const formatDate = (dateString: string) => {
     const [secureUrls, setSecureUrls] = useState<Record<string, string>>({});
 
     const items = useMemo(() => visits
-        .filter(visit => visit.patientId === patientId && visit.attachments?.length > 0)
+        .filter(visit => visit.patientId === patientId && visit.isArchived !== true && visit.attachments?.length > 0)
         .map(visit => ({ id: visit.id, type: 'visit' as const, data: visit }))
         .sort((a, b) => new Date(b.data.visitDate).getTime() - new Date(a.data.visitDate).getTime()),
     [patientId, visits]);

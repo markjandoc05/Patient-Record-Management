@@ -1,40 +1,34 @@
-export const formatDateTime = (dateString: string) => {
-    if (!dateString) return 'N/A';
+import { formatActiveTimezone } from './utils/timezone';
+
+export const formatDateTime = (dateInput: string | Date | number | null | undefined) => {
+    if (!dateInput) return 'N/A';
+    const dateString = typeof dateInput === 'string' ? dateInput : '';
     if (dateString.toLowerCase() === 'n/a') return 'N/A';
 
-    // Parse timezone-safely for ISO dates (like YYYY-MM-DD or YYYY-MM-DDThh:mm)
+    // Keep date-only clinical values stable. They represent a calendar date, not
+    // an instant that should shift between timezones.
     const isoDateMatch = dateString.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?/);
     
     let year: number;
     let month: number; // 0-indexed
     let day: number;
-    let hasTime = false;
-    let hour = 0;
-    let minute = 0;
 
-    if (isoDateMatch) {
+    if (isoDateMatch && isoDateMatch[4] === undefined) {
         year = parseInt(isoDateMatch[1], 10);
         month = parseInt(isoDateMatch[2], 10) - 1;
         day = parseInt(isoDateMatch[3], 10);
-        if (isoDateMatch[4] !== undefined && isoDateMatch[5] !== undefined) {
-            hasTime = true;
-            hour = parseInt(isoDateMatch[4], 10);
-            minute = parseInt(isoDateMatch[5], 10);
-        }
     } else {
-        const date = new Date(dateString);
-        if (isNaN(date.getTime())) return dateString; // fallback to raw
+        const date = dateInput instanceof Date ? new Date(dateInput.getTime()) : new Date(dateInput);
+        if (isNaN(date.getTime())) return dateString || 'N/A'; // fallback to raw
+
+        if (typeof dateInput !== 'string' || dateString.includes('T') || dateString.includes(':')) {
+            return formatActiveTimezone(date);
+        }
         
         year = date.getFullYear();
         month = date.getMonth();
         day = date.getDate();
         
-        // If there's time indicator, render time too
-        if (dateString.includes('T') || dateString.includes(':')) {
-            hasTime = true;
-            hour = date.getHours();
-            minute = date.getMinutes();
-        }
     }
 
     const months = [
@@ -48,15 +42,7 @@ export const formatDateTime = (dateString: string) => {
 
     const monthName = months[month];
     const paddedDay = String(day).padStart(2, '0');
-    const dateFormatted = `${monthName} ${paddedDay} ${year}`;
-
-    if (hasTime) {
-        const ampm = hour >= 12 ? 'PM' : 'AM';
-        const displayHour = hour % 12 === 0 ? 12 : hour % 12;
-        const paddedHour = String(displayHour).padStart(2, '0');
-        const paddedMinute = String(minute).padStart(2, '0');
-        return `${dateFormatted}, ${paddedHour}:${paddedMinute} ${ampm}`;
-    }
+    const dateFormatted = `${monthName} ${paddedDay}, ${year}`;
 
     return dateFormatted;
 };

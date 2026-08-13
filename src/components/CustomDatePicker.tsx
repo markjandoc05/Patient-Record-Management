@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface CustomDatePickerProps {
@@ -7,6 +7,7 @@ interface CustomDatePickerProps {
   disabled?: boolean;
   required?: boolean;
   min?: string; // in YYYY-MM-DD
+  max?: string; // in YYYY-MM-DD
   className?: string;
   placeholder?: string;
 }
@@ -17,9 +18,11 @@ export const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
   disabled = false,
   required = false,
   min = '',
+  max = '',
   className = '',
   placeholder = 'MM/DD/YYYY',
 }) => {
+  const pickerId = useId();
   const [isOpen, setIsOpen] = useState(false);
   
   // Internal state for the picker modal
@@ -154,7 +157,7 @@ export const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
     const dateStr = `${selectedYear}-${formattedMonth}-${formattedDay}`;
     
     // Check if under min bounds
-    if (min && dateStr < min) return;
+    if ((min && dateStr < min) || (max && dateStr > max)) return;
     
     setTempDateStr(dateStr);
   };
@@ -180,11 +183,10 @@ export const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
   };
 
   const isDayDisabled = (dayNum: number): boolean => {
-    if (!min) return false;
     const formattedMonth = String(selectedMonth + 1).padStart(2, '0');
     const formattedDay = String(dayNum).padStart(2, '0');
     const dateStr = `${selectedYear}-${formattedMonth}-${formattedDay}`;
-    return dateStr < min;
+    return Boolean((min && dateStr < min) || (max && dateStr > max));
   };
 
   // Generation for Month and Year lists
@@ -196,16 +198,24 @@ export const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
   // Year range: let's build 130 years span, centering around the current year (100 back, 30 forward)
   const currentYearNum = new Date().getFullYear();
   const yearsList: number[] = [];
-  for (let y = currentYearNum + 30; y >= currentYearNum - 100; y--) {
+  const maximumYear = max && /^\d{4}-\d{2}-\d{2}$/.test(max) ? Number(max.slice(0, 4)) : currentYearNum + 30;
+  const minimumYear = min && /^\d{4}-\d{2}-\d{2}$/.test(min) ? Number(min.slice(0, 4)) : currentYearNum - 130;
+  for (let y = maximumYear; y >= minimumYear; y--) {
     yearsList.push(y);
   }
 
   return (
     <div className="relative w-full">
       {/* Target input wrapper replicating screenshot 2 */}
-      <div 
+      <button
+        type="button"
         onClick={handleOpen}
-        id="custom-datepicker-trigger"
+        id={`${pickerId}-trigger`}
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
+        aria-controls={`${pickerId}-dialog`}
+        aria-required={required}
+        disabled={disabled}
         className={`w-full h-[42px] border border-slate-300 px-3 rounded-xl text-sm transition-all flex items-center justify-between cursor-pointer select-none bg-white text-slate-800 font-medium ${
           disabled 
             ? 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed' 
@@ -216,7 +226,7 @@ export const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
           {value ? formatInputDisplay(value) : placeholder}
         </span>
         <Calendar size={17} className={disabled ? 'text-slate-300' : 'text-slate-400'} />
-      </div>
+      </button>
 
       {/* Actual dialog modal matching screenshot 1 */}
       {isOpen && (
@@ -228,7 +238,10 @@ export const CustomDatePicker: React.FC<CustomDatePickerProps> = ({
           <div 
             className="relative bg-white rounded-3xl shadow-2xl w-[328px] max-w-full overflow-hidden flex flex-col border border-slate-100 animate-scale-up"
             onClick={e => e.stopPropagation()}
-            id="custom-datepicker-modal"
+            id={`${pickerId}-dialog`}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Choose date"
           >
             {/* Header displaying select date + large formatted selected date like sun, apr 17 */}
             <div className="p-6 bg-slate-50 border-b border-slate-100 flex flex-col select-none">

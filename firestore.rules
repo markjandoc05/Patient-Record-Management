@@ -31,25 +31,6 @@ service cloud.firestore {
       return hasAnyRole(['support_developer']);
     }
 
-    function hasGlobalBranchAccess() {
-      return hasAnyRole(['admin', 'support_developer']);
-    }
-
-    function canAccessBranch(branchId) {
-      return hasActiveProfile()
-        && branchId is string
-        && (
-          hasGlobalBranchAccess()
-          || branchId in get(userPath(request.auth.uid)).data.assignedBranches
-        );
-    }
-
-    function canAccessPatient(patientId) {
-      return canAccessBranch(
-        get(/databases/$(database)/documents/patients/$(patientId)).data.homeBranchId
-      );
-    }
-
     function isSafePendingProfile(userId) {
       return isSignedIn()
         && request.auth.uid == userId
@@ -133,36 +114,33 @@ service cloud.firestore {
     }
 
     match /appointments/{appointmentId} {
-      allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
-        && canAccessBranch(resource.data.branchId);
+      // Authorized clinic users share the patient's longitudinal schedule.
+      // Branch assignment controls trusted server writes, not continuity reads.
+      allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer']);
       // Record mutations are validated and audited by the trusted server API.
       allow create, update, delete: if false;
     }
 
     match /visits/{visitId} {
-      allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
-        && canAccessBranch(resource.data.branchId);
+      allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer']);
       // Record mutations are validated and audited by the trusted server API.
       allow create, update, delete: if false;
     }
 
     match /patients/{patientId} {
-      allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
-        && canAccessBranch(resource.data.homeBranchId);
+      // There is one shared patient identity across all clinic branches.
+      allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer']);
       // Record mutations are validated and audited by the trusted server API.
       allow create, update, delete: if false;
 
       match /privateNotes/{noteId} {
-        allow read: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
-          && canAccessPatient(patientId);
-        allow create: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
-          && canAccessPatient(patientId)
+        allow read: if hasAnyRole(['admin', 'doctor', 'support_developer']);
+        allow create: if hasAnyRole(['admin', 'doctor', 'support_developer'])
           && request.resource.data.patientId == patientId
           && request.resource.data.authorId == request.auth.uid;
         allow update: if hasAnyRole(['admin', 'support_developer'])
           || (
-            hasAnyRole(['manager', 'doctor'])
-            && canAccessPatient(patientId)
+            hasAnyRole(['doctor'])
             && resource.data.authorId == request.auth.uid
             && request.resource.data.authorId == resource.data.authorId
             && request.resource.data.patientId == resource.data.patientId
@@ -173,7 +151,7 @@ service cloud.firestore {
 
     match /branches/{branchId} {
       allow read: if hasActiveProfile();
-      allow write: if isAdmin();
+      allow write: if hasAnyRole(['admin', 'support_developer']);
     }
 
     match /settings/branding {
@@ -183,12 +161,12 @@ service cloud.firestore {
 
     match /settings/timezone {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if hasAnyRole(['admin', 'support_developer']);
     }
 
     match /settings/footer {
       allow read: if true;
-      allow write: if isSupportDeveloper();
+      allow write: if hasAnyRole(['admin', 'support_developer']);
     }
 
     match /settings/media {

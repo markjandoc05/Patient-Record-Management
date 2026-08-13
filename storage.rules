@@ -10,8 +10,8 @@ service firebase.storage {
     }
 
     // Clinical attachments are never served directly by Storage. The server
-    // validates the active profile, role, patient, resource, and both branch
-    // assignments before streaming, uploading, or deleting an object.
+    // validates the active profile, role, patient, parent resource, and write
+    // branch before streaming, uploading, or deleting an object.
     match /uploads/{allPaths=**} {
       allow read, write: if false;
     }

@@ -1,17 +1,59 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, doc, updateDoc, setDoc, getDoc, addDoc, deleteDoc, writeBatch } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, setDoc, getDoc, getDocs, addDoc, writeBatch, limit, query, where } from 'firebase/firestore';
 import { auth } from '../firebase';
 import imageCompression from 'browser-image-compression';
 import { getChangedFields } from '../utils/diffUtils';
 import { handleFirestoreError, OperationType } from '../utils';
 import { RBAC } from '../rbac';
 import { logActivity } from '../utils/auditLogger';
+import { DEFAULT_MEDIA_SETTINGS, IMAGE_OPTIMIZATION, normalizeMediaSettings } from '../mediaSettings';
 import ConfirmationModal from './ConfirmationModal';
+import {
+  Building2,
+  ChevronDown,
+  Clock3,
+  Database,
+  FileText,
+  Palette,
+  Settings2,
+  ShieldCheck,
+  Users,
+} from 'lucide-react';
+
+type SettingsTab = 'general' | 'branches' | 'access' | 'data';
+type GeneralSection = 'general' | 'time' | 'theme' | 'footer';
+
+const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; description: string; icon: React.ElementType }> = [
+  { id: 'general', label: 'General', description: 'Brand, uploads, time and footer', icon: Settings2 },
+  { id: 'branches', label: 'Clinics', description: 'Locations and branch status', icon: Building2 },
+  { id: 'access', label: 'Access', description: 'Users, roles and assignments', icon: Users },
+  { id: 'data', label: 'Data safety', description: 'Retention and cleanup guidance', icon: Database },
+];
+
+const GENERAL_SECTIONS: Array<{ id: GeneralSection; label: string; description: string; icon: React.ElementType }> = [
+  { id: 'general', label: 'General settings', description: 'Clinic, app identity and files', icon: Settings2 },
+  { id: 'time', label: 'Time & date', description: 'Timezone and clock format', icon: Clock3 },
+  { id: 'theme', label: 'Themes & appearance', description: 'Workspace colors and styling', icon: Palette },
+  { id: 'footer', label: 'Footer & legal links', description: 'Footer text and policies', icon: FileText },
+];
+
+const isValidOptionalUrl = (value: string) => {
+  if (!value.trim()) return true;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
+};
  
 export default function AdminSettings({ db, userRole, branding, timezone, footer, userProfile }: { db: any, userRole: string|null, branding: any, timezone: any, footer: any, userProfile: any }) {
+  const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTab>('general');
+  const [openGeneralSection, setOpenGeneralSection] = useState<GeneralSection | null>('general');
   const [users, setUsers] = useState<any[]>([]);
   const [branches, setBranches] = useState<any[]>([]);
   const [error, setError] = useState('');
+  const [actionSuccess, setActionSuccess] = useState('');
   const [timezoneForm, setTimezoneForm] = useState<any>({
     timezone: 'Asia/Manila',
     displayName: '(UTC+08:00) Philippine Standard Time',
@@ -33,7 +75,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const [footerSuccess, setFooterSuccess] = useState('');
   const [newBranch, setNewBranch] = useState({ branchName: '', address: '', contactNumber: '', email: '' });
   const [isBranchOpen, setIsBranchOpen] = useState(true);
-  const [isUserAccessOpen, setIsUserAccessOpen] = useState(false);
+  const [isUserAccessOpen, setIsUserAccessOpen] = useState(true);
   const [isRoleAccessOpen, setIsRoleAccessOpen] = useState(false);
   const [isDataManagementOpen, setIsDataManagementOpen] = useState(false);
   const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
@@ -45,7 +87,6 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   }>(null);
 
   // Dynamic white-label branding configurations
-  const [isBrandingOpen, setIsBrandingOpen] = useState(false);
   const [brandingForm, setBrandingForm] = useState<any>({
     appName: '',
     appShortName: '',
@@ -53,12 +94,6 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     faviconUrl: '',
     loginPageLogoUrl: '',
     browserTitle: '',
-    metaTitle: '',
-    metaDescription: '',
-    metaKeywords: '',
-    ogTitle: '',
-    ogDescription: '',
-    ogImageUrl: '',
     companyName: '',
     companyAddress: '',
     contactNumber: '',
@@ -82,11 +117,46 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [brandingSuccess, setBrandingSuccess] = useState('');
   const [mediaSuccess, setMediaSuccess] = useState('');
-  const [mediaSettings, setMediaSettings] = useState({
-    allowedExtensions: ['.png', '.jpg', '.pdf'],
-    maxFileSizeMB: 1,
-    maxFilesPerAppointment: 5
-  });
+  const [mediaSettings, setMediaSettings] = useState({ ...DEFAULT_MEDIA_SETTINGS });
+
+  const normalizedUserRole = userRole?.toLowerCase();
+  const canManageSettings = normalizedUserRole === 'admin' || normalizedUserRole === 'support_developer';
+  const canManageFooter = normalizedUserRole === 'support_developer';
+
+  const renderGeneralSectionToggle = (id: GeneralSection) => {
+    const section = GENERAL_SECTIONS.find(item => item.id === id)!;
+    const Icon = section.icon;
+    const isOpen = openGeneralSection === id;
+    return (
+      <button
+        type="button"
+        onClick={() => setOpenGeneralSection(isOpen ? null : id)}
+        aria-expanded={isOpen}
+        aria-controls={`general-settings-${id}`}
+        className={`flex w-full min-w-0 items-center gap-3 border border-slate-200 bg-white px-5 py-4 text-left text-slate-700 shadow-sm transition hover:bg-slate-50 sm:px-6 ${isOpen ? 'rounded-t-2xl' : 'rounded-2xl'}`}
+      >
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-500">
+          <Icon className="h-5 w-5" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-base font-semibold">{section.label}</span>
+          <span className="block truncate text-xs text-slate-400">{section.description}</span>
+        </span>
+        <ChevronDown className={`h-5 w-5 shrink-0 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+    );
+  };
+
+  const showActionSuccess = (message: string) => {
+    setError('');
+    setActionSuccess(message);
+    window.setTimeout(() => setActionSuccess(''), 4000);
+  };
+
+  const showActionError = (message: string) => {
+    setActionSuccess('');
+    setError(message);
+  };
 
   useEffect(() => {
     if (branding) {
@@ -97,12 +167,6 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         faviconUrl: branding.faviconUrl || '',
         loginPageLogoUrl: branding.loginPageLogoUrl || '',
         browserTitle: branding.browserTitle || '',
-        metaTitle: branding.metaTitle || '',
-        metaDescription: branding.metaDescription || '',
-        metaKeywords: branding.metaKeywords || '',
-        ogTitle: branding.ogTitle || '',
-        ogDescription: branding.ogDescription || '',
-        ogImageUrl: branding.ogImageUrl || '',
         companyName: branding.companyName || '',
         companyAddress: branding.companyAddress || '',
         contactNumber: branding.contactNumber || '',
@@ -152,8 +216,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     const pathMap: Record<string, string> = {
         appLogoUrl: 'app-logo',
         faviconUrl: 'favicon',
-        loginPageLogoUrl: 'login-logo',
-        ogImageUrl: 'open-graph'
+        loginPageLogoUrl: 'login-logo'
     };
     const folder = pathMap[fieldName] || 'misc';
     try {
@@ -230,6 +293,31 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     }
   };
 
+  const handleRemoveBrandingAsset = async (fieldName: string) => {
+    if (!canManageSettings) {
+      showActionError('You do not have permission to update branding assets.');
+      return;
+    }
+    try {
+      const updatedAt = Date.now();
+      await setDoc(doc(db, 'settings', 'branding'), {
+        [fieldName]: '',
+        [`${fieldName}_metadata`]: null,
+        updatedAt,
+      }, { merge: true });
+      setBrandingForm((previous: any) => ({ ...previous, [fieldName]: '', updatedAt }));
+      await logActivity({
+        action: 'UPDATE', resource: 'Settings', resourceId: 'branding',
+        details: `Removed branding asset: ${fieldName}`,
+        userProfile: { role: userRole, fullName: userProfile?.fullName }
+      });
+      showActionSuccess('Branding asset removed. The app has switched to its fallback immediately.');
+    } catch (removeError: any) {
+      showActionError(`Unable to remove the branding asset: ${removeError?.message || 'Unknown error'}`);
+      handleFirestoreError(removeError, OperationType.UPDATE, 'settings/branding', auth);
+    }
+  };
+
   const handleSaveBranding = async (e: React.FormEvent) => {
     e.preventDefault();
     console.log("AdminSettings: Attempting to save all branding settings", brandingForm);
@@ -244,6 +332,14 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     if (!isAdminOrSupport) {
         console.error("AdminSettings: Branding save failed: unauthorized access by role:", dbRole);
         setError("Permission Denied: Only Admin and Support / Developer can update branding.");
+        return;
+    }
+    if (![brandingForm.primaryColor, brandingForm.secondaryColor, brandingForm.accentColor].every((color: string) => /^#[0-9a-f]{6}$/i.test(color))) {
+        showActionError('Theme colors must use a valid six-digit hex value, such as #0D9488.');
+        return;
+    }
+    if (![brandingForm.websiteUrl].every((url: string) => isValidOptionalUrl(url || ''))) {
+        showActionError('Enter a valid clinic website URL beginning with http:// or https://.');
         return;
     }
     
@@ -282,8 +378,15 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
 
   const handleSaveTimezone = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (userRole === 'support_developer') {
-      alert("Permission Denied: Support / Developer role is read-only for timezone configurations.");
+    if (!canManageSettings) {
+      showActionError('You do not have permission to update timezone settings.');
+      return;
+    }
+    const normalizedTimezone = String(timezoneForm.timezone || '').trim();
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: normalizedTimezone }).format();
+    } catch {
+      showActionError('Enter a valid IANA timezone, such as Asia/Manila.');
       return;
     }
     setSavingTimezone(true);
@@ -291,7 +394,9 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     setError('');
     
     try {
-      await setDoc(doc(db, 'settings', 'timezone'), timezoneForm, { merge: true });
+      const normalizedTimezoneForm = { ...timezoneForm, timezone: normalizedTimezone };
+      await setDoc(doc(db, 'settings', 'timezone'), normalizedTimezoneForm, { merge: true });
+      setTimezoneForm(normalizedTimezoneForm);
       
       await logActivity({
           action: 'UPDATE',
@@ -313,8 +418,13 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   
   const handleSaveFooter = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (userRole !== 'support_developer') {
-      alert("Permission Denied: Only Support / Developer role can modify Footer Settings.");
+    if (!canManageFooter) {
+      showActionError('You do not have permission to update footer settings.');
+      return;
+    }
+    const footerUrls = [footerForm.privacyPolicyUrl, footerForm.termsConditionsUrl, footerForm.developerCreditUrl];
+    if (!footerUrls.every(value => isValidOptionalUrl(String(value || '')))) {
+      showActionError('Footer links must be valid URLs beginning with http:// or https://.');
       return;
     }
     setSavingFooter(true);
@@ -356,27 +466,55 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     // Fetch media settings
     const unsubMedia = onSnapshot(doc(db, 'settings', 'media'), (doc) => {
       if (doc.exists()) {
-          const data = doc.data();
-          setMediaSettings({
-            allowedExtensions: ['.png', '.jpg', '.pdf'],
-            maxFileSizeMB: 1,
-            maxFilesPerAppointment: 5,
-            ...data
-          } as any);
+          setMediaSettings(normalizeMediaSettings(doc.data()));
       }
-    });
+    }, (snapshotError) => handleFirestoreError(snapshotError, OperationType.GET, 'settings/media', auth));
     
     return () => { unsubUsers(); unsubBranches(); unsubMedia(); };
   }, [db]);
 
   const handleSaveMediaSettings = async (e: React.FormEvent) => {
       e.preventDefault();
+      if (!canManageSettings) {
+          showActionError('You do not have permission to update attachment settings.');
+          return;
+      }
+      const allowedExtensions = mediaSettings.allowedExtensions
+          .map(extension => extension.trim().toLowerCase())
+          .filter(Boolean)
+          .map(extension => extension.startsWith('.') ? extension : `.${extension}`);
+      const normalizedExtensions = [...new Set(allowedExtensions)];
+      if (normalizedExtensions.length === 0) {
+          showActionError('Add at least one allowed file extension.');
+          return;
+      }
+      if (!Number.isFinite(mediaSettings.maxFileSizeMB) || mediaSettings.maxFileSizeMB < 1 || mediaSettings.maxFileSizeMB > 10) {
+          showActionError('Maximum file size must be between 1 MB and 10 MB.');
+          return;
+      }
+      if (!Number.isInteger(mediaSettings.maxFilesPerRecord) || mediaSettings.maxFilesPerRecord < 1 || mediaSettings.maxFilesPerRecord > 20) {
+          showActionError('Files per patient record must be a whole number between 1 and 20.');
+          return;
+      }
       setSavingMedia(true);
       setMediaSuccess('');
       setError('');
       try {
-          await setDoc(doc(db, 'settings', 'media'), mediaSettings, { merge: true });
-          setMediaSuccess('Media upload settings saved successfully!');
+          const normalizedMediaSettings = normalizeMediaSettings({ ...mediaSettings, allowedExtensions: normalizedExtensions });
+          await setDoc(doc(db, 'settings', 'media'), {
+            ...normalizedMediaSettings,
+            // Retained temporarily so an older deployed server observes the same limit during rollout.
+            maxFilesPerAppointment: normalizedMediaSettings.maxFilesPerRecord,
+          }, { merge: true });
+          setMediaSettings(normalizedMediaSettings);
+          await logActivity({
+              action: 'UPDATE',
+              resource: 'Settings',
+              resourceId: 'media',
+              details: 'Updated attachment upload restrictions',
+              userProfile: { role: userRole, fullName: userProfile?.fullName }
+          });
+          setMediaSuccess('Patient-record file settings saved successfully!');
           setTimeout(() => setMediaSuccess(''), 4000);
       } catch (err: any) {
           setError('Failed to save media settings: ' + (err.message || String(err)));
@@ -387,6 +525,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   };
 
   const updateRole = async (userId: string, newRole: string) => {
+    if (!canManageSettings) return;
     try {
         await updateDoc(doc(db, 'users', userId), { role: newRole });
         await logActivity({
@@ -396,20 +535,96 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
             details: `Updated user role to: ${newRole}`,
             userProfile: { role: userRole }
         });
+        showActionSuccess('User role updated.');
     } catch (error) {
+        showActionError('Unable to update the user role.');
         handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`, auth);
+    }
+  };
+
+  const updateUserBranches = async (user: any, branch: any, isAssigning: boolean) => {
+    if (!canManageSettings) return;
+    const assignments = (user.assignedBranches || []).map((branchId: string, index: number) => ({
+      id: branchId,
+      name: user.assignedBranchNames?.[index] || branches.find(item => item.id === branchId)?.branchName || '',
+    }));
+    const nextAssignments = isAssigning
+      ? [...assignments.filter((item: any) => item.id !== branch.id), { id: branch.id, name: branch.branchName }]
+      : assignments.filter((item: any) => item.id !== branch.id);
+    const nextDefault = nextAssignments.some((item: any) => item.id === user.defaultBranchId)
+      ? nextAssignments.find((item: any) => item.id === user.defaultBranchId)
+      : nextAssignments[0];
+
+    try {
+      await updateDoc(doc(db, 'users', user.id), {
+        assignedBranches: nextAssignments.map((item: any) => item.id),
+        assignedBranchNames: nextAssignments.map((item: any) => item.name),
+        defaultBranchId: nextDefault?.id || null,
+        defaultBranchName: nextDefault?.name || null,
+      });
+      await logActivity({
+        action: 'UPDATE', resource: 'User', resourceId: user.id,
+        details: `${isAssigning ? 'Assigned' : 'Unassigned'} clinic branch: ${branch.branchName}`,
+        userProfile: { role: userRole, fullName: userProfile?.fullName }
+      });
+      showActionSuccess(`Branch access ${isAssigning ? 'assigned' : 'removed'} for ${user.fullName || user.email}.`);
+    } catch (updateError) {
+      showActionError('Unable to update this user’s clinic access.');
+      handleFirestoreError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
+    }
+  };
+
+  const setUserDefaultBranch = async (user: any, branch: any) => {
+    if (!canManageSettings) return;
+    try {
+      await updateDoc(doc(db, 'users', user.id), { defaultBranchId: branch.id, defaultBranchName: branch.branchName });
+      await logActivity({
+        action: 'UPDATE', resource: 'User', resourceId: user.id,
+        details: `Set default clinic branch to: ${branch.branchName}`,
+        userProfile: { role: userRole, fullName: userProfile?.fullName }
+      });
+      showActionSuccess(`Default clinic updated for ${user.fullName || user.email}.`);
+    } catch (updateError) {
+      showActionError('Unable to set the default clinic.');
+      handleFirestoreError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
+    }
+  };
+
+  const toggleUserStatus = async (user: any) => {
+    if (!canManageSettings || user.id === auth.currentUser?.uid) return;
+    try {
+      await updateDoc(doc(db, 'users', user.id), { active: !user.active });
+      await logActivity({
+        action: 'UPDATE', resource: 'User', resourceId: user.id,
+        details: `${user.active ? 'Disabled' : 'Activated'} user account`,
+        userProfile: { role: userRole, fullName: userProfile?.fullName }
+      });
+      showActionSuccess(`${user.fullName || user.email} is now ${user.active ? 'disabled' : 'active'}.`);
+    } catch (updateError) {
+      showActionError('Unable to update the user account status.');
+      handleFirestoreError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
     }
   };
 
   const handleAddBranch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (userRole === 'support_developer') {
-      alert("Permission Denied: Support / Developer role cannot add branches.");
+    if (!canManageSettings) {
+      showActionError('You do not have permission to add clinic branches.');
+      return;
+    }
+    const normalizedBranch = {
+      branchName: newBranch.branchName.trim(),
+      address: newBranch.address.trim(),
+      contactNumber: newBranch.contactNumber.trim(),
+      email: newBranch.email.trim().toLowerCase(),
+    };
+    if (!normalizedBranch.branchName) {
+      showActionError('Clinic branch name is required.');
       return;
     }
     try {
         const docRef = await addDoc(collection(db, 'branches'), {
-            ...newBranch,
+            ...normalizedBranch,
             status: 'Active',
             createdAt: new Date().toISOString()
         });
@@ -417,19 +632,21 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
             action: 'CREATE',
             resource: 'Branch',
             resourceId: docRef.id,
-            resourceName: newBranch.branchName,
+            resourceName: normalizedBranch.branchName,
             details: 'Created new branch',
             userProfile: { role: userRole }
         });
         setNewBranch({ branchName: '', address: '', contactNumber: '', email: '' });
+        showActionSuccess('Clinic branch added.');
     } catch (error) {
+        showActionError('Unable to add the clinic branch.');
         handleFirestoreError(error, OperationType.CREATE, 'branches', auth);
     }
   };
 
   const toggleBranchStatus = async (branchId: string, currentStatus: string) => {
-      if (userRole === 'support_developer') {
-          alert("Permission Denied: Support / Developer role cannot toggle branch status.");
+      if (!canManageSettings) {
+          showActionError('You do not have permission to change branch status.');
           return;
       }
       try {
@@ -442,18 +659,44 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
               details: `Changed branch status to: ${newStatus}`,
               userProfile: { role: userRole }
           });
+          showActionSuccess(`Clinic branch ${newStatus === 'Active' ? 'activated' : 'deactivated'}.`);
       } catch (error) {
+          showActionError('Unable to change the clinic branch status.');
           handleFirestoreError(error, OperationType.UPDATE, `branches/${branchId}`, auth);
       }
   };
 
   const executeDeleteBranch = async (id: string, name: string) => {
-    if (userRole === 'support_developer') {
-        alert("Permission Denied: Support / Developer role cannot delete branches.");
+    if (!canManageSettings) {
+        showActionError('You do not have permission to delete clinic branches.');
         return;
     }
     try {
-        await deleteDoc(doc(db, 'branches', id));
+        const [patientRefs, appointmentRefs, visitRefs] = await Promise.all([
+          getDocs(query(collection(db, 'patients'), where('homeBranchId', '==', id), limit(1))),
+          getDocs(query(collection(db, 'appointments'), where('branchId', '==', id), limit(1))),
+          getDocs(query(collection(db, 'visits'), where('branchId', '==', id), limit(1))),
+        ]);
+        if (![patientRefs, appointmentRefs, visitRefs].every(snapshot => snapshot.empty)) {
+          showActionError(`“${name}” has linked clinical records and cannot be deleted. Deactivate it instead to preserve record history.`);
+          return;
+        }
+        const batch = writeBatch(db);
+        batch.delete(doc(db, 'branches', id));
+        users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer').forEach(user => {
+          const assignedBranches = user.assignedBranches || [];
+          if (!assignedBranches.includes(id)) return;
+          const nextIds = assignedBranches.filter((branchId: string) => branchId !== id);
+          const nextNames = nextIds.map((branchId: string) => branches.find(branch => branch.id === branchId)?.branchName || '');
+          const nextDefaultId = user.defaultBranchId === id ? (nextIds[0] || null) : user.defaultBranchId;
+          batch.update(doc(db, 'users', user.id), {
+            assignedBranches: nextIds,
+            assignedBranchNames: nextNames,
+            defaultBranchId: nextDefaultId,
+            defaultBranchName: nextDefaultId ? branches.find(branch => branch.id === nextDefaultId)?.branchName || null : null,
+          });
+        });
+        await batch.commit();
         await logActivity({
             action: 'DELETE',
             resource: 'Branch',
@@ -462,7 +705,9 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
             details: 'Deleted branch',
             userProfile: { role: userRole }
         });
+        showActionSuccess('Clinic branch deleted.');
     } catch (error) {
+        showActionError('Unable to delete the clinic branch.');
         handleFirestoreError(error, OperationType.DELETE, `branches/${id}`, auth);
     }
   };
@@ -471,28 +716,52 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       setActionToConfirm({
           onConfirm: () => executeDeleteBranch(id, name),
           title: "Delete Branch",
-          message: `Are you sure you want to delete branch "${name}"? This action cannot be undone.`
+          message: `Delete "${name}"? This is only allowed when the branch has no linked clinical records. Otherwise, deactivate it to preserve history.`
       });
   };
 
   const handleUpdateBranch = async () => {
-    if (userRole === 'support_developer') {
-        alert("Permission Denied: Support / Developer role cannot update branch details.");
+    if (!canManageSettings) {
+        showActionError('You do not have permission to update clinic branches.');
         return;
     }
     if (!editingBranchId) return;
+    const normalizedEditBranch = {
+      branchName: editBranchData.branchName.trim(),
+      address: editBranchData.address.trim(),
+      contactNumber: editBranchData.contactNumber.trim(),
+      email: editBranchData.email.trim().toLowerCase(),
+    };
+    if (!normalizedEditBranch.branchName) {
+      showActionError('Clinic branch name is required.');
+      return;
+    }
     try {
-        await updateDoc(doc(db, 'branches', editingBranchId), editBranchData);
+        const batch = writeBatch(db);
+        batch.update(doc(db, 'branches', editingBranchId), normalizedEditBranch);
+        users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer').forEach(user => {
+          if (!(user.assignedBranches || []).includes(editingBranchId)) return;
+          const assignedBranchNames = (user.assignedBranches || []).map((branchId: string, index: number) =>
+            branchId === editingBranchId ? normalizedEditBranch.branchName : (user.assignedBranchNames?.[index] || branches.find(branch => branch.id === branchId)?.branchName || '')
+          );
+          batch.update(doc(db, 'users', user.id), {
+            assignedBranchNames,
+            ...(user.defaultBranchId === editingBranchId ? { defaultBranchName: normalizedEditBranch.branchName } : {}),
+          });
+        });
+        await batch.commit();
         await logActivity({
             action: 'UPDATE',
             resource: 'Branch',
             resourceId: editingBranchId,
-            resourceName: editBranchData.branchName,
+            resourceName: normalizedEditBranch.branchName,
             details: 'Updated branch details',
             userProfile: { role: userRole }
         });
         setEditingBranchId(null);
+        showActionSuccess('Clinic branch updated.');
     } catch (error) {
+        showActionError('Unable to update the clinic branch.');
         handleFirestoreError(error, OperationType.UPDATE, `branches/${editingBranchId}`, auth);
     }
   }
@@ -516,8 +785,8 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   };
 
   const cleanupBranchAssignments = async () => {
-    if (userRole === 'support_developer') {
-        alert("Permission Denied: Support / Developer role cannot modify branch assignments.");
+    if (!canManageSettings) {
+        showActionError('You do not have permission to repair branch assignments.');
         return;
     }
     try {
@@ -525,7 +794,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         let updatedCount = 0;
         const validBranchIds = branches.map(b => b.id);
 
-        for (const user of users) {
+        for (const user of users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer')) {
              let needsUpdate = false;
              let assignedBranches = [...(user.assignedBranches || [])];
              let assignedBranchNames = [...(user.assignedBranchNames || [])];
@@ -569,18 +838,19 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
 
         if (updatedCount > 0) {
             await batch.commit();
-            alert(`Cleaned up branch assignments for ${updatedCount} users.`);
+            showActionSuccess(`Cleaned invalid branch assignments for ${updatedCount} users.`);
         } else {
-            alert('No invalid branch assignments found.');
+            showActionSuccess('All branch assignments are already valid.');
         }
 
     } catch (error) {
+        showActionError('Unable to clean invalid branch assignments.');
         handleFirestoreError(error, OperationType.UPDATE, 'users', auth);
     }
   };
 
   return (
-    <div className="space-y-8 p-6 bg-slate-50 min-h-screen">
+    <div className="mx-auto w-full max-w-[1500px] space-y-6">
         <ConfirmationModal 
           isOpen={!!actionToConfirm}
           title={actionToConfirm?.title || ""}
@@ -594,25 +864,59 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         />
     {userRole === 'admin' || userRole === 'support_developer' ? (
       <>
-        {userRole === 'support_developer' && (
-          <div className="bg-amber-50 text-amber-800 border border-amber-200 p-4 rounded-xl text-xs font-semibold space-y-1 mb-2">
-            <p className="font-bold">🔒 TECHNICAL READ-ONLY ACCESS ACTIVE</p>
-            <p className="text-slate-600">You are logged in under the Support / Developer role. You can review all clinical, branding, and branch settings for system lookup, but modifications are restricted to pure Administrator roles.</p>
+        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-4 border-b border-slate-100 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+            <div>
+              <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-teal-700">
+                <ShieldCheck className="h-4 w-4" /> Administration
+              </div>
+              <h2 className="text-xl font-semibold tracking-tight text-slate-950">Clinic settings</h2>
+              <p className="mt-1 text-sm text-slate-500">Manage app identity, clinic locations, staff access, and operational safeguards.</p>
+            </div>
+            <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-white text-teal-700 shadow-sm"><ShieldCheck className="h-4.5 w-4.5" /></div>
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Your access</p>
+                <p className="text-sm font-semibold text-slate-800">{userRole === 'support_developer' ? 'Support / Developer' : 'Administrator'}</p>
+              </div>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 p-3 lg:grid-cols-4">
+            {SETTINGS_TABS.map(({ id, label, description, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setActiveSettingsTab(id)}
+                aria-pressed={activeSettingsTab === id}
+                className={`flex min-w-0 items-center gap-3 rounded-xl px-3 py-3 text-left transition ${activeSettingsTab === id ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
+              >
+                <Icon className={`h-4.5 w-4.5 shrink-0 ${activeSettingsTab === id ? 'text-teal-300' : 'text-slate-400'}`} />
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold">{label}</span>
+                  <span className={`hidden truncate text-[11px] lg:block ${activeSettingsTab === id ? 'text-slate-300' : 'text-slate-400'}`}>{description}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        {(actionSuccess || error) && (
+          <div role="status" className={`rounded-xl border px-4 py-3 text-sm font-medium ${error ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+            {error || actionSuccess}
           </div>
         )}
-        {/* Branding & General Settings Accordion */}
-        <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
-            <div className="flex justify-between items-center cursor-pointer" onClick={() => setIsBrandingOpen(!isBrandingOpen)}>
-                <h2 className="text-xl font-bold text-slate-800">Branding & General Settings</h2>
-                <button className="text-slate-500 font-bold text-lg">{isBrandingOpen ? '−' : '+'}</button>
-            </div>
-            
-            {isBrandingOpen && (
-                <form onSubmit={handleSaveBranding} className="mt-6 space-y-8 animate-fade-in divide-y divide-slate-100">
-                    
+
+        {/* General settings */}
+        {activeSettingsTab === 'general' && (
+                <form onSubmit={handleSaveBranding} className="space-y-3" aria-label="General settings sections">
+                    {renderGeneralSectionToggle('general')}
+
                     {/* SECTION 1: Application Branding */}
-                    <div className="pt-2">
-                        <h3 className="text-md font-bold mb-4 text-slate-800 border-b pb-1">Application Branding</h3>
+                    {openGeneralSection === 'general' && (
+                    <div id="general-settings-general" className="-mt-3 space-y-5 rounded-b-2xl border border-t-0 border-slate-200 bg-white p-4 shadow-sm sm:p-6 animate-fade-in">
+                    <div className="rounded-xl border border-slate-200 p-4 sm:p-5">
+                        <h3 className="mb-1 text-sm font-semibold text-slate-900">Application identity</h3>
+                        <p className="mb-5 text-xs text-slate-500">Names and visual assets used across the sidebar, browser, and sign-in screen.</p>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div className="flex flex-col gap-1">
                                 <label className="text-[10px] font-semibold text-slate-500 uppercase">App Name</label>
@@ -663,6 +967,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     onChange={e => handleLogoUpload(e, 'appLogoUrl')}
                                 />
                                 {uploadingField === 'appLogoUrl' && <span className="text-[10px] text-teal-600 font-medium">Uploading...</span>}
+                                {brandingForm.appLogoUrl && <button type="button" onClick={() => setActionToConfirm({ onConfirm: () => handleRemoveBrandingAsset('appLogoUrl'), title: 'Remove App Logo', message: 'Remove the sidebar and header logo? The app will immediately use its initials fallback.' })} className="self-start text-[10px] font-semibold text-red-600 hover:underline">Remove logo</button>}
                             </div>
 
                             {/* Favicon */}
@@ -680,6 +985,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     onChange={e => handleLogoUpload(e, 'faviconUrl')}
                                 />
                                 {uploadingField === 'faviconUrl' && <span className="text-[10px] text-teal-600 font-medium">Uploading...</span>}
+                                {brandingForm.faviconUrl && <button type="button" onClick={() => setActionToConfirm({ onConfirm: () => handleRemoveBrandingAsset('faviconUrl'), title: 'Remove Favicon', message: 'Remove the custom browser icon?' })} className="self-start text-[10px] font-semibold text-red-600 hover:underline">Remove favicon</button>}
                             </div>
 
                             {/* Login Page Logo */}
@@ -697,91 +1003,15 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     onChange={e => handleLogoUpload(e, 'loginPageLogoUrl')}
                                 />
                                 {uploadingField === 'loginPageLogoUrl' && <span className="text-[10px] text-teal-600 font-medium">Uploading...</span>}
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* SECTION 2: SEO & Metadata */}
-                    <div className="pt-6">
-                        <h3 className="text-md font-bold mb-4 text-slate-800 border-b pb-1">SEO & Metadata</h3>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="flex flex-col gap-1">
-                                <label className="text-[10px] font-semibold text-slate-500 uppercase">Meta Title</label>
-                                <input 
-                                    type="text" 
-                                    className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
-                                    value={brandingForm.metaTitle} 
-                                    onChange={e => setBrandingForm({...brandingForm, metaTitle: e.target.value})} 
-                                    placeholder="Enter search performance title"
-                                />
-                            </div>
-                            <div className="flex flex-col gap-1">
-                                <label className="text-[10px] font-semibold text-slate-500 uppercase">Meta Keywords</label>
-                                <input 
-                                    type="text" 
-                                    className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
-                                    value={brandingForm.metaKeywords} 
-                                    onChange={e => setBrandingForm({...brandingForm, metaKeywords: e.target.value})} 
-                                    placeholder="skin, clinic, health, patient database"
-                                />
-                            </div>
-                            <div className="flex flex-col gap-1 md:col-span-2">
-                                <label className="text-[10px] font-semibold text-slate-500 uppercase">Meta Description</label>
-                                <textarea 
-                                    className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm h-16 resize-none" 
-                                    value={brandingForm.metaDescription} 
-                                    onChange={e => setBrandingForm({...brandingForm, metaDescription: e.target.value})} 
-                                    placeholder="Brief indexable description"
-                                />
-                            </div>
-                        </div>
-
-                        {/* Open Graph Social Sharing */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6 p-4 bg-slate-50 rounded-xl border border-slate-150">
-                            <div className="space-y-4">
-                                <h4 className="text-xs font-bold text-slate-700">Open Graph Social Sharing</h4>
-                                <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-semibold text-slate-500 uppercase">OG Title</label>
-                                    <input 
-                                        type="text" 
-                                        className="border border-slate-200 bg-white p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
-                                        value={brandingForm.ogTitle} 
-                                        onChange={e => setBrandingForm({...brandingForm, ogTitle: e.target.value})} 
-                                        placeholder="Social title when link is shared"
-                                    />
-                                </div>
-                                <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-semibold text-slate-500 uppercase">OG Description</label>
-                                    <textarea 
-                                        className="border border-slate-200 bg-white p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm h-12 resize-none" 
-                                        value={brandingForm.ogDescription} 
-                                        onChange={e => setBrandingForm({...brandingForm, ogDescription: e.target.value})} 
-                                        placeholder="Social description shared on platforms"
-                                    />
-                                </div>
-                            </div>
-                            {/* OG Banner Image */}
-                            <div className="flex flex-col justify-center border-l md:pl-6 border-slate-200 gap-2">
-                                <span className="text-[10px] font-bold text-slate-600 uppercase">Open Graph Banner Image</span>
-                                {brandingForm.ogImageUrl && (
-                                    <div className="h-20 w-full flex items-center justify-center bg-slate-100 rounded-lg overflow-hidden border">
-                                        <img src={brandingForm.ogImageUrl} alt="OG Banner" className="h-16 max-w-full object-contain" />
-                                    </div>
-                                )}
-                                <input 
-                                    type="file" 
-                                    accept="image/*" 
-                                    className="text-xs text-slate-500 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-xs file:bg-slate-200 file:text-slate-800 hover:file:bg-slate-300" 
-                                    onChange={e => handleLogoUpload(e, 'ogImageUrl')}
-                                />
-                                {uploadingField === 'ogImageUrl' && <span className="text-[10px] text-teal-600 font-medium">Uploading...</span>}
+                                {brandingForm.loginPageLogoUrl && <button type="button" onClick={() => setActionToConfirm({ onConfirm: () => handleRemoveBrandingAsset('loginPageLogoUrl'), title: 'Remove Login Logo', message: 'Remove the dedicated login logo? The login page will fall back to the main app logo.' })} className="self-start text-[10px] font-semibold text-red-600 hover:underline">Use app logo instead</button>}
                             </div>
                         </div>
                     </div>
 
                     {/* SECTION 3: Company Information */}
-                    <div className="pt-6">
-                        <h3 className="text-md font-bold mb-4 text-slate-800 border-b pb-1">Company / Clinic Information</h3>
+                    <div className="rounded-xl border border-slate-200 p-4 sm:p-5">
+                        <h3 className="mb-1 text-sm font-semibold text-slate-900">Clinic information</h3>
+                        <p className="mb-5 text-xs text-slate-500">Primary clinic details used throughout the workspace and support experience.</p>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                             <div className="flex flex-col gap-1">
                                 <label className="text-[10px] font-semibold text-slate-500 uppercase">Company / Clinic Name</label>
@@ -836,84 +1066,10 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                         </div>
                     </div>
 
-                    {/* SECTION 4: Theme & Appearance */}
-                    <div className="pt-6">
-                        <h3 className="text-md font-bold mb-4 text-slate-800 border-b pb-1">Theme & Appearance</h3>
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
-                            {/* Primary Color */}
-                            <div className="flex flex-col gap-1">
-                                <label className="text-[10px] font-semibold text-slate-500 uppercase">Primary Color</label>
-                                <div className="flex gap-2">
-                                    <input 
-                                        type="color" 
-                                        className="w-10 h-10 border rounded-lg cursor-pointer bg-white"
-                                        value={brandingForm.primaryColor} 
-                                        onChange={e => setBrandingForm({...brandingForm, primaryColor: e.target.value})} 
-                                    />
-                                    <input 
-                                        type="text" 
-                                        className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm flex-1 uppercase" 
-                                        value={brandingForm.primaryColor} 
-                                        onChange={e => setBrandingForm({...brandingForm, primaryColor: e.target.value})} 
-                                    />
-                                </div>
-                            </div>
-
-                            {/* Secondary Color */}
-                            <div className="flex flex-col gap-1">
-                                <label className="text-[10px] font-semibold text-slate-500 uppercase">Secondary Color</label>
-                                <div className="flex gap-2">
-                                    <input 
-                                        type="color" 
-                                        className="w-10 h-10 border rounded-lg cursor-pointer bg-white"
-                                        value={brandingForm.secondaryColor} 
-                                        onChange={e => setBrandingForm({...brandingForm, secondaryColor: e.target.value})} 
-                                    />
-                                    <input 
-                                        type="text" 
-                                        className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm flex-1 uppercase" 
-                                        value={brandingForm.secondaryColor} 
-                                        onChange={e => setBrandingForm({...brandingForm, secondaryColor: e.target.value})} 
-                                    />
-                                </div>
-                            </div>
-
-                            {/* Accent Color */}
-                            <div className="flex flex-col gap-1">
-                                <label className="text-[10px] font-semibold text-slate-500 uppercase">Accent Color</label>
-                                <div className="flex gap-2">
-                                    <input 
-                                        type="color" 
-                                        className="w-10 h-10 border rounded-lg cursor-pointer bg-white"
-                                        value={brandingForm.accentColor} 
-                                        onChange={e => setBrandingForm({...brandingForm, accentColor: e.target.value})} 
-                                    />
-                                    <input 
-                                        type="text" 
-                                        className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm flex-1 uppercase" 
-                                        value={brandingForm.accentColor} 
-                                        onChange={e => setBrandingForm({...brandingForm, accentColor: e.target.value})} 
-                                    />
-                                </div>
-                            </div>
-
-                            {/* Dark Mode Optional Toggle */}
-                            <div className="flex items-center gap-2 pt-4 pl-4">
-                                <input 
-                                    type="checkbox" 
-                                    id="darkModeToggle"
-                                    className="w-4 h-4 text-teal-600 border-slate-300 rounded focus:ring-teal-500"
-                                    checked={brandingForm.darkMode} 
-                                    onChange={e => setBrandingForm({...brandingForm, darkMode: e.target.checked})} 
-                                />
-                                <label htmlFor="darkModeToggle" className="text-xs font-semibold text-slate-700">Enable Dark Mode Accent</label>
-                            </div>
-                        </div>
-                    </div>
-
-                     {/* SECTION 5: Media Upload Settings */}
-                     <div className="pt-6">
-                        <h3 className="text-md font-bold mb-4 text-slate-800 border-b pb-1">Media Upload Settings</h3>
+                     {/* SECTION 5: Files and attachments */}
+                     <div className="rounded-xl border border-slate-200 p-4 sm:p-5">
+                        <h3 className="mb-1 text-sm font-semibold text-slate-900">Files and attachment format</h3>
+                        <p className="mb-5 text-xs text-slate-500">Controls uploads saved to patient, visit, and appointment records. Defaults are 1 MB per file and 5 files per record.</p>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div className="flex flex-col gap-1">
                                 <label className="text-[10px] font-semibold text-slate-500 uppercase">Allowed Extensions (comma separated)</label>
@@ -922,67 +1078,100 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
                                     value={mediaSettings.allowedExtensions.join(',')} 
                                     onChange={e => setMediaSettings({...mediaSettings, allowedExtensions: e.target.value.split(',')})} 
-                                    placeholder=".png,.jpg,.pdf"
+                                    placeholder=".png,.jpg,.jpeg,.webp,.pdf"
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
                                 <label className="text-[10px] font-semibold text-slate-500 uppercase">Max File Size (MB)</label>
                                 <input 
                                     type="number" 
+                                    min="1"
+                                    max="10"
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
                                     value={mediaSettings.maxFileSizeMB} 
-                                    onChange={e => setMediaSettings({...mediaSettings, maxFileSizeMB: parseInt(e.target.value)})} 
+                                    onChange={e => setMediaSettings({...mediaSettings, maxFileSizeMB: Number(e.target.value)})}
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
-                                <label className="text-[10px] font-semibold text-slate-500 uppercase">Max Files per Appointment</label>
+                                <label className="text-[10px] font-semibold text-slate-500 uppercase">Max Files per Record</label>
                                 <input 
                                     type="number" 
+                                    min="1"
+                                    max="20"
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
-                                    value={mediaSettings.maxFilesPerAppointment} 
-                                    onChange={e => setMediaSettings({...mediaSettings, maxFilesPerAppointment: parseInt(e.target.value)})} 
+                                    value={mediaSettings.maxFilesPerRecord}
+                                    onChange={e => setMediaSettings({...mediaSettings, maxFilesPerRecord: Number(e.target.value)})}
                                 />
                             </div>
-                            <div className="md:col-span-3">
+                            <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 md:col-span-3">
+                                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
+                                <div>
+                                    <p className="text-xs font-semibold text-emerald-900">Automatic image optimization is always on</p>
+                                    <p className="mt-0.5 text-[11px] leading-5 text-emerald-700">Patient-record images are resized to {IMAGE_OPTIMIZATION.maxWidthOrHeight}px and compressed below 500 KB before Cloud Run receives them. Originals are not uploaded when optimization fails.</p>
+                                </div>
+                            </div>
+                            <div className="flex flex-col items-start gap-2 md:col-span-3 sm:flex-row sm:items-center">
                                 <button 
+                                    type="button"
                                     onClick={handleSaveMediaSettings}
                                     disabled={savingMedia}
                                     className="px-4 py-2 bg-teal-600 text-white rounded-lg text-sm font-semibold hover:bg-teal-700 transition"
                                 >
-                                {savingMedia ? 'Saving...' : 'Save Media Upload Settings'}
+                                {savingMedia ? 'Saving...' : 'Save file settings'}
                                 </button>
                                 {mediaSuccess && <span className="ml-3 text-xs text-green-600 font-semibold">{mediaSuccess}</span>}
                             </div>
                         </div>
                      </div>
 
-                    {/* SECTION 5: Timezone Settings */}
-                    <div className="pt-6">
-                        <h3 className="text-md font-bold mb-4 text-slate-800 border-b pb-1">Timezone Settings</h3>
+                    <div className="flex flex-col items-center justify-between gap-4 pt-1 sm:flex-row">
+                        <div>
+                            {brandingSuccess && <p className="text-xs font-semibold text-green-600">{brandingSuccess}</p>}
+                        </div>
+                        <button
+                            type="submit"
+                            disabled={savingBranding || uploadingField !== null}
+                            className="rounded-lg px-6 py-2.5 text-sm font-bold text-white shadow-md transition disabled:opacity-50"
+                            style={{ backgroundColor: brandingForm.primaryColor || '#0d9488' }}
+                            onMouseOver={(e) => (e.currentTarget.style.backgroundColor = brandingForm.secondaryColor || '#0f766e')}
+                            onMouseOut={(e) => (e.currentTarget.style.backgroundColor = brandingForm.primaryColor || '#0d9488')}
+                        >
+                            {savingBranding ? 'Saving settings...' : 'Save general settings'}
+                        </button>
+                    </div>
+                    </div>
+                    )}
+
+                    {renderGeneralSectionToggle('time')}
+
+                    {/* SECTION 6: Time and date */}
+                    {openGeneralSection === 'time' && (
+                    <div id="general-settings-time" className="-mt-3 rounded-b-2xl border border-t-0 border-slate-200 bg-white p-4 shadow-sm sm:p-5 animate-fade-in">
+                        <p className="mb-5 text-xs text-slate-500">Set the clinic-wide timezone and time format.</p>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div className="flex flex-col gap-1">
                                 <label className="text-[10px] font-semibold text-slate-500 uppercase">Default Timezone</label>
-                                <input 
-                                    type="text" 
-                                    className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
-                                    value={timezoneForm.timezone} 
-                                    onChange={e => setTimezoneForm({...timezoneForm, timezone: e.target.value})} 
+                                <input
+                                    type="text"
+                                    className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm"
+                                    value={timezoneForm.timezone}
+                                    onChange={e => setTimezoneForm({...timezoneForm, timezone: e.target.value})}
                                     placeholder="Asia/Manila"
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
                                 <label className="text-[10px] font-semibold text-slate-500 uppercase">Display Name</label>
-                                <input 
-                                    type="text" 
-                                    className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
-                                    value={timezoneForm.displayName} 
-                                    onChange={e => setTimezoneForm({...timezoneForm, displayName: e.target.value})} 
+                                <input
+                                    type="text"
+                                    className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm"
+                                    value={timezoneForm.displayName}
+                                    onChange={e => setTimezoneForm({...timezoneForm, displayName: e.target.value})}
                                     placeholder="(UTC+08:00) Philippine Standard Time"
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
                                 <label className="text-[10px] font-semibold text-slate-500 uppercase">Time Format</label>
-                                <select 
+                                <select
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm"
                                     value={timezoneForm.format}
                                     onChange={e => setTimezoneForm({...timezoneForm, format: e.target.value})}
@@ -993,22 +1182,103 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                             </div>
                         </div>
                         <div className="mt-4 flex justify-end">
-                            <button 
+                            <button
                                 type="button"
                                 onClick={handleSaveTimezone}
+                                disabled={savingTimezone}
                                 className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5"
                                 style={{ backgroundColor: brandingForm.primaryColor || '#0d9488' }}
                             >
-                                {savingTimezone ? 'Saving...' : 'Save Timezone Settings'}
+                                {savingTimezone ? 'Saving...' : 'Save time & date'}
                             </button>
                         </div>
                         {timezoneSuccess && <p className="text-teal-600 text-xs mt-2">{timezoneSuccess}</p>}
                     </div>
+                    )}
 
-                    {/* SECTION 6: Footer */}
-                    {userRole === 'support_developer' && (
-                    <div className="pt-6">
-                        <h3 className="text-md font-bold mb-4 text-slate-800 border-b pb-1">Footer Settings</h3>
+                    {renderGeneralSectionToggle('theme')}
+
+                    {/* SECTION 7: Theme & Appearance */}
+                    {openGeneralSection === 'theme' && (
+                    <div id="general-settings-theme" className="-mt-3 rounded-b-2xl border border-t-0 border-slate-200 bg-white p-4 shadow-sm sm:p-5 animate-fade-in">
+                        <p className="mb-5 text-xs text-slate-500">Choose the brand colors used for highlights and primary actions.</p>
+                        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                            <div className="flex flex-col gap-1">
+                                <label className="text-[10px] font-semibold text-slate-500 uppercase">Primary Color</label>
+                                <div className="flex gap-2">
+                                    <input
+                                        type="color"
+                                        className="w-10 h-10 border rounded-lg cursor-pointer bg-white"
+                                        value={brandingForm.primaryColor}
+                                        onChange={e => setBrandingForm({...brandingForm, primaryColor: e.target.value})}
+                                    />
+                                    <input
+                                        type="text"
+                                        className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm flex-1 uppercase"
+                                        value={brandingForm.primaryColor}
+                                        onChange={e => setBrandingForm({...brandingForm, primaryColor: e.target.value})}
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex flex-col gap-1">
+                                <label className="text-[10px] font-semibold text-slate-500 uppercase">Secondary Color</label>
+                                <div className="flex gap-2">
+                                    <input
+                                        type="color"
+                                        className="w-10 h-10 border rounded-lg cursor-pointer bg-white"
+                                        value={brandingForm.secondaryColor}
+                                        onChange={e => setBrandingForm({...brandingForm, secondaryColor: e.target.value})}
+                                    />
+                                    <input
+                                        type="text"
+                                        className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm flex-1 uppercase"
+                                        value={brandingForm.secondaryColor}
+                                        onChange={e => setBrandingForm({...brandingForm, secondaryColor: e.target.value})}
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex flex-col gap-1">
+                                <label className="text-[10px] font-semibold text-slate-500 uppercase">Accent Color</label>
+                                <div className="flex gap-2">
+                                    <input
+                                        type="color"
+                                        className="w-10 h-10 border rounded-lg cursor-pointer bg-white"
+                                        value={brandingForm.accentColor}
+                                        onChange={e => setBrandingForm({...brandingForm, accentColor: e.target.value})}
+                                    />
+                                    <input
+                                        type="text"
+                                        className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm flex-1 uppercase"
+                                        value={brandingForm.accentColor}
+                                        onChange={e => setBrandingForm({...brandingForm, accentColor: e.target.value})}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                        <div className="mt-5 flex flex-col items-center justify-between gap-4 sm:flex-row">
+                            <div>
+                                {brandingSuccess && <p className="text-xs font-semibold text-green-600">{brandingSuccess}</p>}
+                            </div>
+                            <button
+                                type="submit"
+                                disabled={savingBranding || uploadingField !== null}
+                                className="rounded-lg px-6 py-2.5 text-sm font-bold text-white shadow-md transition disabled:opacity-50"
+                                style={{ backgroundColor: brandingForm.primaryColor || '#0d9488' }}
+                                onMouseOver={(e) => (e.currentTarget.style.backgroundColor = brandingForm.secondaryColor || '#0f766e')}
+                                onMouseOut={(e) => (e.currentTarget.style.backgroundColor = brandingForm.primaryColor || '#0d9488')}
+                            >
+                                {savingBranding ? 'Saving settings...' : 'Save appearance'}
+                            </button>
+                        </div>
+                    </div>
+                    )}
+
+                    {canManageFooter && renderGeneralSectionToggle('footer')}
+
+                    {/* SECTION 8: Footer */}
+                    {canManageFooter && openGeneralSection === 'footer' && (
+                    <div id="general-settings-footer" className="-mt-3 rounded-b-2xl border border-t-0 border-slate-200 bg-white p-4 shadow-sm sm:p-5 animate-fade-in">
+                        <p className="mb-5 text-xs text-slate-500">Manage footer copy, policy links, and developer attribution.</p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div className="flex flex-col gap-1">
                                 <label className="text-[10px] font-semibold text-slate-500 uppercase">Footer Text</label>
@@ -1085,14 +1355,14 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     disabled={!footerForm.showDeveloperCredit}
                                 />
                             </div>
-                        <div className="flex justify-end pt-4">
+                        <div className="flex justify-end pt-4 md:col-span-2">
                             <button 
                                 type="button" 
                                 onClick={handleSaveFooter}
                                 disabled={savingFooter}
                                 className="font-bold text-sm px-6 py-2.5 bg-teal-600 text-white rounded-lg shadow-md transition disabled:opacity-50 hover:bg-teal-700"
                             >
-                                {savingFooter ? 'Saving...' : 'Save Footer Settings'}
+                                {savingFooter ? 'Saving...' : 'Save footer & legal links'}
                             </button>
                         </div>
                         {footerSuccess && <p className="text-teal-600 text-xs mt-2">{footerSuccess}</p>}
@@ -1100,52 +1370,40 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                 </div>
             )}
             
-            {/* Feedback and dynamic color matching submit button */}
-            <div className="pt-6 flex flex-col sm:flex-row gap-4 items-center justify-between">
-                        <div>
-                            {brandingSuccess && <p className="text-green-600 text-xs font-semibold animate-bounce">{brandingSuccess}</p>}
-                            {error && <p className="text-red-500 text-xs font-semibold">{error}</p>}
-                        </div>
-                        <button 
-                            type="submit" 
-                            disabled={savingBranding || uploadingField !== null}
-                            className="font-bold text-sm px-6 py-2.5 text-white rounded-lg shadow-md transition disabled:opacity-50"
-                            style={{ backgroundColor: brandingForm.primaryColor || '#0d9488' }}
-                            onMouseOver={(e) => (e.currentTarget.style.backgroundColor = brandingForm.secondaryColor || '#0f766e')}
-                            onMouseOut={(e) => (e.currentTarget.style.backgroundColor = brandingForm.primaryColor || '#0d9488')}
-                        >
-                            {savingBranding ? 'Saving Settings...' : 'Save Branding Configurations'}
-                        </button>
-                    </div>
                 </form>
-            )}
-        </div>
+        )}
 
         {/* Development / Data Management Settings Accordion */}
-        <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm mt-8">
-            <div className="flex justify-between items-center cursor-pointer" onClick={() => setIsDataManagementOpen(!isDataManagementOpen)}>
-                <h2 className="text-xl font-bold text-slate-800">Data Management (Dev)</h2>
-                <button className="text-slate-500 font-bold text-lg">{isDataManagementOpen ? '−' : '+'}</button>
-            </div>
+        {activeSettingsTab === 'data' && (
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left sm:px-6" onClick={() => setIsDataManagementOpen(!isDataManagementOpen)} aria-expanded={isDataManagementOpen}>
+                <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-700"><Database className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">Data safety</span><span className="block text-xs font-normal text-slate-500">Retention, backups, and safe maintenance guidance</span></span></span>
+                <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${isDataManagementOpen ? 'rotate-180' : ''}`} />
+            </button>
             
             {isDataManagementOpen && (
-                <div className="mt-6 space-y-4 animate-fade-in">
-                    <p className="text-xs text-slate-600">Patient, appointment, visit, and audit records cannot be purged from the browser. Destructive cleanup requires a controlled retention process with a backup and server-side audit trail.</p>
+                <div className="grid gap-4 border-t border-slate-100 px-5 py-6 animate-fade-in sm:px-6 lg:grid-cols-3">
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><p className="text-sm font-semibold text-emerald-900">Protected clinical records</p><p className="mt-1 text-xs leading-5 text-emerald-800">Patient, appointment, visit, and audit data cannot be purged from the browser.</p></div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4"><p className="text-sm font-semibold text-slate-900">Controlled retention</p><p className="mt-1 text-xs leading-5 text-slate-600">Permanent cleanup must use a reviewed retention policy, verified backup, and server-side audit trail.</p></div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4"><p className="text-sm font-semibold text-slate-900">Recoverable operations</p><p className="mt-1 text-xs leading-5 text-slate-600">Use archive and restore actions for day-to-day record management whenever available.</p></div>
                 </div>
             )}
         </div>
+        )}
 
         {/* Existing Branch accordion */}
-        <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm mt-8">
-            <div className="flex justify-between items-center cursor-pointer" onClick={() => setIsBranchOpen(!isBranchOpen)}>
-                <h2 className="text-xl font-bold text-slate-800">Branch Management Setting</h2>
-                <button className="text-slate-500 font-bold">{isBranchOpen ? '-' : '+'}</button>
-            </div>
+        {activeSettingsTab === 'branches' && (
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left sm:px-6" onClick={() => setIsBranchOpen(!isBranchOpen)} aria-expanded={isBranchOpen}>
+                <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-700"><Building2 className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">Clinic locations</span><span className="block text-xs font-normal text-slate-500">{branches.length} {branches.length === 1 ? 'branch' : 'branches'} · {branches.filter(branch => branch.status === 'Active').length} active</span></span></span>
+                <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${isBranchOpen ? 'rotate-180' : ''}`} />
+            </button>
             {isBranchOpen && (
-                <div className="mt-6 space-y-8">
-                    <div className="p-4 bg-slate-50 rounded-xl">
-                        <h3 className="text-sm font-bold mb-3 text-slate-700">Add New Branch</h3>
-                        <form onSubmit={handleAddBranch} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
+                <div className="space-y-8 border-t border-slate-100 px-5 py-6 sm:px-6">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
+                        <h3 className="text-sm font-semibold text-slate-900">Add clinic branch</h3>
+                        <p className="mb-4 mt-1 text-xs text-slate-500">Create a location before assigning staff or recording branch activity.</p>
+                        <form onSubmit={handleAddBranch} className="grid grid-cols-1 items-end gap-3 md:grid-cols-2 lg:grid-cols-5">
                             <div className="flex flex-col gap-1">
                                 <label className="text-[10px] font-semibold text-slate-500 uppercase">Branch Name</label>
                                 <input type="text" className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" value={newBranch.branchName} onChange={e => setNewBranch({...newBranch, branchName: e.target.value})} required />
@@ -1167,75 +1425,49 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                     </div>
 
                     <div>
-                        <h3 className="text-sm font-bold mb-3 text-slate-700">Existing Branches</h3>
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-left text-xs">
-                                <thead className="bg-slate-100 text-slate-600 font-semibold uppercase">
-                                    <tr>
-                                        <th className="px-3 py-2">Branch</th>
-                                        <th className="px-3 py-2">Address</th>
-                                        <th className="px-3 py-2">Contact</th>
-                                        <th className="px-3 py-2">Email</th>
-                                        <th className="px-3 py-2">Status</th>
-                                        <th className="px-3 py-2">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100 text-slate-700">
-                                    {branches.map(branch => (
-                                        <tr key={branch.id} className="hover:bg-slate-50 transition">
-                                            {editingBranchId === branch.id ? (
-                                                <>
-                                                    <td className="px-3 py-2"><input className="border p-1 w-full text-xs" value={editBranchData.branchName} onChange={e => setEditBranchData({...editBranchData, branchName: e.target.value})} /></td>
-                                                    <td className="px-3 py-2"><input className="border p-1 w-full text-xs" value={editBranchData.address} onChange={e => setEditBranchData({...editBranchData, address: e.target.value})} /></td>
-                                                    <td className="px-3 py-2"><input className="border p-1 w-full text-xs" value={editBranchData.contactNumber} onChange={e => setEditBranchData({...editBranchData, contactNumber: e.target.value})} /></td>
-                                                    <td className="px-3 py-2"><input className="border p-1 w-full text-xs" value={editBranchData.email} onChange={e => setEditBranchData({...editBranchData, email: e.target.value})} /></td>
-                                                    <td className="px-3 py-2">{branch.status}</td>
-                                                    <td className="px-3 py-2">
-                                                        <button onClick={confirmUpdateBranch} className="px-2 py-1 rounded-lg text-[10px] font-bold bg-green-600 text-white hover:bg-green-700 transition">Save</button>
-                                                        <button onClick={() => setEditingBranchId(null)} className="ml-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-slate-100 text-slate-800 hover:bg-slate-200 transition">Cancel</button>
-                                                    </td>
-                                                </>
-                                            ) : (
-                                                <>
-                                                    <td className="px-3 py-2">{branch.branchName}</td>
-                                                    <td className="px-3 py-2">{branch.address}</td>
-                                                    <td className="px-3 py-2">{branch.contactNumber}</td>
-                                                    <td className="px-3 py-2">{branch.email}</td>
-                                                    <td className="px-3 py-2">{branch.status}</td>
-                                                    <td className="px-3 py-2">
-                                                        <button onClick={() => startEditBranch(branch)} className="px-2 py-1 rounded-lg text-[10px] font-bold bg-slate-100 text-slate-800 hover:bg-slate-200 transition">Edit</button>
-                                                        <button 
-                                                            onClick={() => toggleBranchStatus(branch.id, branch.status)}
-                                                            className={`ml-1 px-2 py-1 rounded-lg text-[10px] font-bold transition ${branch.status === 'Active' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}
-                                                        >
-                                                            {branch.status === 'Active' ? 'Deactivate' : 'Activate'}
-                                                        </button>
-                                                        <button 
-                                                            onClick={() => confirmDeleteBranch(branch.id, branch.branchName)}
-                                                            className="ml-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-slate-100 text-slate-800 hover:bg-slate-200 transition"
-                                                        >
-                                                            Delete
-                                                        </button>
-                                                    </td>
-                                                </>
-                                            )}
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
+                        <h3 className="mb-3 text-sm font-semibold text-slate-900">Existing branches</h3>
+                        {branches.length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500">No clinic branches yet. Add the first branch above.</div>
+                        ) : (
+                          <div className="grid gap-3 xl:grid-cols-2">
+                            {branches.map(branch => (
+                              <article key={branch.id} className="rounded-xl border border-slate-200 p-4 sm:p-5">
+                                {editingBranchId === branch.id ? (
+                                  <div className="space-y-4">
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                      <div><label className="mb-1 block text-[10px] font-semibold uppercase text-slate-500">Branch name</label><input className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={editBranchData.branchName} onChange={e => setEditBranchData({...editBranchData, branchName: e.target.value})} /></div>
+                                      <div><label className="mb-1 block text-[10px] font-semibold uppercase text-slate-500">Address</label><input className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={editBranchData.address} onChange={e => setEditBranchData({...editBranchData, address: e.target.value})} /></div>
+                                      <div><label className="mb-1 block text-[10px] font-semibold uppercase text-slate-500">Contact</label><input className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={editBranchData.contactNumber} onChange={e => setEditBranchData({...editBranchData, contactNumber: e.target.value})} /></div>
+                                      <div><label className="mb-1 block text-[10px] font-semibold uppercase text-slate-500">Email</label><input type="email" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={editBranchData.email} onChange={e => setEditBranchData({...editBranchData, email: e.target.value})} /></div>
+                                    </div>
+                                    <div className="flex justify-end gap-2"><button type="button" onClick={() => setEditingBranchId(null)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600">Cancel</button><button type="button" onClick={confirmUpdateBranch} className="rounded-lg bg-teal-600 px-3 py-2 text-xs font-semibold text-white">Save changes</button></div>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div className="flex items-start justify-between gap-3"><div><h4 className="text-sm font-semibold text-slate-900">{branch.branchName}</h4><p className="mt-1 text-xs leading-5 text-slate-500">{branch.address || 'No address provided'}</p></div><span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${branch.status === 'Active' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{branch.status}</span></div>
+                                    <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 text-xs text-slate-500 sm:grid-cols-2"><div><span className="block text-[10px] font-semibold uppercase text-slate-400">Contact</span><span className="mt-1 block text-slate-700">{branch.contactNumber || 'Not provided'}</span></div><div><span className="block text-[10px] font-semibold uppercase text-slate-400">Email</span><span className="mt-1 block break-all text-slate-700">{branch.email || 'Not provided'}</span></div></div>
+                                    <div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={() => startEditBranch(branch)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">Edit</button><button type="button" onClick={() => setActionToConfirm({ onConfirm: () => toggleBranchStatus(branch.id, branch.status), title: branch.status === 'Active' ? 'Deactivate Branch' : 'Activate Branch', message: `${branch.status === 'Active' ? 'Deactivate' : 'Activate'} ${branch.branchName}? ${branch.status === 'Active' ? 'Historical records remain available, but new activity should use another clinic.' : 'The branch will be available for new clinic activity.'}` })} className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${branch.status === 'Active' ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>{branch.status === 'Active' ? 'Deactivate' : 'Activate'}</button><button type="button" onClick={() => confirmDeleteBranch(branch.id, branch.branchName)} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-100 hover:text-red-700">Delete</button></div>
+                                  </>
+                                )}
+                              </article>
+                            ))}
+                          </div>
+                        )}
                     </div>
                 </div>
             )}
         </div>
+        )}
 
-        <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
-          <div className="flex justify-between items-center cursor-pointer" onClick={() => setIsUserAccessOpen(!isUserAccessOpen)}>
-              <h2 className="text-xl font-bold text-slate-800">User Access Management</h2>
-              <button className="text-slate-500 font-bold">{isUserAccessOpen ? '-' : '+'}</button>
-          </div>
+        {activeSettingsTab === 'access' && (
+        <>
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left sm:px-6" onClick={() => setIsUserAccessOpen(!isUserAccessOpen)} aria-expanded={isUserAccessOpen}>
+              <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700"><Users className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">User access</span><span className="block text-xs font-normal text-slate-500">{users.filter(user => user.active).length} active of {users.length} accounts</span></span></span>
+              <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${isUserAccessOpen ? 'rotate-180' : ''}`} />
+          </button>
           {isUserAccessOpen && (
-              <div className="mt-4 pt-4 border-t">
+              <div className="border-t border-slate-100 px-4 py-5 sm:px-6">
                   <div className="flex justify-end mb-4">
                       <button 
                         onClick={() => setActionToConfirm({
@@ -1250,156 +1482,31 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                   </div>
                   
 
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                        <thead className="bg-slate-100 text-slate-600 font-semibold uppercase">
-                            <tr>
-                                <th className="px-3 py-2">User</th>
-                                <th className="px-3 py-2">Role</th>
-                                <th className="px-3 py-2">Branches</th>
-                                <th className="px-3 py-2">Actions</th>
-                                <th className="px-3 py-2 rounded-tr-xl">Status</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 text-slate-700">
-                        {users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer').map(user => (
-                            <tr key={user.id} className="hover:bg-slate-50 transition">
-                            <td className="px-3 py-2 text-xs">
-                                <div className="font-semibold text-slate-900">{user.fullName || user.name || 'Not Set'}</div>
-                                <div className="text-xs text-slate-500">{user.email}</div>
-                            </td>
-                            <td className="px-3 py-2 text-xs">
-                                <select 
-                                    onChange={(e) => updateRole(user.id, e.target.value)} 
-                                    defaultValue={user.role} 
-                                    className="border border-slate-200 p-2 rounded-lg text-sm bg-white"
-                                    disabled={(userRole !== 'support_developer' && user.role === 'support_developer') || (userRole !== 'support_developer' && user.id === auth.currentUser?.uid)}
-                                >
-                                    <option value="admin">Admin</option>
-                                    <option value="manager">Manager</option>
-                                    <option value="staff">Staff</option>
-                                    <option value="doctor">Doctor</option>
-                                    {userRole === 'support_developer' && <option value="support_developer">Support / Developer</option>}
-                                </select>
-                            </td>
-                            <td className="px-6 py-2">
-                               <div className="flex flex-col gap-1">
-                                  {user.assignedBranches?.map((branchId: string) => {
-                                      const b = branches.find(br => br.id === branchId);
-                                      return (
-                                        <div key={branchId} className="flex items-center gap-2">
-                                            <span className="bg-slate-200 px-2 py-1 rounded text-xs">{b?.branchName || 'Unknown'}</span>
-                                            {user.defaultBranchId === branchId && (
-                                                <span className="bg-teal-100 text-teal-700 px-1 rounded text-[10px] font-bold">Default</span>
-                                            )}
-                                        </div>
-                                      );
-                                  })}
-                               </div>
-                               <div className="mt-2 text-xs text-slate-500 font-semibold">Assign/Unassign:</div>
-                               <div className="grid grid-cols-1 gap-1 mt-1 border p-2 rounded max-h-32 overflow-y-auto bg-white">
-                                   {branches.filter(b => b.status === 'Active').map(branch => {
-                                       const isChecked = user.assignedBranches?.includes(branch.id);
-                                       return (
-                                           <label key={branch.id} className="flex items-center gap-2 text-xs">
-                                               <input
-                                                   type="checkbox"
-                                                   checked={!!isChecked}
-                                                   onChange={async (e) => {
-                                                       const isAssigning = e.target.checked;
-                                                       let currentBranches = [...(user.assignedBranches || [])];
-                                                       let currentNames = [...(user.assignedBranchNames || [])];
-                                                       
-                                                       if (isAssigning) {
-                                                           if (!currentBranches.includes(branch.id)) {
-                                                               currentBranches.push(branch.id);
-                                                               currentNames.push(branch.branchName);
-                                                           }
-                                                       } else {
-                                                           const index = currentBranches.indexOf(branch.id);
-                                                           if (index > -1) {
-                                                               currentBranches.splice(index, 1);
-                                                               currentNames.splice(index, 1);
-                                                           }
-                                                       }
-                                                       
-                                                       let defaultBranchId = user.defaultBranchId;
-                                                       let defaultBranchName = user.defaultBranchName;
-                                                       
-                                                       if (currentBranches.length === 0) {
-                                                           defaultBranchId = null;
-                                                           defaultBranchName = null;
-                                                       } else if (currentBranches.length === 1 || !currentBranches.includes(defaultBranchId)) {
-                                                           defaultBranchId = currentBranches[0];
-                                                           defaultBranchName = currentNames[0];
-                                                       }
-
-                                                       await updateDoc(doc(db, 'users', user.id), { 
-                                                           assignedBranches: currentBranches,
-                                                           assignedBranchNames: currentNames,
-                                                           defaultBranchId: defaultBranchId || null,
-                                                           defaultBranchName: defaultBranchName || null
-                                                       });
-                                                   }}
-                                               />
-                                               {branch.branchName}
-                                               {isChecked && user.assignedBranches.length > 1 && (
-                                                    <button 
-                                                        className={`ml-auto ${user.defaultBranchId === branch.id ? 'text-teal-600 font-bold' : 'text-slate-400'}`}
-                                                        onClick={async () => {
-                                                            await updateDoc(doc(db, 'users', user.id), { 
-                                                                defaultBranchId: branch.id,
-                                                                defaultBranchName: branch.branchName
-                                                            });
-                                                        }}
-                                                    >
-                                                        {user.defaultBranchId === branch.id ? 'Default' : 'Set Default'}
-                                                    </button>
-                                               )}
-                                           </label>
-                                       );
-                                   })}
-                                   {branches.filter(b => b.status === 'Active').length === 0 && (
-                                       <div className="text-red-500 text-xs">No active branches available. Please add or activate a branch first.</div>
-                                   )}
-                                </div>
-                            </td>
-                            <td className="px-3 py-2">
-                                <button 
-                                    onClick={async () => {
-                                        try {
-                                            await updateDoc(doc(db, 'users', user.id), { active: !user.active });
-                                        } catch (error) {
-                                            handleFirestoreError(error, OperationType.UPDATE, `users/${user.id}`, auth);
-                                        }
-                                    }}
-                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${user.active ? 'bg-green-100 text-green-800 hover:bg-green-200' : 'bg-amber-100 text-amber-800 hover:bg-amber-200'}`}
-                                >
-                                    {user.active ? 'Disable' : 'Approve'}
-                                </button>
-                            </td>
-                            <td className="px-3 py-2">
-                                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${user.active ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>
-                                    {user.active ? 'Active' : 'Pending'}
-                                 </span>
-                            </td>
-                            </tr>
-                        ))}
-                        </tbody>
-                    </table>
+                  <div className="grid gap-3 xl:grid-cols-2">
+                    {users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer').map(user => (
+                      <article key={user.id} className="rounded-xl border border-slate-200 p-4 sm:p-5">
+                        <div className="flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="truncate text-sm font-semibold text-slate-900">{user.fullName || user.name || 'Name not set'}</h3><p className="truncate text-xs text-slate-500">{user.email}</p></div><span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${user.active ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{user.active ? 'Active' : 'Pending'}</span></div>
+                        <div className="mt-4 grid gap-4 sm:grid-cols-[180px_1fr]">
+                          <div><label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Role</label><select onChange={(e) => { const nextRole = e.target.value; setActionToConfirm({ onConfirm: () => updateRole(user.id, nextRole), title: 'Change User Role', message: `Change ${user.fullName || user.email} to ${nextRole === 'support_developer' ? 'Support / Developer' : nextRole}? Their permissions will update immediately.` }); }} value={user.role || 'staff'} className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm" disabled={(userRole !== 'support_developer' && user.role === 'support_developer') || (userRole !== 'support_developer' && user.id === auth.currentUser?.uid)}><option value="admin">Admin</option><option value="manager">Manager</option><option value="staff">Staff</option><option value="doctor">Doctor</option>{userRole === 'support_developer' && <option value="support_developer">Support / Developer</option>}</select></div>
+                          <div><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Clinic access</p><div className="max-h-36 space-y-1 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-2.5">{branches.filter(branch => branch.status === 'Active').map(branch => { const isChecked = user.assignedBranches?.includes(branch.id); return <div key={branch.id} className="flex items-center gap-2 text-xs"><input id={`user-${user.id}-branch-${branch.id}`} type="checkbox" checked={!!isChecked} onChange={(event) => updateUserBranches(user, branch, event.target.checked)} /><label htmlFor={`user-${user.id}-branch-${branch.id}`} className="cursor-pointer text-slate-700">{branch.branchName}</label>{isChecked && user.assignedBranches.length > 1 && <button type="button" className={`ml-auto text-[10px] font-semibold ${user.defaultBranchId === branch.id ? 'text-teal-700' : 'text-slate-400 hover:text-slate-700'}`} onClick={() => setUserDefaultBranch(user, branch)}>{user.defaultBranchId === branch.id ? 'Default' : 'Set default'}</button>}</div>; })}{branches.filter(branch => branch.status === 'Active').length === 0 && <p className="text-xs text-red-600">Add or activate a branch before assigning access.</p>}</div></div>
+                        </div>
+                        <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4"><p className="text-[11px] text-slate-400">{user.assignedBranches?.length || 0} assigned {(user.assignedBranches?.length || 0) === 1 ? 'clinic' : 'clinics'}</p><button type="button" onClick={() => setActionToConfirm({ onConfirm: () => toggleUserStatus(user), title: user.active ? 'Disable User' : 'Activate User', message: `${user.active ? 'Disable' : 'Activate'} ${user.fullName || user.email}? ${user.active ? 'They will lose access until reactivated.' : 'They will be able to sign in with their assigned role and clinics.'}` })} disabled={user.id === auth.currentUser?.uid} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${user.active ? 'bg-red-50 text-red-700 hover:bg-red-100' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`} title={user.id === auth.currentUser?.uid ? 'You cannot disable your own account' : undefined}>{user.active ? 'Disable account' : 'Activate account'}</button></div>
+                      </article>
+                    ))}
+                    {users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer').length === 0 && <div className="rounded-xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500 xl:col-span-2">No user accounts found.</div>}
                   </div>
               </div>
           )}
         </div>
 
-              <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm mt-4">
-                <div className="flex justify-between items-center cursor-pointer" onClick={() => setIsRoleAccessOpen(!isRoleAccessOpen)}>
-                    <h2 className="text-xl font-bold text-slate-800">Role Access Description</h2>
-                    <button className="text-slate-500 font-bold">{isRoleAccessOpen ? '-' : '+'}</button>
-                </div>
+              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left sm:px-6" onClick={() => setIsRoleAccessOpen(!isRoleAccessOpen)} aria-expanded={isRoleAccessOpen}>
+                    <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-50 text-teal-700"><ShieldCheck className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">Role permissions</span><span className="block text-xs font-normal text-slate-500">Reference guide for clinical record access</span></span></span>
+                    <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${isRoleAccessOpen ? 'rotate-180' : ''}`} />
+                </button>
                 {isRoleAccessOpen && (
-                    <div className="mt-4 pt-4 border-t overflow-x-auto">
-                      <table className="w-full text-left text-sm">
+                    <div className="overflow-x-auto border-t border-slate-100 p-4 sm:p-6">
+                      <table className="w-full min-w-[760px] text-left text-sm">
                           <thead className="bg-slate-100 text-slate-600 text-xs font-semibold uppercase">
                               <tr>
                                   <th className="px-6 py-4">Role</th>
@@ -1416,19 +1523,26 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     <td className="px-6 py-4 font-semibold text-slate-900">{role === 'support_developer' ? 'Support / Developer' : role}</td>
                                     {Object.entries(modules).map(([moduleKey, permissions]) => (
                                       <td key={moduleKey} className="px-6 py-4">
-                                          {Object.entries(permissions as any)
-                                           .filter(([_, allowed]) => allowed)
-                                           .map(([action]) => action)
-                                           .join(', ') || 'No access'}
+                                          <div className="flex flex-wrap gap-1.5">
+                                            {Object.entries(permissions as any).filter(([_, allowed]) => allowed).map(([action]) => (
+                                              <span key={action} className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold capitalize text-slate-600">{action}</span>
+                                            ))}
+                                            {Object.values(permissions as any).every(allowed => !allowed) && <span className="text-xs text-slate-400">No access</span>}
+                                          </div>
                                       </td>
                                     ))}
                                   </tr>
                               ))}
                           </tbody>
                       </table>
+                      <p className="mt-3 text-xs text-slate-500">
+                        Staff patient edits are limited to demographic/contact corrections. Manager patient edits are limited to demographic, branch, and status fields. Doctor visit writes are limited to their own assigned visits. Delete actions archive records with a required reason and can be restored by Admin or Support / Developer.
+                      </p>
                     </div>
                 )}
               </div>
+              </>
+              )}
             </>
     ) : (
         <div className="bg-white p-8 rounded-2xl border border-slate-100 shadow-sm">

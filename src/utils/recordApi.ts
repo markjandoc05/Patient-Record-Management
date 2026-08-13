@@ -4,14 +4,15 @@ type RecordKind = 'patients' | 'appointments' | 'visits';
 
 async function recordRequest(
   kind: RecordKind,
-  method: 'POST' | 'PATCH',
+  method: 'POST' | 'PATCH' | 'DELETE',
   payload: Record<string, unknown>,
-  recordId?: string
+  recordId?: string,
+  action?: 'restore'
 ) {
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Please sign in again before saving this record.');
   const token = await currentUser.getIdToken();
-  const path = `/api/records/${kind}${recordId ? `/${encodeURIComponent(recordId)}` : ''}`;
+  const path = `/api/records/${kind}${recordId ? `/${encodeURIComponent(recordId)}` : ''}${action ? `/${action}` : ''}`;
   const response = await fetch(path, {
     method,
     headers: {
@@ -42,3 +43,9 @@ export const createVisitRecord = (payload: Record<string, unknown>) =>
 
 export const updateVisitRecord = (visitId: string, payload: Record<string, unknown>) =>
   recordRequest('visits', 'PATCH', payload, visitId);
+
+export const archiveRecord = (kind: RecordKind, recordId: string, reason: string) =>
+  recordRequest(kind, 'DELETE', { reason }, recordId);
+
+export const restoreRecord = (kind: RecordKind, recordId: string) =>
+  recordRequest(kind, 'POST', {}, recordId, 'restore');

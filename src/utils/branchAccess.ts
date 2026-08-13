@@ -38,6 +38,29 @@ export function getAccessibleBranches<T extends { id: string }>(
   return branches.filter(branch => assignedBranchIds.has(branch.id));
 }
 
+/**
+ * Subscribes to a shared clinical collection. Patient identity and longitudinal
+ * history are intentionally shared across clinics; branch selection is a
+ * workspace filter, not a second copy of the data.
+ */
+export function subscribeToSharedCollection(
+  db: Firestore,
+  collectionName: string,
+  onData: (documents: any[]) => void,
+  onError?: (error: Error) => void,
+  constraints: QueryConstraint[] = [],
+  includeArchived = false,
+): () => void {
+  const sharedQuery = query(collection(db, collectionName), ...constraints);
+  return onSnapshot(
+    sharedQuery,
+    snapshot => onData(snapshot.docs
+      .map(document => ({ id: document.id, ...document.data() }) as Record<string, any> & { id: string })
+      .filter(document => includeArchived || document.isArchived !== true)),
+    error => onError?.(error),
+  );
+}
+
 function chunk<T>(values: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < values.length; index += size) {
@@ -59,12 +82,15 @@ export function subscribeToBranchScopedCollection(
   onData: (documents: any[]) => void,
   onError?: (error: Error) => void,
   constraints: QueryConstraint[] = [],
+  includeArchived = false,
 ): () => void {
   if (hasGlobalBranchAccess(profile)) {
     const scopedQuery = query(collection(db, collectionName), ...constraints);
     return onSnapshot(
       scopedQuery,
-      snapshot => onData(snapshot.docs.map(document => ({ id: document.id, ...document.data() }))),
+      snapshot => onData(snapshot.docs
+        .map(document => ({ id: document.id, ...document.data() }) as Record<string, any> & { id: string })
+        .filter(document => includeArchived || document.isArchived !== true)),
       error => onError?.(error),
     );
   }
@@ -97,7 +123,12 @@ export function subscribeToBranchScopedCollection(
       scopedQuery,
       snapshot => {
         snapshotsByChunk[index] = new Map(
-          snapshot.docs.map(document => [document.id, { id: document.id, ...document.data() }]),
+          snapshot.docs
+            .map(document => [
+              document.id,
+              { id: document.id, ...document.data() } as Record<string, any> & { id: string },
+            ] as const)
+            .filter(([, document]) => includeArchived || document.isArchived !== true),
         );
         emitMergedDocuments();
       },

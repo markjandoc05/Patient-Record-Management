@@ -7,7 +7,7 @@ export default function PatientAppointments({ patientId, users, branches, appoin
   const itemsPerPage = 5;
 
   const patientAppointments = appointments
-    .filter(appointment => appointment.patientId === patientId)
+    .filter(appointment => appointment.patientId === patientId && appointment.isArchived !== true)
     .sort((a, b) => (b.appointmentDate || '').localeCompare(a.appointmentDate || ''));
 
   const totalPages = Math.ceil(patientAppointments.length / itemsPerPage);
@@ -31,32 +31,40 @@ export default function PatientAppointments({ patientId, users, branches, appoin
   };
 
   return (
-    <div className="border-t pt-4">
-      <h3 className="font-bold text-lg mb-4 text-slate-800">Appointment History</h3>
+    <div className="min-w-0">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h3 className="text-base font-bold text-slate-900 sm:text-lg">Appointment history</h3>
+          <p className="mt-0.5 text-xs text-slate-500">Scheduled clinic activity, newest first.</p>
+        </div>
+        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+          {patientAppointments.length} record{patientAppointments.length === 1 ? '' : 's'}
+        </span>
+      </div>
       {patientAppointments.length === 0 ? (
-        <p className="text-sm text-slate-500">No appointments scheduled yet.</p>
+        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">No appointments scheduled yet.</div>
       ) : (
         <div className="space-y-4">
           <div className="space-y-3">
             {paginatedAppointments.map((appt) => (
               <div 
                 key={appt.id} 
-                className="group border border-slate-200 rounded-xl p-5 cursor-pointer hover:border-teal-500 hover:shadow-sm bg-white transition duration-150"
+                className="group cursor-pointer rounded-xl border border-slate-200 bg-white p-4 transition duration-150 hover:border-teal-500 hover:shadow-sm sm:p-5"
                 onClick={() => setSelectedAppointment(appt)}
               >
-                <div className="flex justify-between items-center gap-4 pb-2.5">
-                  <div>
+                <div className="flex flex-col gap-2 pb-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                  <div className="min-w-0">
                     <span className="text-slate-400 block font-semibold uppercase tracking-wider text-[9px]">Date & Time</span>
                     <div className="text-sm sm:text-base text-slate-900 font-bold group-hover:text-teal-600 transition-all leading-tight">
                       {formatDateTime(appt.appointmentDate)}
                     </div>
                   </div>
-                  <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${getStatusColor(appt.status)}`}>
+                  <span className={`w-fit shrink-0 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${getStatusColor(appt.status)}`}>
                     {appt.status}
                   </span>
                 </div>
                 
-                <div className="grid grid-cols-2 gap-x-6 mt-3 pt-3 border-t border-slate-100 text-xs text-left">
+                <div className="mt-3 grid grid-cols-1 gap-3 border-t border-slate-100 pt-3 text-left text-xs sm:grid-cols-2 sm:gap-x-6">
                   {/* Column 1 */}
                   <div className="space-y-2.5">
                     <div>
@@ -103,7 +111,7 @@ export default function PatientAppointments({ patientId, users, branches, appoin
                 Prev
               </button>
               <span className="text-xs text-slate-600 font-medium">
-                Page {currentPage} of {totalPages} ({appointments.length} total)
+                Page {currentPage} of {totalPages} ({patientAppointments.length} total)
               </span>
               <button
                 disabled={currentPage === totalPages}
@@ -119,7 +127,7 @@ export default function PatientAppointments({ patientId, users, branches, appoin
       
       {selectedAppointment && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden max-w-lg w-full transform scale-100 transition duration-200">
+          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-xl transition duration-200">
             <div className="bg-slate-50 px-6 py-4 flex justify-between items-center border-b border-slate-100">
               <h3 className="text-base font-bold text-slate-900">Appointment Detail Card</h3>
               <button 
@@ -144,7 +152,7 @@ export default function PatientAppointments({ patientId, users, branches, appoin
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Doctor / Provider</span>
                   <span className="font-semibold text-slate-800">

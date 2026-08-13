@@ -30,6 +30,12 @@ export default function Login({
   const [isRegistering, setIsRegistering] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const versionAsset = (url: string) => {
+    if (!url) return '';
+    const version = branding.updatedAt || 0;
+    return `${url}${url.includes('?') ? '&' : '?'}t=${version}`;
+  };
+  const loginLogoUrl = branding.loginPageLogoUrl || branding.appLogoUrl || '';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,9 +63,9 @@ export default function Login({
     <div className="flex flex-col justify-center items-center h-screen bg-slate-50 p-4 text-center font-sans">
       <div className="bg-white p-8 rounded-2xl shadow-md border border-slate-100 max-w-sm w-full space-y-6">
         <div className="flex flex-col items-center gap-4">
-          {branding.loginPageLogoUrl ? (
+          {loginLogoUrl ? (
             <img 
-              src={branding.loginPageLogoUrl} 
+              src={versionAsset(loginLogoUrl)}
               alt={branding.appName || "Logo"} 
               className="max-h-24 w-auto object-contain" 
               referrerPolicy="no-referrer"
@@ -70,6 +76,8 @@ export default function Login({
             </div>
           )}
           <h1 className="text-3xl font-extrabold text-slate-900 tracking-tighter">{branding.appName || 'Vine Management App'}</h1>
+          {branding.companyName && branding.companyName !== branding.appName && <p className="-mt-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">{branding.companyName}</p>}
+          {(branding.supportEmail || branding.contactNumber) && <p className="-mt-2 text-xs text-slate-400">{branding.supportEmail || branding.contactNumber}</p>}
         </div>
 
         {/* Inline notification for errors or missing profile, but NOT for success (which is now in a modal) */}

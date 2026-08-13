@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { collection, getDocs, doc, updateDoc, writeBatch, query, limit, orderBy } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { logActivity } from '../utils/auditLogger';
-import { handleFirestoreError, OperationType } from '../utils';
+import { formatDateTime, handleFirestoreError, OperationType } from '../utils';
 import { 
   Cpu, HardDrive, RefreshCw, Trash2, ShieldAlert, CheckCircle, Database, 
   Users, Calendar, Clock, ClipboardList, Server,
@@ -180,7 +180,7 @@ export default function DeveloperDashboard({
         details: `Developer Tools Access: ${targetStatus ? 'Enabled' : 'Disabled'} Maintenance Mode`,
         userProfile: { role: userRole || 'staff' }
       });
-      alert(`Systems maintenance mode of Lumina Patient Portal set to: ${targetStatus ? 'ACTIVE' : 'DEACTIVATED'}`);
+      alert(`Systems maintenance mode for ${branding.appName || 'the app'} set to: ${targetStatus ? 'ACTIVE' : 'DEACTIVATED'}`);
       await onRefreshBranding();
     } catch (error: any) {
       alert("Failed to change Maintenance control. Error: " + error.message);
@@ -333,7 +333,7 @@ export default function DeveloperDashboard({
                 </div>
                 <div className="border border-slate-150 p-4 rounded-xl bg-slate-50/50">
                   <span className="text-[10px] font-bold text-slate-400 uppercase">Local System Time</span>
-                  <p className="font-mono text-xs text-slate-800 mt-2">{new Date().toLocaleString()}</p>
+                  <p className="font-mono text-xs text-slate-800 mt-2">{formatDateTime(new Date())}</p>
                 </div>
                 <div className="border border-slate-150 p-4 rounded-xl bg-slate-50/50">
                   <span className="text-[10px] font-bold text-slate-400 uppercase">Platform Context</span>
@@ -502,7 +502,7 @@ export default function DeveloperDashboard({
                     <tbody className="divide-y divide-slate-100">
                       {recentAuditLogs.map(log => (
                         <tr key={log.id} className="hover:bg-slate-50/50 py-1.5 text-[10px] text-slate-700">
-                          <td className="px-2 py-1.5 truncate max-w-[100px]" title={log.timestamp}>{new Date(log.timestamp).toLocaleTimeString()}</td>
+                          <td className="px-2 py-1.5 truncate max-w-[140px]" title={log.timestamp}>{formatDateTime(log.timestamp)}</td>
                           <td className="px-2 py-1.5 truncate max-w-[80px]" title={log.userEmail}>{log.userEmail}</td>
                           <td className="px-2 py-1.5 font-bold"><span className={log.action === 'DELETE' ? 'text-red-500' : 'text-teal-750'}>{log.action}</span></td>
                           <td className="px-2 py-1.5">{log.resource}</td>
@@ -586,7 +586,7 @@ export default function DeveloperDashboard({
           {currentTab === 'maintenance_mode' && (
             <div className="space-y-6">
               <h3 className="text-md font-bold text-slate-800 border-b pb-2">Global Maintenance Gate Changer</h3>
-              <p className="text-xs text-slate-500 leading-relaxed">Setting this to **Active** will restrict client access to Lumina Patient Records. Only Administrators and Support users will pass. Staff, doctor, and manager roles get beautifully redirected to a system upkeep page to prevent active form submittals during upgrades.</p>
+              <p className="text-xs text-slate-500 leading-relaxed">Activating this restricts access to {branding.appName || 'the patient records app'}. Only Administrators and Support users can continue; staff, doctors, and managers are redirected to the maintenance notice to prevent active form submissions.</p>
               
               <div className="bg-slate-50 p-6 rounded-2xl border border-slate-150 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div>

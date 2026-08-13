@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { updateProfile } from 'firebase/auth';
 import { auth } from '../firebase';
 import { CustomDatePicker } from './CustomDatePicker';
 import { RBAC, Role } from '../rbac';
@@ -12,11 +13,12 @@ import {
   Calendar, 
   Shield, 
   MapPin, 
-  Save, 
+  Save,
   CheckCircle, 
   Lock, 
   AlertCircle,
-  Clock 
+  Clock,
+  Building2
 } from 'lucide-react';
 
 export default function UserSettings({ db }: { db: any }) {
@@ -27,17 +29,28 @@ export default function UserSettings({ db }: { db: any }) {
   const [saving, setSaving] = useState(false);
   const [showNotification, setShowNotification] = useState(false);
   const [notificationMsg, setNotificationMsg] = useState('');
+  const [notificationType, setNotificationType] = useState<'success' | 'error'>('success');
+  const [loadError, setLoadError] = useState('');
+  const [fieldError, setFieldError] = useState('');
   const user = auth.currentUser;
 
   useEffect(() => {
-    if (!user) return;
-    const fetchProfile = async () => {
-      const docRef = doc(db, 'users', user.uid);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        setProfile(docSnap.data());
-      }
+    if (!user) {
+      setLoadError('Please sign in again to manage your account settings.');
       setLoading(false);
+      return;
+    }
+    const fetchProfile = async () => {
+      try {
+        const docSnap = await getDoc(doc(db, 'users', user.uid));
+        if (docSnap.exists()) setProfile(current => ({ ...current, ...docSnap.data() }));
+        else setProfile(current => ({ ...current, fullName: user.displayName || '' }));
+      } catch (error: any) {
+        console.error('Failed to load account settings:', error);
+        setLoadError('We could not load your account details. Please refresh and try again.');
+      } finally {
+        setLoading(false);
+      }
     };
     fetchProfile();
   }, [db, user]);
@@ -57,36 +70,63 @@ export default function UserSettings({ db }: { db: any }) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+    const fullName = String(profile.fullName || '').trim();
+    const contactNumber = String(profile.contactNumber || '').trim();
+    const birthdate = String(profile.birthdate || '');
+    if (!fullName) {
+      setFieldError('Full name is required.');
+      return;
+    }
+    if (birthdate && birthdate > new Date().toISOString().slice(0, 10)) {
+      setFieldError('Birthdate cannot be in the future.');
+      return;
+    }
+    if (contactNumber && !/^[0-9+()\-\s]{7,25}$/.test(contactNumber)) {
+      setFieldError('Enter a valid contact number.');
+      return;
+    }
+    setFieldError('');
     setSaving(true);
     const now = new Date().toISOString();
     
     // Only update allowed fields to maintain integrity
     const updatedProfile = {
-        fullName: profile.fullName || '',
-        birthdate: profile.birthdate || '',
-        contactNumber: profile.contactNumber || '',
+        fullName,
+        birthdate,
+        contactNumber,
         lastUpdatedBy: user.uid,
         lastUpdatedDate: now
     };
     
     try {
-      await updateDoc(doc(db, 'users', user.uid), updatedProfile);
+      await setDoc(doc(db, 'users', user.uid), updatedProfile, { merge: true });
+      if (user.displayName !== fullName) await updateProfile(user, { displayName: fullName });
       
-      const changedFields = getChangedFields(profile, updatedProfile);
-      await logActivity({
-        action: 'UPDATE',
-        resource: 'User',
-        resourceId: user.uid,
-        resourceName: updatedProfile.fullName,
-        details: `Updated user personal profile settings. Fields modified: ${changedFields.join(', ')}`
-      });
+      const changedFields = getChangedFields(profile, updatedProfile)
+        .map(change => change.field)
+        .filter(field => ['fullName', 'birthdate', 'contactNumber'].includes(field));
+      if (changedFields.length > 0) {
+        try {
+          await logActivity({
+            action: 'UPDATE',
+            resource: 'User',
+            resourceId: user.uid,
+            resourceName: updatedProfile.fullName,
+            details: `Updated user personal profile settings. Fields modified: ${changedFields.join(', ')}`
+          });
+        } catch (auditError) {
+          console.warn('Profile saved, but the activity log could not be written:', auditError);
+        }
+      }
 
-      setNotificationMsg('Account Profile updated successfully!');
+      setNotificationType('success');
+      setNotificationMsg('Account profile updated successfully.');
       setShowNotification(true);
       setTimeout(() => setShowNotification(false), 4000);
     } catch (err: any) {
       console.error(err);
-      setNotificationMsg('Failed to update settings: ' + err.message);
+      setNotificationType('error');
+      setNotificationMsg(err?.message || 'Failed to update account settings.');
       setShowNotification(true);
       setTimeout(() => setShowNotification(false), 5000);
     } finally {
@@ -108,12 +148,13 @@ export default function UserSettings({ db }: { db: any }) {
   }
 
   return (
-    <div className="max-w-3xl w-full" id="user-settings-container">
+    <div className="w-full max-w-5xl" id="user-settings-container">
+      {loadError && <div role="alert" className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">{loadError}</div>}
       {/* Success/Error Notification Indicator */}
       {showNotification && (
         <div 
-          className={`mb-6 p-4 rounded-xl flex items-center justify-between border shadow-lg transition-all transform animate-fade-in ${
-            notificationMsg.includes('Failed') 
+          className={`mb-6 p-4 rounded-xl flex items-center justify-between border shadow-sm transition-all transform animate-fade-in ${
+            notificationType === 'error'
               ? 'bg-red-50 border-red-200 text-red-800' 
               : 'bg-teal-50 border-teal-200 text-teal-800'
           }`}
@@ -138,28 +179,30 @@ export default function UserSettings({ db }: { db: any }) {
       )}
 
       {/* Main Settings Card */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         {/* Card Header banner styled similar to Visit and Appointment Forms */}
-        <div className="p-6 md:p-8 bg-slate-50 border-b border-slate-200/60 select-none">
-          <h2 className="text-2xl font-bold text-slate-800 tracking-tight">Account Settings</h2>
-          <p className="text-slate-500 text-xs font-medium uppercase tracking-wider mt-1.5 flex items-center gap-2">
+        <div className="border-b border-slate-200 bg-white p-6 md:p-8 select-none">
+          <h2 className="text-xl font-bold tracking-tight text-slate-950 sm:text-2xl">Account settings</h2>
+          <p className="text-slate-500 text-sm mt-1.5 flex items-center gap-2">
             <User size={13} className="text-teal-600" />
-            Manage your personal profile, credentials, system roles, and assigned branch accesses
+            Manage your profile details and review your assigned access.
           </p>
         </div>
+
+        {fieldError && <div role="alert" className="mx-6 mt-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700 md:mx-8">{fieldError}</div>}
 
         <form onSubmit={handleSubmit} className="p-6 md:p-8 space-y-8">
           <div className="grid md:grid-cols-2 gap-8">
             {/* Left Column: Personal Information */}
             <div className="space-y-6">
-              <h3 className="font-bold text-sm uppercase tracking-wider text-teal-800 border-b border-teal-100 pb-1 flex items-center gap-2">
+              <h3 className="font-bold text-base text-slate-900 border-b border-slate-200 pb-3 flex items-center gap-2">
                 <User size={16} />
-                Personal Details
+                Personal details
               </h3>
 
               {/* Full Name */}
               <div className="space-y-1.5">
-                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <label className="block text-xs font-semibold text-slate-600">
                   Full Name
                 </label>
                 <div className="relative">
@@ -169,7 +212,7 @@ export default function UserSettings({ db }: { db: any }) {
                     className="w-full h-[42px] border border-slate-300 px-3 pl-10 rounded-xl text-sm bg-white text-slate-800 font-medium focus:ring-4 focus:ring-teal-500/10 focus:border-teal-500 outline-none transition-all" 
                     value={profile.fullName || ''} 
                     onChange={e => setProfile({...profile, fullName: e.target.value})} 
-                    placeholder="Enter full name"
+                    placeholder="Enter your full name"
                   />
                   <User size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 </div>
@@ -177,7 +220,7 @@ export default function UserSettings({ db }: { db: any }) {
 
               {/* Mobile Contact Number */}
               <div className="space-y-1.5">
-                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <label className="block text-xs font-semibold text-slate-600">
                   Contact Number
                 </label>
                 <div className="relative">
@@ -186,7 +229,7 @@ export default function UserSettings({ db }: { db: any }) {
                     className="w-full h-[42px] border border-slate-300 px-3 pl-10 rounded-xl text-sm bg-white text-slate-800 font-medium focus:ring-4 focus:ring-teal-500/10 focus:border-teal-500 outline-none transition-all" 
                     value={profile.contactNumber || ''} 
                     onChange={e => setProfile({...profile, contactNumber: e.target.value})} 
-                    placeholder="Enter mobile number"
+                    placeholder="Enter a contact number"
                   />
                   <Phone size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 </div>
@@ -196,18 +239,19 @@ export default function UserSettings({ db }: { db: any }) {
               <div className="grid grid-cols-5 gap-3">
                 {/* Birthdate Form Field */}
                 <div className="space-y-1.5 col-span-3">
-                  <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-0.5">
+                  <label className="block text-xs font-semibold text-slate-600 mb-0.5">
                     Birthdate
                   </label>
                   <CustomDatePicker 
                     value={profile.birthdate || ''} 
                     onChange={val => setProfile({...profile, birthdate: val})} 
+                    max={new Date().toISOString().slice(0, 10)}
                   />
                 </div>
 
                 {/* Age (Read Only) */}
                 <div className="space-y-1.5 col-span-2">
-                  <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <label className="block text-xs font-semibold text-slate-600">
                     Calculated Age
                   </label>
                   <div className="w-full h-[42px] border border-slate-200 px-3 rounded-xl text-sm bg-slate-50 text-slate-600 font-semibold flex items-center gap-2 cursor-not-allowed select-none">
@@ -220,15 +264,15 @@ export default function UserSettings({ db }: { db: any }) {
 
             {/* Right Column: Account Access & Roles */}
             <div className="space-y-6">
-              <h3 className="font-bold text-sm uppercase tracking-wider text-teal-800 border-b border-teal-100 pb-1 flex items-center gap-2">
+              <h3 className="font-bold text-base text-slate-900 border-b border-slate-200 pb-3 flex items-center gap-2">
                 <Shield size={16} />
-                Access & Security
+                Access & security
               </h3>
 
               {/* Email Address (system locked) */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    <label className="block text-xs font-semibold text-slate-600">
                     Email Address
                   </label>
                   <span className="text-[10px] text-slate-400 flex items-center gap-1 font-bold uppercase tracking-wider bg-slate-100 px-1.5 py-0.5 rounded">
@@ -248,7 +292,7 @@ export default function UserSettings({ db }: { db: any }) {
 
               {/* Account Role Badge Status */}
               <div className="space-y-3">
-                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <label className="block text-xs font-semibold text-slate-600">
                   Assigned Account Role
                 </label>
                 <div className="bg-slate-50/50 border border-slate-200/60 p-4 rounded-xl space-y-4">
@@ -311,6 +355,21 @@ export default function UserSettings({ db }: { db: any }) {
                               </div>
                             );
                           })}
+                          {userRoleKey === 'staff' && (
+                            <p className="text-[10px] font-medium text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2">
+                              Staff may also correct patient contact and demographic details. Clinical fields remain read-only.
+                            </p>
+                          )}
+                          {userRoleKey === 'manager' && (
+                            <p className="text-[10px] font-medium text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2">
+                              Manager patient updates are limited to demographics, primary branch, and operational status. Visit records and private clinical notes are read-only.
+                            </p>
+                          )}
+                          {userRoleKey === 'doctor' && (
+                            <p className="text-[10px] font-medium text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2">
+                              Doctors may create and update clinical visits assigned to their own account.
+                            </p>
+                          )}
                         </div>
                       );
                     })()}
@@ -322,9 +381,9 @@ export default function UserSettings({ db }: { db: any }) {
 
           {/* Full Width Section: Branch Permissions list */}
           <div className="bg-slate-50/50 border border-slate-200/60 rounded-xl p-5 md:p-6 space-y-4">
-            <h3 className="font-bold text-xs uppercase tracking-wider text-slate-500 flex items-center gap-2">
+            <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
               <MapPin size={15} className="text-teal-600" />
-              Your Clinic & Branch Licenses
+              Your clinic branches
             </h3>
 
             <div className="flex flex-wrap gap-2.5">
@@ -362,7 +421,7 @@ export default function UserSettings({ db }: { db: any }) {
             <button 
               type="submit" 
               disabled={saving}
-              className={`min-w-[170px] h-[46px] rounded-xl text-xs font-extrabold uppercase tracking-widest text-white shadow-md transition-all flex items-center justify-center gap-2 select-none cursor-pointer ${
+              className={`min-w-[170px] h-[46px] rounded-xl text-sm font-bold text-white shadow-sm transition-all flex items-center justify-center gap-2 select-none cursor-pointer ${
                 saving 
                   ? 'bg-slate-400 cursor-not-allowed' 
                   : 'bg-teal-600 hover:bg-teal-700 active:bg-teal-800 focus:ring-4 focus:ring-teal-500/20'
@@ -376,7 +435,7 @@ export default function UserSettings({ db }: { db: any }) {
               ) : (
                 <>
                   <Save size={14} className="text-teal-100" />
-                  <span>Save Profile Changes</span>
+                  <span>Save changes</span>
                 </>
               )}
             </button>

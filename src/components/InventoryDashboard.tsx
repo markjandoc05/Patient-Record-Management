@@ -26,6 +26,7 @@ import {
   ChevronRight
 } from 'lucide-react';
 import { db } from '../firebase';
+import { formatDateTime } from '../utils';
 
 interface InventoryItem {
   id: string;
@@ -349,7 +350,7 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
                       <td className="px-6 py-4">
                         <div className="flex flex-col">
                           <span className="font-medium text-slate-900">{item?.name}</span>
-                          <span className="text-xs text-slate-400">{transfer.createdAt?.toDate().toLocaleString()}</span>
+                          <span className="text-xs text-slate-400">{transfer.createdAt?.toDate ? formatDateTime(transfer.createdAt.toDate()) : 'Pending'}</span>
                         </div>
                       </td>
                       <td className="px-6 py-4">

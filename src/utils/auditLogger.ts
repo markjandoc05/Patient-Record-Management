@@ -1,9 +1,10 @@
 import { auth } from '../firebase';
 import { ChangeDetail } from './diffUtils';
+import { AuditAction, AuditResource, shouldRecordAuditEvent } from '../auditPolicy';
 
 export interface AuditLogOptions {
-  action: 'CREATE' | 'UPDATE' | 'DELETE' | 'VIEW' | 'AUTH';
-  resource: 'Patient' | 'Appointment' | 'Visit' | 'User' | 'Settings' | 'Branch';
+  action: AuditAction;
+  resource: AuditResource;
   resourceId: string;
   resourceName?: string; // Minimizing PHI: e.g. "PT-1004" or Patient initials
   details?: string; // e.g. "Updated status from Confirmed to Arrived"
@@ -23,9 +24,11 @@ export async function logActivity({
   resourceName: _resourceName = '',
   details: _details = '',
   changes = [],
-  userProfile: _userProfile = null
+  userProfile = null
 }: AuditLogOptions) {
   try {
+    if (!shouldRecordAuditEvent({ actorRole: userProfile?.role, action, resource })) return;
+
     const currentUser = auth.currentUser;
     if (!currentUser) {
       console.warn('Audit logger triggered but no user is currently authenticated.');
@@ -40,9 +43,9 @@ export async function logActivity({
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-      action,
-      resource,
-      resourceId,
+        action,
+        resource,
+        resourceId,
         changeFields: (changes || []).map(change => change.field)
       })
     });

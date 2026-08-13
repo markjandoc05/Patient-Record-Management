@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ComponentType } from 'react';
 import { auth, db } from './firebase';
 import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut, signInWithEmailAndPassword, sendPasswordResetEmail, createUserWithEmailAndPassword } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { collection, doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from './utils';
 import Login from './components/Login';
 import PatientDashboard from './components/PatientDashboard';
+import BranchDashboard from './components/BranchDashboard';
 import AdminSettings from './components/AdminSettings';
 import UserSettings from './components/UserSettings';
 import ProfileView from './components/ProfileView';
@@ -19,8 +20,9 @@ import AppointmentsDashboard from './components/AppointmentsDashboard';
 import InventoryDashboard from './components/InventoryDashboard';
 import AuditTrailDashboard from './components/AuditTrailDashboard';
 import DeveloperDashboard, { DevTab } from './components/DeveloperDashboard';
-import { Users, Settings, UserCircle, Calendar, Clock, Menu, X, Shield, PanelLeft, Cpu, Zap, Package } from 'lucide-react';
+import { Users, Settings, UserCircle, Calendar, Clock, Menu, X, Shield, PanelLeftClose, PanelLeftOpen, Cpu, Zap, Package, LayoutDashboard, MapPin, LogOut } from 'lucide-react';
 import { TimezoneProvider } from './contexts/TimezoneContext';
+import { setActiveTimezoneSettings } from './utils/timezone';
 
 const defaultBranding = {
   // Application Branding
@@ -30,13 +32,6 @@ const defaultBranding = {
   faviconUrl: '',
   loginPageLogoUrl: '',
   browserTitle: 'Vine Management App',
-  // SEO & Metadata
-  metaTitle: 'Vine Management App',
-  metaDescription: 'Manage clinical records and appointments securely.',
-  metaKeywords: 'clinic, records, patient management, HIPAA',
-  ogTitle: 'Vine Management App',
-  ogDescription: 'Manage clinical records and appointments securely.',
-  ogImageUrl: '',
   // Company Information
   companyName: 'Skin Clinic',
   companyAddress: '',
@@ -64,7 +59,69 @@ const defaultTimezone = {
   format: '12h'
 };
 
+const normalizeBranding = (value: Record<string, any> | null | undefined) => {
+  const raw = value || {};
+  const appName = String(raw.appName || defaultBranding.appName).trim();
+  return {
+    ...defaultBranding,
+    ...raw,
+    appName,
+    appShortName: String(raw.appShortName || appName || defaultBranding.appShortName).trim(),
+    browserTitle: String(raw.browserTitle || appName).trim(),
+    primaryColor: /^#[0-9a-f]{6}$/i.test(String(raw.primaryColor || '')) ? raw.primaryColor : defaultBranding.primaryColor,
+    secondaryColor: /^#[0-9a-f]{6}$/i.test(String(raw.secondaryColor || '')) ? raw.secondaryColor : defaultBranding.secondaryColor,
+    accentColor: /^#[0-9a-f]{6}$/i.test(String(raw.accentColor || '')) ? raw.accentColor : defaultBranding.accentColor,
+  };
+};
+
 const approvedRoles = new Set(['admin', 'manager', 'staff', 'doctor', 'support_developer']);
+
+const pageTitles: Record<string, string> = {
+  BranchDashboard: 'Overview',
+  Records: 'Patients',
+  Appointments: 'Appointments',
+  VisitHistory: 'Visits',
+  Inventory: 'Inventory',
+  Insights: 'Insights',
+  Settings: 'Settings',
+  AuditTrail: 'Audit log',
+  Profile: 'My profile',
+  AccountSettings: 'Account settings',
+  DeveloperTools: 'Developer tools',
+};
+
+type SidebarNavButtonProps = {
+  label: string;
+  icon: ComponentType<{ className?: string }>;
+  active: boolean;
+  collapsed: boolean;
+  onClick: () => void;
+  compact?: boolean;
+};
+
+function SidebarNavButton({ label, icon: Icon, active, collapsed, onClick, compact = false }: SidebarNavButtonProps) {
+  return (
+    <button
+      type="button"
+      aria-current={active ? 'page' : undefined}
+      aria-label={label}
+      title={collapsed ? label : undefined}
+      onClick={onClick}
+      className={`group/nav flex w-full items-center rounded-xl text-left transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 ${
+        compact ? 'min-h-9 text-xs' : 'min-h-11 text-sm'
+      } ${
+        collapsed ? 'gap-3 px-3 md:gap-0 md:justify-center md:px-0' : 'gap-3 px-3'
+      } ${
+        active
+          ? 'bg-white/10 text-white font-semibold'
+          : 'text-slate-400 hover:bg-white/[0.07] hover:text-white font-medium'
+      }`}
+    >
+      <Icon className={`${compact ? 'h-4 w-4' : 'h-5 w-5'} shrink-0`} />
+      <span className={`min-w-0 truncate ${collapsed ? 'md:hidden' : ''}`}>{label}</span>
+    </button>
+  );
+}
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
@@ -75,11 +132,27 @@ export default function App() {
   const [activeView, setActiveView] = useState('Records');
   const [devTab, setDevTab] = useState<DevTab>('system_overview');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem('vine-sidebar-collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [isAuthenticating, setIsAuthenticating] = useState(false);
-  const [branding, setBranding] = useState<any>(defaultBranding);
+  const [branding, setBranding] = useState<any>(() => normalizeBranding(defaultBranding));
   const [footer, setFooter] = useState<any>(null);
   const [timezone, setTimezone] = useState<any>(defaultTimezone);
+  const [branches, setBranches] = useState<any[]>([]);
+  const [activeBranchId, setActiveBranchId] = useState('');
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('vine-sidebar-collapsed', String(isSidebarCollapsed));
+    } catch {
+      // The sidebar still works when browser storage is unavailable.
+    }
+  }, [isSidebarCollapsed]);
 
   useEffect(() => {
     // Suppress ResizeObserver loop errors
@@ -96,14 +169,14 @@ export default function App() {
     // Initial Branding Subscription
     const unsubBranding = onSnapshot(doc(db, 'settings', 'branding'), (snapshot) => {
       if (snapshot.exists()) {
-        setBranding({ ...defaultBranding, ...snapshot.data() });
+        setBranding(normalizeBranding(snapshot.data()));
       } else {
-        setBranding(defaultBranding);
+        setBranding(normalizeBranding(defaultBranding));
       }
       setBrandingLoaded(true);
     }, (err) => {
       console.error("Failed to load branding:", err);
-      setBranding(defaultBranding);
+      setBranding(normalizeBranding(defaultBranding));
       setBrandingLoaded(true);
       try {
         handleFirestoreError(err, OperationType.GET, 'settings/branding', auth);
@@ -130,12 +203,16 @@ export default function App() {
     // Initial Timezone Subscription
     const unsubTimezone = onSnapshot(doc(db, 'settings', 'timezone'), (snapshot) => {
       if (snapshot.exists()) {
-        setTimezone({ ...defaultTimezone, ...snapshot.data() });
+        const nextTimezone = { ...defaultTimezone, ...snapshot.data() };
+        setActiveTimezoneSettings(nextTimezone);
+        setTimezone(nextTimezone);
       } else {
+        setActiveTimezoneSettings(defaultTimezone);
         setTimezone(defaultTimezone);
       }
     }, (err) => {
       console.error("Failed to load timezone:", err);
+      setActiveTimezoneSettings(defaultTimezone);
       setTimezone(defaultTimezone);
     });
 
@@ -150,7 +227,7 @@ export default function App() {
 
   const getBustedUrl = (url: string) => {
     if (!url) return '';
-    const ts = branding.updatedAt || Date.now();
+    const ts = branding.updatedAt || 0;
     return `${url}${url.includes('?') ? '&' : '?'}t=${ts}`;
   };
 
@@ -158,9 +235,9 @@ export default function App() {
     try {
       const docSnap = await getDoc(doc(db, 'settings', 'branding'));
       if (docSnap.exists()) {
-        setBranding({ ...defaultBranding, ...docSnap.data() });
+        setBranding(normalizeBranding(docSnap.data()));
       } else {
-        setBranding(defaultBranding);
+        setBranding(normalizeBranding(defaultBranding));
       }
     } catch (err) {
       console.error("Refresh branding failed:", err);
@@ -170,27 +247,33 @@ export default function App() {
   useEffect(() => {
     if (!branding) return;
 
-    // Set browser tab title
-    if (branding.browserTitle) {
-      document.title = branding.browserTitle;
-    }
+    const appName = String(branding.appName || defaultBranding.appName).trim();
+    const shortName = String(branding.appShortName || appName).trim();
+    document.title = String(branding.browserTitle || appName).trim();
+    document.documentElement.dataset.appName = appName;
 
-    // Set Favicon
+    // Update or remove the dynamic favicon so clearing the setting takes effect.
+    let favicon: HTMLLinkElement | null = document.querySelector("link[data-dynamic-branding-favicon='true']") || document.querySelector("link[rel~='icon']");
     if (branding.faviconUrl) {
-      let link: HTMLLinkElement | null = document.querySelector("link[rel*='icon']");
-      if (!link) {
-        link = document.createElement('link');
-        link.rel = 'icon';
-        document.head.appendChild(link);
+      if (!favicon) {
+        favicon = document.createElement('link');
+        favicon.rel = 'icon';
+        document.head.appendChild(favicon);
       }
-      link.href = getBustedUrl(branding.faviconUrl);
+      favicon.dataset.dynamicBrandingFavicon = 'true';
+      favicon.href = getBustedUrl(branding.faviconUrl);
+    } else if (favicon) {
+      favicon.remove();
     }
 
-    // Helper to update/create meta tags
+    // Empty settings remove stale metadata rather than leaving old values behind.
     const updateMetaTag = (nm: string, content: string, isProperty = false) => {
-      if (!content) return;
       const attr = isProperty ? 'property' : 'name';
       let tag = document.querySelector(`meta[${attr}='${nm}']`);
+      if (!content?.trim()) {
+        tag?.remove();
+        return;
+      }
       if (!tag) {
         tag = document.createElement('meta');
         tag.setAttribute(attr, nm);
@@ -199,12 +282,22 @@ export default function App() {
       tag.setAttribute('content', content);
     };
 
-    if (branding.metaTitle) updateMetaTag('title', branding.metaTitle);
-    if (branding.metaDescription) updateMetaTag('description', branding.metaDescription);
-    if (branding.metaKeywords) updateMetaTag('keywords', branding.metaKeywords);
-    if (branding.ogTitle) updateMetaTag('og:title', branding.ogTitle, true);
-    if (branding.ogDescription) updateMetaTag('og:description', branding.ogDescription, true);
-    if (branding.ogImageUrl) updateMetaTag('og:image', branding.ogImageUrl, true);
+    updateMetaTag('application-name', appName);
+    updateMetaTag('apple-mobile-web-app-title', shortName);
+    updateMetaTag('robots', 'noindex, nofollow, noarchive, nosnippet, noimageindex');
+    updateMetaTag('googlebot', 'noindex, nofollow, noarchive, nosnippet, noimageindex');
+    updateMetaTag('theme-color', String(branding.primaryColor || defaultBranding.primaryColor));
+
+    // This is a private clinic tool. Remove any legacy search/social metadata
+    // that may still be present from an older saved configuration or hot reload.
+    [
+      "meta[name='title']",
+      "meta[name='description']",
+      "meta[name='keywords']",
+      "meta[property='og:title']",
+      "meta[property='og:description']",
+      "meta[property='og:image']",
+    ].forEach(selector => document.querySelectorAll(selector).forEach(node => node.remove()));
 
     // Dynamically set CSS variables to primary, secondary, and accent colors
     const root = document.documentElement;
@@ -212,11 +305,6 @@ export default function App() {
     root.style.setProperty('--secondary-color', branding.secondaryColor || '#0f766e');
     root.style.setProperty('--accent-color', branding.accentColor || '#14b8a6');
     
-    if (branding.darkMode) {
-      root.classList.add('dark');
-    } else {
-      root.classList.remove('dark');
-    }
   }, [branding]);
 
   const [authError, setAuthError] = useState<string | null>(null);
@@ -296,7 +384,7 @@ export default function App() {
     return onAuthStateChanged(auth, async (user) => {
       setUser(user);
       if (user) {
-        setActiveView('Records');
+        setActiveView('BranchDashboard');
         try {
           let retryCount = 0;
           let userDoc = null;
@@ -360,6 +448,98 @@ export default function App() {
     });
   }, []);
 
+  // Keep the signed-in user's role, approval status, name, and clinic access in
+  // sync. Administrative changes now take effect without asking the user to
+  // sign out or reload the app.
+  useEffect(() => {
+    if (!user) return;
+    return onSnapshot(doc(db, 'users', user.uid), snapshot => {
+      if (!snapshot.exists()) return;
+      const nextProfile = snapshot.data();
+      if (!nextProfile.active) {
+        setAuthError('Your account is inactive. Please contact an administrator.');
+        void signOut(auth);
+        return;
+      }
+      if (!approvedRoles.has(nextProfile.role)) {
+        setAuthError('Your account has an invalid role configuration. Please contact an administrator.');
+        void signOut(auth);
+        return;
+      }
+      setUserProfile(nextProfile);
+      setUserRole(nextProfile.role);
+    }, profileError => {
+      console.error('Failed to synchronize the active user profile:', profileError);
+    });
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !userProfile) {
+      setBranches([]);
+      setActiveBranchId('');
+      return;
+    }
+
+    return onSnapshot(collection(db, 'branches'), snapshot => {
+      setBranches(snapshot.docs.map(branch => ({ id: branch.id, ...branch.data() })));
+    }, error => {
+      console.error('Failed to load clinic branches:', error);
+      setBranches([]);
+    });
+  }, [user, userProfile]);
+
+  const hasGlobalBranchAccess = userRole === 'admin' || userRole === 'support_developer';
+  const assignedBranchIds = new Set(Array.isArray(userProfile?.assignedBranches) ? userProfile.assignedBranches : []);
+  const availableBranches = branches.filter(branch =>
+    branch.status === 'Active' && (hasGlobalBranchAccess || assignedBranchIds.has(branch.id))
+  );
+
+  useEffect(() => {
+    if (!user || !userProfile || branches.length === 0) return;
+    const storageKey = `vine-active-branch:${user.uid}`;
+    const savedBranchId = window.localStorage.getItem(storageKey) || '';
+    const validBranchIds = new Set(availableBranches.map(branch => branch.id));
+    const nextBranchId = savedBranchId === 'All' && hasGlobalBranchAccess
+      ? 'All'
+      : validBranchIds.has(savedBranchId)
+        ? savedBranchId
+        : validBranchIds.has(userProfile.defaultBranchId)
+          ? userProfile.defaultBranchId
+          : hasGlobalBranchAccess
+            ? 'All'
+            : availableBranches[0]?.id || '';
+
+    setActiveBranchId(current => current && (current === 'All' ? hasGlobalBranchAccess : validBranchIds.has(current))
+      ? current
+      : nextBranchId);
+  }, [branches, hasGlobalBranchAccess, user, userProfile]);
+
+  const handleActiveBranchChange = (branchId: string) => {
+    if (!user) return;
+    const isAllowed = branchId === 'All'
+      ? hasGlobalBranchAccess
+      : availableBranches.some(branch => branch.id === branchId);
+    if (!isAllowed) return;
+    setActiveBranchId(branchId);
+    window.localStorage.setItem(`vine-active-branch:${user.uid}`, branchId);
+  };
+
+  const navigateTo = (view: string) => {
+    setActiveView(view);
+    setIsMobileMenuOpen(false);
+  };
+
+  const currentPageTitle = pageTitles[activeView] || activeView;
+  const effectiveFooter = {
+    footerText: footer?.footerText ?? branding.footerText ?? defaultBranding.footerText,
+    copyrightNotice: footer?.copyrightNotice ?? branding.copyrightNotice ?? defaultBranding.copyrightNotice,
+    privacyPolicyUrl: footer?.privacyPolicyUrl ?? branding.privacyPolicyUrl ?? '',
+    termsConditionsUrl: footer?.termsConditionsUrl ?? branding.termsConditionsUrl ?? '',
+    showDeveloperCredit: footer?.showDeveloperCredit ?? branding.showDeveloperCredit ?? true,
+    developerCreditText: footer?.developerCreditText ?? branding.developerCreditText ?? defaultBranding.developerCreditText,
+    developerCreditUrl: footer?.developerCreditUrl ?? branding.developerCreditUrl ?? '',
+  };
+
   if (loading || !brandingLoaded) return (
     <div className="flex justify-center items-center h-screen bg-white">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-600"></div>
@@ -410,185 +590,131 @@ export default function App() {
 
   return (
     <TimezoneProvider timezone={timezone}>
-      <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden font-sans">
+      <div className="flex h-screen bg-[#f7f7f8] text-slate-900 overflow-hidden font-sans">
       {/* Mobile Sidebar Overlay */}
       {isMobileMenuOpen && (
         <div className="fixed inset-0 bg-black/50 z-40 md:hidden" onClick={() => setIsMobileMenuOpen(false)} />
       )}
       
-      <aside 
-        className={`${isMobileMenuOpen ? 'fixed w-64' : 'hidden md:flex'} ${isSidebarCollapsed ? 'md:w-16' : 'md:w-64'} h-full bg-slate-800 text-slate-300 border-r border-slate-700 flex-col shrink-0 z-50 transition-all duration-300 overflow-hidden`}>
-
-        <div className="p-4 border-b border-slate-700 flex items-center justify-between gap-3 h-16 shrink-0">
-          <div className={`flex items-center gap-3 ${isSidebarCollapsed ? 'justify-center w-full' : ''}`}>
+      <aside
+        id="app-sidebar"
+        aria-hidden={isSidebarCollapsed && !isMobileMenuOpen}
+        inert={isSidebarCollapsed && !isMobileMenuOpen ? true : undefined}
+        className={`group/sidebar ${isMobileMenuOpen ? 'fixed inset-y-0 left-0 flex w-[280px]' : 'hidden md:flex'} ${isSidebarCollapsed ? 'md:w-0 md:border-r-0' : 'md:w-[272px]'} h-full flex-col shrink-0 z-50 bg-[#171717] text-slate-300 border-r border-white/[0.06] transition-[width,transform] duration-200 ease-out overflow-hidden`}
+      >
+        <div className="h-16 shrink-0 px-3 flex items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5 px-1">
             {branding.appLogoUrl ? (
-              <img 
-                src={getBustedUrl(branding.appLogoUrl)} 
-                alt={branding.appShortName || branding.appName} 
-                className="w-8 h-8 rounded-lg object-contain shrink-0" 
-                referrerPolicy="no-referrer"
-              />
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white p-1 shadow-sm ring-1 ring-white/10">
+                <img
+                  src={getBustedUrl(branding.appLogoUrl)}
+                  alt=""
+                  className="h-full w-full object-contain"
+                  referrerPolicy="no-referrer"
+                />
+              </div>
             ) : (
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ backgroundColor: branding.primaryColor || '#0d9488' }}>
-                <Users className="w-5 h-5 text-white" />
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-sm font-semibold text-white shadow-sm" style={{ backgroundColor: branding.primaryColor || '#0d9488' }}>
+                {(branding.appName || branding.appShortName || 'V').trim().charAt(0).toUpperCase()}
               </div>
             )}
-            {!isSidebarCollapsed && (
-              <span className="font-bold text-white tracking-tight text-lg whitespace-nowrap overflow-hidden text-ellipsis max-w-[150px]" title={branding.appShortName || branding.appName}>
-                {branding.appShortName || branding.appName || 'Lumina Skin'}
-              </span>
-            )}
+            <span className="min-w-0 flex-1 truncate text-[14px] font-semibold tracking-[-0.01em] text-white" title={branding.appName || branding.appShortName}>
+              {branding.appName || branding.appShortName || 'Vine Management App'}
+            </span>
           </div>
-          <button className="md:hidden" onClick={() => setIsMobileMenuOpen(false)}>
-            <X className='w-6 h-6 text-slate-400' />
+
+          <button
+            type="button"
+            aria-label="Close navigation"
+            className="md:hidden h-9 w-9 shrink-0 flex items-center justify-center rounded-xl text-slate-400 hover:bg-white/10 hover:text-white"
+            onClick={() => setIsMobileMenuOpen(false)}
+          >
+            <X className="w-5 h-5" />
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto overflow-x-hidden w-full">
-            <nav className="p-3 space-y-1">
-              <button 
-                title="Patient Records" 
-                onClick={() => setActiveView('Records')} 
-                className={`flex items-center gap-3 px-3 py-2 ${activeView === 'Records' ? 'text-white font-semibold' : 'text-slate-400 hover:bg-slate-700 hover:text-white'} rounded-md font-medium w-full`}
-                style={activeView === 'Records' ? { backgroundColor: branding.primaryColor || '#0d9488', color: '#fff' } : undefined}
-              >
-                <Users className="w-5 h-5 shrink-0" />
-                {!isSidebarCollapsed && <span className="whitespace-nowrap">Patient Records</span>}
-              </button>
-              
-              <button 
-                title="Appointments" 
-                onClick={() => setActiveView('Appointments')} 
-                className={`flex items-center gap-3 px-3 py-2 ${activeView === 'Appointments' ? 'text-white font-semibold' : 'text-slate-400 hover:bg-slate-700 hover:text-white'} rounded-md font-medium w-full`}
-                style={activeView === 'Appointments' ? { backgroundColor: branding.primaryColor || '#0d9488', color: '#fff' } : undefined}
-              >
-                <Clock className="w-5 h-5 shrink-0" />
-                {!isSidebarCollapsed && <span className="whitespace-nowrap">Appointments</span>}
-              </button>
-              
-              <button 
-                title="Visit History" 
-                onClick={() => setActiveView('VisitHistory')} 
-                className={`flex items-center gap-3 px-3 py-2 ${activeView === 'VisitHistory' ? 'text-white font-semibold' : 'text-slate-400 hover:bg-slate-700 hover:text-white'} rounded-md font-medium w-full`}
-                style={activeView === 'VisitHistory' ? { backgroundColor: branding.primaryColor || '#0d9488', color: '#fff' } : undefined}
-              >
-                <Calendar className="w-5 h-5 shrink-0" />
-                {!isSidebarCollapsed && <span className="whitespace-nowrap">Visit History</span>}
-              </button>
-              
-              {(userRole === 'admin' || userRole === 'support_developer') && (
-                <button 
-                  title="Inventory" 
-                  onClick={() => setActiveView('Inventory')} 
-                  className={`flex items-center gap-3 px-3 py-2 ${activeView === 'Inventory' ? 'text-white font-semibold' : 'text-slate-400 hover:bg-slate-700 hover:text-white'} rounded-md font-medium w-full`}
-                  style={activeView === 'Inventory' ? { backgroundColor: branding.primaryColor || '#0d9488', color: '#fff' } : undefined}
-                >
-                  <Package className="w-5 h-5 shrink-0" />
-                  {!isSidebarCollapsed && <span className="whitespace-nowrap">Inventory</span>}
-                </button>
-              )}
-              
-              <button 
-                title="Insights & Analytics" 
-                onClick={() => setActiveView('Insights')} 
-                className={`flex items-center gap-3 px-3 py-2 ${activeView === 'Insights' ? 'text-white font-semibold' : 'text-slate-400 hover:bg-slate-700 hover:text-white'} rounded-md font-medium w-full`}
-                style={activeView === 'Insights' ? { backgroundColor: branding.primaryColor || '#0d9488', color: '#fff' } : undefined}
-              >
-                <Zap className="w-5 h-5 shrink-0" />
-                {!isSidebarCollapsed && <span className="whitespace-nowrap">Insights & Analytics</span>}
-              </button>
-              
-              {(userRole === 'admin' || userRole === 'support_developer') && (
-                <>
-                  <button 
-                    title="App Setting" 
-                    onClick={() => setActiveView('Settings')} 
-                    className={`flex items-center gap-3 px-3 py-2 ${activeView === 'Settings' ? 'text-white font-semibold' : 'text-slate-400 hover:bg-slate-700 hover:text-white'} rounded-md font-medium w-full`}
-                    style={activeView === 'Settings' ? { backgroundColor: branding.primaryColor || '#0d9488', color: '#fff' } : undefined}
-                  >
-                    <Settings className="w-5 h-5 shrink-0" />
-                    {!isSidebarCollapsed && <span className="whitespace-nowrap">App Setting</span>}
-                  </button>
-                  
-                  <button 
-                    title="Audit Trail" 
-                    onClick={() => setActiveView('AuditTrail')} 
-                    className={`flex items-center gap-3 px-3 py-2 ${activeView === 'AuditTrail' ? 'text-white font-semibold' : 'text-slate-400 hover:bg-slate-700 hover:text-white'} rounded-md font-medium w-full`}
-                    style={activeView === 'AuditTrail' ? { backgroundColor: branding.primaryColor || '#0d9488', color: '#fff' } : undefined}
-                  >
-                    <Shield className="w-5 h-5 shrink-0" />
-                    {!isSidebarCollapsed && <span className="whitespace-nowrap">Audit Trail</span>}
-                  </button>
-                </>
-              )}
 
-              {userRole === 'support_developer' && (
-                <div className="mt-4 pt-4 border-t border-slate-700 space-y-1">
-                  {!isSidebarCollapsed && (
-                    <span className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-2">
-                      Developer Tools
-                    </span>
-                  )}
-                  <div className="space-y-1 max-h-[220px] overflow-y-auto px-1">
-                    {[
-                      { id: 'system_overview', label: 'System Overview' },
-                      { id: 'app_version', label: 'App Version' },
-                      { id: 'firebase_status', label: 'Firebase Status' },
-                      { id: 'storage_monitor', label: 'Storage Monitor' },
-                      { id: 'user_count', label: 'User Count' },
-                      { id: 'patient_count', label: 'Patient Count' },
-                      { id: 'appointment_count', label: 'Appointment Count' },
-                      { id: 'visit_count', label: 'Visit Count' },
-                      { id: 'audit_logs', label: 'Audit Logs' },
-                      { id: 'error_logs', label: 'Error Logs' },
-                      { id: 'refresh_settings', label: 'Refresh Settings' },
-                      { id: 'clear_cache', label: 'Clear Cache' },
-                      { id: 'maintenance_mode', label: 'Maintenance Mode' },
-                    ].map(item => (
-                      <button
-                        key={item.id}
-                        title={item.label}
-                        onClick={() => {
-                          setActiveView('DeveloperTools');
-                          setDevTab(item.id as DevTab);
-                        }}
-                        className={`flex items-center gap-3 px-3 py-1.5 text-xs rounded-md w-full transition ${
-                          activeView === 'DeveloperTools' && devTab === item.id
-                            ? 'text-white font-semibold'
-                            : 'text-slate-400 hover:bg-slate-700 hover:text-white font-medium'
-                        }`}
-                        style={
-                          activeView === 'DeveloperTools' && devTab === item.id
-                            ? { backgroundColor: branding.primaryColor || '#0d9488', color: '#fff' }
-                            : undefined
-                        }
-                      >
-                        <Cpu className="w-3.5 h-3.5 shrink-0" />
-                        {!isSidebarCollapsed && <span className="truncate">{item.label}</span>}
-                      </button>
-                    ))}
-                  </div>
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2 pb-3">
+          <nav aria-label="Main navigation" className="space-y-1">
+            <SidebarNavButton label="Overview" icon={LayoutDashboard} active={activeView === 'BranchDashboard'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('BranchDashboard')} />
+            <SidebarNavButton label="Patients" icon={Users} active={activeView === 'Records'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Records')} />
+            <SidebarNavButton label="Appointments" icon={Clock} active={activeView === 'Appointments'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Appointments')} />
+            <SidebarNavButton label="Visits" icon={Calendar} active={activeView === 'VisitHistory'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('VisitHistory')} />
+
+            {(userRole === 'admin' || userRole === 'support_developer') && (
+              <SidebarNavButton label="Inventory" icon={Package} active={activeView === 'Inventory'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Inventory')} />
+            )}
+
+            <SidebarNavButton label="Insights" icon={Zap} active={activeView === 'Insights'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Insights')} />
+
+            {(userRole === 'admin' || userRole === 'support_developer') && (
+              <>
+                <SidebarNavButton label="Settings" icon={Settings} active={activeView === 'Settings'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Settings')} />
+                <SidebarNavButton label="Audit log" icon={Shield} active={activeView === 'AuditTrail'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('AuditTrail')} />
+              </>
+            )}
+
+            {userRole === 'support_developer' && (
+              <div className="mt-4 pt-4 border-t border-white/[0.08] space-y-1">
+                <span className={`px-3 text-[10px] font-semibold text-slate-500 uppercase tracking-[0.14em] block mb-2 ${isSidebarCollapsed ? 'md:hidden' : ''}`}>
+                  Developer tools
+                </span>
+                <div className="space-y-1">
+                  {[
+                    { id: 'system_overview', label: 'System overview' },
+                    { id: 'app_version', label: 'App version' },
+                    { id: 'firebase_status', label: 'Firebase status' },
+                    { id: 'storage_monitor', label: 'Storage monitor' },
+                    { id: 'user_count', label: 'User count' },
+                    { id: 'patient_count', label: 'Patient count' },
+                    { id: 'appointment_count', label: 'Appointment count' },
+                    { id: 'visit_count', label: 'Visit count' },
+                    { id: 'audit_logs', label: 'Audit logs' },
+                    { id: 'error_logs', label: 'Error logs' },
+                    { id: 'refresh_settings', label: 'Refresh settings' },
+                    { id: 'clear_cache', label: 'Clear cache' },
+                    { id: 'maintenance_mode', label: 'Maintenance mode' },
+                  ].map(item => (
+                    <SidebarNavButton
+                      key={item.id}
+                      label={item.label}
+                      icon={Cpu}
+                      active={activeView === 'DeveloperTools' && devTab === item.id}
+                      collapsed={isSidebarCollapsed}
+                      compact
+                      onClick={() => {
+                        navigateTo('DeveloperTools');
+                        setDevTab(item.id as DevTab);
+                      }}
+                    />
+                  ))}
                 </div>
-              )}
-            </nav>
+              </div>
+            )}
+          </nav>
         </div>
 
-        <div className="border-t border-slate-700">
-           {!isSidebarCollapsed && (
-             <div className="p-4">
-               <div className="flex items-center gap-3 px-3 py-2 bg-slate-700 rounded-lg text-white">
-                <button onClick={() => setActiveView('Profile')}><UserCircle className="w-8 h-8" /></button>
-                <div className="overflow-hidden space-y-1">
-                    <p className="text-xs font-bold truncate">{userProfile?.fullName || user.email}</p>
-                    <p className="text-[10px] text-slate-400 capitalize">{userRole}</p>
-                    <div className="flex gap-2">
-                        <button className="text-[10px] text-slate-400 uppercase hover:text-white" onClick={() => setActiveView('AccountSettings')}>Settings</button>
-                        <span className="text-slate-600">|</span>
-                        <button className="text-[10px] text-slate-400 uppercase hover:text-white" onClick={() => signOut(auth)}>Sign Out</button>
-                    </div>
-                </div>
-               </div>
-             </div>
-           )}
+        <div className="shrink-0 border-t border-white/[0.08] p-2">
+          <button
+            type="button"
+            aria-label="Open my profile"
+            title={isSidebarCollapsed ? 'My profile' : undefined}
+            onClick={() => navigateTo('Profile')}
+            className={`flex w-full items-center rounded-xl text-left text-white transition-colors hover:bg-white/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 ${isSidebarCollapsed ? 'gap-3 px-2 py-2 md:gap-0 md:justify-center md:px-0' : 'gap-3 px-3 py-2'}`}
+          >
+            <UserCircle className="w-8 h-8 shrink-0 text-slate-300" />
+            <div className={`min-w-0 flex-1 ${isSidebarCollapsed ? 'md:hidden' : ''}`}>
+              <p className="truncate text-xs font-semibold">{userProfile?.fullName || user.email}</p>
+              <p className="mt-0.5 truncate text-[10px] capitalize text-slate-500">{String(userRole || '').replace('_', ' ')}</p>
+            </div>
+          </button>
+          <div className={`mt-1 grid grid-cols-2 gap-1 ${isSidebarCollapsed ? 'md:hidden' : ''}`}>
+            <button type="button" onClick={() => navigateTo('AccountSettings')} className="flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-[11px] font-medium text-slate-400 hover:bg-white/[0.07] hover:text-white">
+              <Settings className="h-3.5 w-3.5" /> Settings
+            </button>
+            <button type="button" onClick={() => signOut(auth)} className="flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-[11px] font-medium text-slate-400 hover:bg-white/[0.07] hover:text-white">
+              <LogOut className="h-3.5 w-3.5" /> Sign out
+            </button>
+          </div>
         </div>
       </aside>
       
@@ -602,39 +728,61 @@ export default function App() {
             <span className="bg-amber-600 px-2 py-0.5 rounded text-[9px] font-extrabold tracking-wider">BYPASS ACCESS ACTIVE</span>
           </div>
         )}
-        <header className="h-16 bg-white border-b border-slate-200 px-4 md:px-8 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-4">
-                <button className="md:hidden" onClick={() => setIsMobileMenuOpen(true)}>
-                    <Menu className="w-6 h-6 text-slate-600" />
-                </button>
-                <button className="hidden md:block" onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}>
-                    <PanelLeft className="w-6 h-6 text-slate-600" />
-                </button>
-                <h1 className="text-xl font-bold text-slate-900">{activeView === 'Records' ? 'Patient Dashboard' : activeView === 'AccountSettings' ? 'Account Settings' : activeView === 'AuditTrail' ? 'Security Audit Trail' : activeView}</h1>
+        <header className="h-16 bg-white/90 backdrop-blur-xl border-b border-slate-200/80 px-3 sm:px-5 lg:px-7 flex items-center justify-between gap-3 shrink-0">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <button
+              type="button"
+              aria-label="Open navigation"
+              aria-controls="app-sidebar"
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="md:hidden h-10 w-10 shrink-0 flex items-center justify-center rounded-xl text-slate-600 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              aria-label={isSidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+              aria-controls="app-sidebar"
+              title={isSidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+              onClick={() => setIsSidebarCollapsed(value => !value)}
+              className="hidden md:flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-600 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+            >
+              {isSidebarCollapsed ? <PanelLeftOpen className="w-5 h-5" /> : <PanelLeftClose className="w-5 h-5" />}
+            </button>
+            <h1 className="truncate text-[17px] sm:text-lg font-semibold tracking-[-0.015em] text-slate-950">{currentPageTitle}</h1>
+          </div>
+
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <div className="relative flex min-w-0 items-center">
+              <MapPin className="pointer-events-none absolute left-3 hidden h-4 w-4 text-slate-400 sm:block" />
+              <select
+                aria-label="Active clinic branch"
+                value={activeBranchId}
+                onChange={event => handleActiveBranchChange(event.target.value)}
+                disabled={availableBranches.length === 0 && !hasGlobalBranchAccess}
+                className="min-w-0 max-w-[150px] sm:max-w-[220px] rounded-xl border border-slate-200 bg-slate-50 py-2 pl-3 pr-8 text-xs font-medium text-slate-700 outline-none transition hover:bg-slate-100 focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 disabled:text-slate-400 sm:pl-9 sm:text-sm"
+              >
+                {!activeBranchId && <option value="">No branch assigned</option>}
+                {hasGlobalBranchAccess && <option value="All">All branches</option>}
+                {availableBranches.map(branch => <option key={branch.id} value={branch.id}>{branch.branchName}</option>)}
+              </select>
             </div>
-            
-            {/* Header Clinic Identity Branding */}
-            <div className="flex items-center gap-3">
-              {branding.appLogoUrl && (
-                <img 
-                  src={getBustedUrl(branding.appLogoUrl)} 
-                  alt={branding.companyName || "Logo"} 
-                  className="h-8 w-auto object-contain hidden sm:block" 
-                  referrerPolicy="no-referrer"
-                />
-              )}
-              {branding.companyName && (
-                <span className="text-sm font-semibold text-slate-500 hidden sm:block">{branding.companyName}</span>
-              )}
-            </div>
+            {(branding.appLogoUrl || branding.companyName) && (
+              <div className="hidden min-w-0 items-center gap-2.5 lg:flex">
+                {branding.appLogoUrl && <img src={getBustedUrl(branding.appLogoUrl)} alt="" className="h-8 w-auto max-w-20 object-contain" referrerPolicy="no-referrer" />}
+                {branding.companyName && <span className="max-w-40 truncate text-xs font-semibold text-slate-500" title={branding.companyName}>{branding.companyName}</span>}
+              </div>
+            )}
+          </div>
         </header>
         
         <div className="flex-grow overflow-auto flex flex-col">
-            <div className="flex-1 p-4 md:p-8">
-                {activeView === 'Records' && <PatientDashboard db={db} user={user} role={userRole} userProfile={userProfile} />}
-                {activeView === 'Appointments' && <AppointmentsDashboard role={userRole} userProfile={userProfile} />}
-                {activeView === 'VisitHistory' && <VisitHistoryDashboard db={db} role={userRole} userProfile={userProfile} />}
-                {activeView === 'Insights' && <InsightsAnalyticsDashboard userProfile={userProfile} />}
+            <div className="flex-1 p-4 sm:p-6 lg:p-8">
+                {activeView === 'BranchDashboard' && <BranchDashboard activeBranchId={activeBranchId} branches={branches} onNavigate={setActiveView} />}
+                {activeView === 'Records' && <PatientDashboard db={db} user={user} role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
+                {activeView === 'Appointments' && <AppointmentsDashboard role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
+                {activeView === 'VisitHistory' && <VisitHistoryDashboard db={db} role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
+                {activeView === 'Insights' && <InsightsAnalyticsDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
                 {activeView === 'Inventory' && (userRole === 'admin' || userRole === 'support_developer') && <InventoryDashboard userProfile={userProfile} />}
                 {activeView === 'Inventory' && userRole !== 'admin' && userRole !== 'support_developer' && (
                   <div className="p-8 text-center"><p className="text-slate-500 font-medium">Access Denied: Inventory controls are restricted to administrators.</p></div>
@@ -658,34 +806,42 @@ export default function App() {
             </div>
 
             {/* Dynamic White-Label Footer */}
-            <footer className="mt-auto px-4 py-4 bg-white border-t border-slate-200 text-xs text-slate-400 flex flex-col items-center justify-center text-center gap-2">
-              <div>
-                {footer?.footerText || branding.footerText || "HIPAA Compliant Skin Clinic Patient Records System."}
+            <footer className="mt-auto flex flex-wrap items-center justify-center gap-x-2 gap-y-1 border-t border-slate-200 bg-white px-4 py-2.5 text-[11px] text-slate-400">
+              <div className="font-medium text-slate-500">
+                {effectiveFooter.footerText}
               </div>
-              <div className="flex flex-col items-center gap-2">
+              {(branding.companyName || branding.companyAddress || branding.contactNumber || branding.supportEmail || branding.websiteUrl) && (
+                <address className="flex max-w-4xl flex-wrap items-center justify-center gap-x-2 not-italic text-[10px] text-slate-400">
+                  {branding.companyName && <span className="font-semibold text-slate-500">{branding.companyName}</span>}
+                  {branding.companyAddress && <span>{branding.companyAddress}</span>}
+                  {branding.contactNumber && <a href={`tel:${String(branding.contactNumber).replace(/[^+\d]/g, '')}`} className="hover:text-teal-700 hover:underline">{branding.contactNumber}</a>}
+                  {branding.supportEmail && <a href={`mailto:${branding.supportEmail}`} className="hover:text-teal-700 hover:underline">{branding.supportEmail}</a>}
+                  {branding.websiteUrl && <a href={branding.websiteUrl} target="_blank" rel="noopener noreferrer" className="font-medium text-teal-600 hover:underline">Website</a>}
+                </address>
+              )}
+              <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
                 <span>
-                  {footer?.copyrightNotice || branding.copyrightNotice || "© 2026 Skin Clinic Patient Records. All rights reserved."}
-                  {(footer?.showDeveloperCredit !== false && branding.showDeveloperCredit !== false) && (
+                  {effectiveFooter.copyrightNotice}
+                  {effectiveFooter.showDeveloperCredit !== false && (
                     <>
-                      {" Developed by "}
-                      { (footer?.developerCreditUrl || branding.developerCreditUrl) ? (
-                        <a href={footer?.developerCreditUrl || branding.developerCreditUrl} target="_blank" rel="noopener noreferrer" className="hover:underline text-teal-600 font-semibold">
-                          {footer?.developerCreditText || branding.developerCreditText || "AIPH Tech"}
+                      {" · by "}
+                      {effectiveFooter.developerCreditUrl ? (
+                        <a href={effectiveFooter.developerCreditUrl} target="_blank" rel="noopener noreferrer" className="hover:underline text-teal-600 font-semibold">
+                          {String(effectiveFooter.developerCreditText || '').replace(/^developed by\s+/i, '')}
                         </a>
                       ) : (
-                        <span>{footer?.developerCreditText || branding.developerCreditText || "AIPH Tech"}</span>
+                        <span>{String(effectiveFooter.developerCreditText || '').replace(/^developed by\s+/i, '')}</span>
                       )}
-                      {"."}
                     </>
                   )}
                 </span>
-                <div className="flex gap-2 justify-center items-center">
-                  {(footer?.privacyPolicyUrl || branding.privacyPolicyUrl) && (
-                    <a href={footer?.privacyPolicyUrl || branding.privacyPolicyUrl} target="_blank" rel="noopener noreferrer" className="hover:underline text-teal-600 font-medium">Privacy Policy</a>
+                <div className="flex gap-2 items-center">
+                  {effectiveFooter.privacyPolicyUrl && (
+                    <a href={effectiveFooter.privacyPolicyUrl} target="_blank" rel="noopener noreferrer" className="hover:underline text-teal-600 font-medium">Privacy Policy</a>
                   )}
-                  {(footer?.privacyPolicyUrl || branding.privacyPolicyUrl) && (footer?.termsConditionsUrl || branding.termsConditionsUrl) && <span className="text-slate-200">|</span>}
-                  {(footer?.termsConditionsUrl || branding.termsConditionsUrl) && (
-                    <a href={footer?.termsConditionsUrl || branding.termsConditionsUrl} target="_blank" rel="noopener noreferrer" className="hover:underline text-teal-600 font-medium">Terms & Conditions</a>
+                  {effectiveFooter.privacyPolicyUrl && effectiveFooter.termsConditionsUrl && <span className="text-slate-200">|</span>}
+                  {effectiveFooter.termsConditionsUrl && (
+                    <a href={effectiveFooter.termsConditionsUrl} target="_blank" rel="noopener noreferrer" className="hover:underline text-teal-600 font-medium">Terms & Conditions</a>
                   )}
                 </div>
               </div>
