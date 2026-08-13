@@ -25,17 +25,17 @@ import { TimezoneProvider } from './contexts/TimezoneContext';
 
 const defaultBranding = {
   // Application Branding
-  appName: 'Skin Clinic Patient Records',
-  appShortName: 'Lumina Skin',
+  appName: 'Vine Management App',
+  appShortName: 'Vine',
   appLogoUrl: '',
   faviconUrl: '',
   loginPageLogoUrl: '',
-  browserTitle: 'Skin Clinic Patient Records',
+  browserTitle: 'Vine Management App',
   // SEO & Metadata
-  metaTitle: 'Skin Clinic Patient Records',
+  metaTitle: 'Vine Management App',
   metaDescription: 'Manage clinical records and appointments securely.',
   metaKeywords: 'clinic, records, patient management, HIPAA',
-  ogTitle: 'Skin Clinic Patient Records',
+  ogTitle: 'Vine Management App',
   ogDescription: 'Manage clinical records and appointments securely.',
   ogImageUrl: '',
   // Company Information

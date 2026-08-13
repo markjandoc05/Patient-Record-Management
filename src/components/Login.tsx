@@ -69,7 +69,7 @@ export default function Login({
               <Users className="w-10 h-10" />
             </div>
           )}
-          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tighter">{branding.appName || 'Skin Clinic Patient Records'}</h1>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tighter">{branding.appName || 'Vine Management App'}</h1>
         </div>
 
         {/* Inline notification for errors or missing profile, but NOT for success (which is now in a modal) */}
