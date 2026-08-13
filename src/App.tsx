@@ -17,9 +17,10 @@ import ProfileView from './components/ProfileView';
 import VisitHistoryDashboard from './components/VisitHistoryDashboard';
 import InsightsAnalyticsDashboard from './components/InsightsAnalyticsDashboard';
 import AppointmentsDashboard from './components/AppointmentsDashboard';
+import InventoryDashboard from './components/InventoryDashboard';
 import AuditTrailDashboard from './components/AuditTrailDashboard';
 import DeveloperDashboard, { DevTab } from './components/DeveloperDashboard';
-import { Users, Settings, UserCircle, Calendar, Clock, Menu, X, Shield, PanelLeft, Cpu, Zap } from 'lucide-react';
+import { Users, Settings, UserCircle, Calendar, Clock, Menu, X, Shield, PanelLeft, Cpu, Zap, Package } from 'lucide-react';
 import { TimezoneProvider } from './contexts/TimezoneContext';
 
 const defaultBranding = {
@@ -499,6 +500,18 @@ export default function App() {
                 {!isSidebarCollapsed && <span className="whitespace-nowrap">Visit History</span>}
               </button>
               
+              {(userRole === 'admin' || userRole === 'support_developer') && (
+                <button 
+                  title="Inventory" 
+                  onClick={() => setActiveView('Inventory')} 
+                  className={`flex items-center gap-3 px-3 py-2 ${activeView === 'Inventory' ? 'text-white font-semibold' : 'text-slate-400 hover:bg-slate-700 hover:text-white'} rounded-md font-medium w-full`}
+                  style={activeView === 'Inventory' ? { backgroundColor: branding.primaryColor || '#0d9488', color: '#fff' } : undefined}
+                >
+                  <Package className="w-5 h-5 shrink-0" />
+                  {!isSidebarCollapsed && <span className="whitespace-nowrap">Inventory</span>}
+                </button>
+              )}
+              
               <button 
                 title="Insights & Analytics" 
                 onClick={() => setActiveView('Insights')} 
@@ -647,6 +660,10 @@ export default function App() {
                 {activeView === 'Appointments' && <AppointmentsDashboard role={userRole} />}
                 {activeView === 'VisitHistory' && <VisitHistoryDashboard db={db} role={userRole} />}
                 {activeView === 'Insights' && <InsightsAnalyticsDashboard />}
+                {activeView === 'Inventory' && (userRole === 'admin' || userRole === 'support_developer') && <InventoryDashboard userProfile={userProfile} />}
+                {activeView === 'Inventory' && userRole !== 'admin' && userRole !== 'support_developer' && (
+                  <div className="p-8 text-center"><p className="text-slate-500 font-medium">Access Denied: Inventory controls are restricted to administrators.</p></div>
+                )}
                 {activeView === 'Profile' && <ProfileView db={db} />}
                 {activeView === 'AccountSettings' && <UserSettings db={db} />}
                 {activeView === 'Settings' && (userRole === 'admin' || userRole === 'support_developer') && <AdminSettings db={db} userRole={userRole} branding={branding} timezone={timezone} footer={footer} userProfile={userProfile} />}

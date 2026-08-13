@@ -79,6 +79,26 @@ service cloud.firestore {
       }
     }
 
+    match /inventory_items/{itemId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'support_developer']);
+    }
+
+    match /inventory_stocks/{stockId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'support_developer']);
+    }
+
+    match /suppliers/{supplierId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'support_developer']);
+    }
+
+    match /stock_transfers/{transferId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'support_developer']);
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
