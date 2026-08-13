@@ -1,102 +1,248 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    function getUserRole(uid) {
-      let userDoc = get(/databases/$(database)/documents/users/$(uid));
-      return userDoc.exists ? userDoc.data().role : null;
+    function isSignedIn() {
+      return request.auth != null;
     }
 
-    function isSupportDeveloper() {
-      return getUserRole(request.auth.uid) == 'support_developer';
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    function hasActiveProfile() {
+      return isSignedIn()
+        && exists(userPath(request.auth.uid))
+        && get(userPath(request.auth.uid)).data.active == true;
+    }
+
+    function getUserRole(uid) {
+      return get(userPath(uid)).data.role;
+    }
+
+    function hasAnyRole(roles) {
+      return hasActiveProfile() && getUserRole(request.auth.uid) in roles;
     }
 
     function isAdmin() {
-      return getUserRole(request.auth.uid) == 'admin';
+      return hasAnyRole(['admin']);
+    }
+
+    function isSupportDeveloper() {
+      return hasAnyRole(['support_developer']);
+    }
+
+    function hasGlobalBranchAccess() {
+      return hasAnyRole(['admin', 'support_developer']);
+    }
+
+    function canAccessBranch(branchId) {
+      return hasActiveProfile()
+        && branchId is string
+        && (
+          hasGlobalBranchAccess()
+          || branchId in get(userPath(request.auth.uid)).data.assignedBranches
+        );
+    }
+
+    function canAccessPatient(patientId) {
+      return canAccessBranch(
+        get(/databases/$(database)/documents/patients/$(patientId)).data.homeBranchId
+      );
+    }
+
+    function isSafePendingProfile(userId) {
+      return isSignedIn()
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasAll([
+          'email',
+          'fullName',
+          'role',
+          'active',
+          'assignedBranches',
+          'assignedBranchNames',
+          'defaultBranchId',
+          'defaultBranchName'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'email',
+          'fullName',
+          'role',
+          'active',
+          'assignedBranches',
+          'assignedBranchNames',
+          'defaultBranchId',
+          'defaultBranchName'
+        ])
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.fullName is string
+        && request.resource.data.role == 'staff'
+        && request.resource.data.active == false
+        && request.resource.data.assignedBranches == []
+        && request.resource.data.assignedBranchNames == []
+        && request.resource.data.defaultBranchId == null
+        && request.resource.data.defaultBranchName == null;
+    }
+
+    function isSafeSelfProfileUpdate(userId) {
+      return isSignedIn()
+        && request.auth.uid == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'fullName',
+          'birthdate',
+          'contactNumber',
+          'lastUpdatedBy',
+          'lastUpdatedDate'
+        ])
+        && request.resource.data.lastUpdatedBy == request.auth.uid;
+    }
+
+    function isAdminUserUpdate(userId) {
+      return isAdmin()
+        && resource.data.role != 'support_developer'
+        && request.resource.data.role != 'support_developer'
+        && (
+          request.auth.uid != userId
+          || (
+            request.resource.data.role == resource.data.role
+            && request.resource.data.active == true
+          )
+        );
     }
 
     match /users/{userId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null && request.auth.uid == userId;
-      allow update: if request.auth != null && (
-        request.auth.uid == userId || 
-        getUserRole(request.auth.uid) in ['admin', 'manager', 'support_developer']
+      // Pending users may only see their own profile. Approved users need the
+      // directory for doctor assignment and display names.
+      allow read: if isSignedIn() && (
+        request.auth.uid == userId || hasActiveProfile()
       );
-      allow delete: if request.auth != null && (getUserRole(request.auth.uid) == 'admin');
+
+      // Public registration always creates a disabled Staff profile. Privileged
+      // roles must be assigned through trusted Admin SDK code or by an approved
+      // administrator after registration.
+      allow create: if isSafePendingProfile(userId);
+
+      // Self-service writes are restricted to personal profile fields. Role,
+      // approval state, and branch access cannot be changed by the account owner.
+      allow update: if isSafeSelfProfileUpdate(userId)
+        || isAdminUserUpdate(userId)
+        || isSupportDeveloper();
+
+      allow delete: if isAdmin()
+        && resource.data.role != 'support_developer'
+        && request.auth.uid != userId;
     }
-    
+
     match /appointments/{appointmentId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'staff', 'doctor', 'support', 'support_developer']);
-      allow update: if request.auth != null;
-      allow delete: if request.auth != null && (getUserRole(request.auth.uid) == 'admin');
+      allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
+        && canAccessBranch(resource.data.branchId);
+      allow create: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
+        && canAccessBranch(request.resource.data.branchId)
+        && canAccessPatient(request.resource.data.patientId);
+      allow update: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
+        && canAccessBranch(resource.data.branchId)
+        && canAccessBranch(request.resource.data.branchId)
+        && canAccessPatient(request.resource.data.patientId);
+      allow delete: if hasAnyRole(['admin', 'support_developer']);
     }
 
     match /visits/{visitId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'staff', 'doctor', 'support', 'support_developer']);
-      allow update: if request.auth != null;
-      allow delete: if request.auth != null && (getUserRole(request.auth.uid) == 'admin');
+      allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
+        && canAccessBranch(resource.data.branchId);
+      allow create: if hasAnyRole(['admin', 'manager', 'support_developer'])
+        && canAccessBranch(request.resource.data.branchId)
+        && canAccessPatient(request.resource.data.patientId);
+      allow update: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
+        && canAccessBranch(resource.data.branchId)
+        && canAccessBranch(request.resource.data.branchId)
+        && canAccessPatient(request.resource.data.patientId);
+      allow delete: if hasAnyRole(['admin', 'support_developer']);
     }
 
     match /patients/{patientId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'staff', 'doctor', 'support', 'support_developer']);
-      allow update: if request.auth != null;
-      allow delete: if request.auth != null && (getUserRole(request.auth.uid) == 'admin');
-      
+      allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
+        && canAccessBranch(resource.data.homeBranchId);
+      allow create: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
+        && canAccessBranch(request.resource.data.homeBranchId);
+      allow update: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
+        && canAccessBranch(resource.data.homeBranchId)
+        && canAccessBranch(request.resource.data.homeBranchId);
+      allow delete: if hasAnyRole(['admin', 'support_developer']);
+
       match /privateNotes/{noteId} {
-        allow read, create, update: if request.auth != null;
-        allow delete: if request.auth != null && (getUserRole(request.auth.uid) == 'admin');
+        allow read: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
+          && canAccessPatient(patientId);
+        allow create: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
+          && canAccessPatient(patientId)
+          && request.resource.data.patientId == patientId
+          && request.resource.data.authorId == request.auth.uid;
+        allow update: if hasAnyRole(['admin', 'support_developer'])
+          || (
+            hasAnyRole(['manager', 'doctor'])
+            && canAccessPatient(patientId)
+            && resource.data.authorId == request.auth.uid
+            && request.resource.data.authorId == resource.data.authorId
+            && request.resource.data.patientId == resource.data.patientId
+          );
+        allow delete: if hasAnyRole(['admin', 'support_developer']);
       }
     }
 
     match /branches/{branchId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && (getUserRole(request.auth.uid) == 'admin');
-    }
-
-    match /settings/footer {
-      allow read: if request.auth != null;
-      allow write: if getUserRole(request.auth.uid) == 'admin';
+      allow read: if hasActiveProfile();
+      allow write: if isAdmin();
     }
 
     match /settings/branding {
       allow read: if true;
-      allow write: if request.auth != null && (request.auth.token.email == 'markjandoc@gmail.com' || getUserRole(request.auth.uid) in ['admin', 'support_developer']);
+      allow write: if hasAnyRole(['admin', 'support_developer']);
     }
 
+    match /settings/timezone {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /settings/footer {
+      allow read: if true;
+      allow write: if isSupportDeveloper();
+    }
+
+    match /settings/media {
+      allow read: if true;
+      allow write: if hasAnyRole(['admin', 'support_developer']);
+    }
+
+    // New settings documents are denied until an explicit permission policy is
+    // added above. This prevents accidental public configuration writes.
     match /settings/{document=**} {
       allow read: if true;
-      allow write: if request.auth != null && (request.auth.token.email == 'markjandoc@gmail.com' || getUserRole(request.auth.uid) in ['admin', 'support_developer']);
+      allow write: if false;
     }
-    
-    match /audit_logs {
-      allow list: if request.auth != null;
-      match /{logId} {
-        allow read, create: if request.auth != null;
-        allow update, delete: if false;
-      }
+
+    match /audit_logs/{logId} {
+      // Managers regain branch-scoped audit access after audit records carry a
+      // trusted branchId. Until then, global audit visibility is admin-only.
+      allow read: if hasAnyRole(['admin', 'support_developer']);
+      // Audit creation remains client-based for now and will move to a trusted
+      // backend in the dedicated audit-integrity change.
+      allow create: if hasActiveProfile();
+      allow update, delete: if false;
     }
 
     match /inventory_items/{itemId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'support_developer']);
+      allow read, write: if hasAnyRole(['admin', 'support_developer']);
     }
 
     match /inventory_stocks/{stockId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'support_developer']);
+      allow read, write: if hasAnyRole(['admin', 'support_developer']);
     }
 
     match /suppliers/{supplierId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'support_developer']);
+      allow read, write: if hasAnyRole(['admin', 'support_developer']);
     }
 
     match /stock_transfers/{transferId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && (getUserRole(request.auth.uid) in ['admin', 'manager', 'support_developer']);
+      allow read, write: if hasAnyRole(['admin', 'support_developer']);
     }
 
     match /{document=**} {

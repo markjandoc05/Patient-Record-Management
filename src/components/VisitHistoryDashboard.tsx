@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot } from 'firebase/firestore';
 import { formatDateTime } from '../utils';
 import VisitForm from './VisitForm';
 import { hasPermission, Role } from '../rbac';
 import { Calendar, UserCheck, AlertCircle, Clock } from 'lucide-react';
+import { getAccessibleBranches, subscribeToBranchScopedCollection } from '../utils/branchAccess';
 
-export default function VisitHistoryDashboard({ db, role }: { db: any, role: string | null }) {
+export default function VisitHistoryDashboard({ db, role, userProfile }: { db: any, role: string | null, userProfile: any }) {
   const [visits, setVisits] = useState<any[]>([]);
   const [appointments, setAppointments] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
@@ -27,16 +28,17 @@ export default function VisitHistoryDashboard({ db, role }: { db: any, role: str
   const canUpdate = role ? hasPermission(role as Role, 'visitHistory', 'update') : false;
 
   useEffect(() => {
-    const qVisits = query(collection(db, 'visits'), orderBy('visitDate', 'desc'));
-    const unsubVisits = onSnapshot(qVisits, (snap) => setVisits(snap.docs.map(d => ({id: d.id, ...d.data()}))));
-    const unsubAppointments = onSnapshot(collection(db, 'appointments'), (snap) => setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()}))));
-    const unsubPatients = onSnapshot(collection(db, 'patients'), (snap) => setPatients(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubVisits = subscribeToBranchScopedCollection(db, 'visits', 'branchId', userProfile, setVisits);
+    const unsubAppointments = subscribeToBranchScopedCollection(db, 'appointments', 'branchId', userProfile, setAppointments);
+    const unsubPatients = subscribeToBranchScopedCollection(db, 'patients', 'homeBranchId', userProfile, setPatients);
     const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => setUsers(snap.docs.map(d => ({id: d.id, ...d.data()}))));
     const unsubBranches = onSnapshot(collection(db, 'branches'), (snap) => setBranches(snap.docs.map(d => ({id: d.id, ...d.data()}))));
     
     Promise.all([unsubVisits, unsubAppointments, unsubPatients, unsubUsers, unsubBranches]).then(() => setLoading(false));
     return () => { unsubVisits(); unsubAppointments(); unsubPatients(); unsubUsers(); unsubBranches(); };
-  }, [db]);
+  }, [db, userProfile]);
+
+  const accessibleBranches = getAccessibleBranches(branches, userProfile);
 
   const handleSearchChange = (value: string) => {
     setSearchTerm(value);
@@ -120,7 +122,7 @@ export default function VisitHistoryDashboard({ db, role }: { db: any, role: str
             onChange={e => handleBranchChange(e.target.value)}
           >
             <option value="All">All Branches</option>
-            {branches.map(b => <option key={b.id} value={b.id}>{b.branchName}</option>)}
+            {accessibleBranches.map(b => <option key={b.id} value={b.id}>{b.branchName}</option>)}
           </select>
           <select 
             className="w-full border border-slate-300 px-3.5 py-2 rounded-xl text-sm bg-white outline-none transition-all focus:ring-4 focus:ring-teal-500/10 focus:border-teal-500 text-slate-700" 
@@ -332,7 +334,7 @@ export default function VisitHistoryDashboard({ db, role }: { db: any, role: str
           </div>
         )}
       </div>
-      {showAddForm && <VisitForm patients={patients} branches={branches} users={users} onClose={() => { setShowAddForm(false); setSelectedVisit(null); }} onSave={() => { setShowAddForm(false); setSelectedVisit(null); }} visit={selectedVisit} userRole={role} visits={visits} appointments={appointments} />}
+      {showAddForm && <VisitForm patients={patients} branches={accessibleBranches} users={users} onClose={() => { setShowAddForm(false); setSelectedVisit(null); }} onSave={() => { setShowAddForm(false); setSelectedVisit(null); }} visit={selectedVisit} userRole={role} visits={visits} appointments={appointments} />}
       {selectedVisit && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
               <div className="bg-white rounded-xl shadow-lg w-full max-w-2xl p-6 space-y-4">

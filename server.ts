@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 import multer from "multer";
 
 import firebaseConfig from "./firebase-applet-config.json";
@@ -19,17 +20,69 @@ const app = express();
 app.use(express.json());
 const PORT = 3000;
 const upload = multer({ storage: multer.memoryStorage() });
+const db = getFirestore(admin.app(), firebaseConfig.firestoreDatabaseId);
+const applicationRoles = ['admin', 'manager', 'staff', 'doctor', 'support_developer'] as const;
+const globalBranchRoles = new Set(['admin', 'support_developer']);
+const firestoreInLimit = 30;
+
+function getAssignedBranchIds(userProfile: Record<string, unknown>) {
+    if (!Array.isArray(userProfile.assignedBranches)) return [];
+    return [...new Set(userProfile.assignedBranches.filter(
+        (branchId): branchId is string => typeof branchId === 'string' && branchId.length > 0
+    ))];
+}
+
+function chunk<T>(values: T[], size: number) {
+    const chunks: T[][] = [];
+    for (let index = 0; index < values.length; index += size) {
+        chunks.push(values.slice(index, index + size));
+    }
+    return chunks;
+}
+
+async function authorizeRequest(
+    req: express.Request,
+    res: express.Response,
+    allowedRoles: readonly string[]
+) {
+    const authorization = req.headers.authorization;
+    const match = authorization?.match(/^Bearer\s+(.+)$/i);
+
+    if (!match) {
+        res.status(401).json({ error: "Unauthorized" });
+        return null;
+    }
+
+    try {
+        const decodedToken = await admin.auth().verifyIdToken(match[1]);
+        const userSnapshot = await db.collection("users").doc(decodedToken.uid).get();
+        const userProfile = userSnapshot.data();
+
+        if (!userSnapshot.exists || userProfile?.active !== true) {
+            res.status(403).json({ error: "Account is not approved or active" });
+            return null;
+        }
+
+        if (typeof userProfile.role !== 'string' || !allowedRoles.includes(userProfile.role)) {
+            res.status(403).json({ error: "Insufficient permissions" });
+            return null;
+        }
+
+        return { decodedToken, userProfile };
+    } catch (error) {
+        console.error("Request authentication failed", error);
+        res.status(401).json({ error: "Unauthorized" });
+        return null;
+    }
+}
 
 // API routes - Proxy for Firebase
 app.post("/api/upload-image", upload.single('file'), async (req, res) => {
     console.log("Entering /api/upload-image API route");
-    const authorization = req.headers.authorization;
-    if (!authorization) return res.status(401).json({ error: "Unauthorized" });
-    const idToken = authorization.split("Bearer ")[1];
-    if (!idToken) return res.status(401).json({ error: "Unauthorized" });
+    const authorization = await authorizeRequest(req, res, applicationRoles);
+    if (!authorization) return;
 
     try {
-        const decodedToken = await admin.auth().verifyIdToken(idToken);
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
         const { path: storagePath } = req.body;
@@ -48,7 +101,7 @@ app.post("/api/upload-image", upload.single('file'), async (req, res) => {
             await file.save(req.file.buffer, {
                 contentType: req.file.mimetype,
                 metadata: {
-                    uploadedByUid: decodedToken.uid
+                    uploadedByUid: authorization.decodedToken.uid
                 }
             });
             console.log("File saved successfully");
@@ -74,30 +127,35 @@ app.post("/api/upload-image", upload.single('file'), async (req, res) => {
 
 app.get("/api/patients", async (req, res) => {
     console.log("Request to /api/patients");
-    // Authenticate user
-    const authorization = req.headers.authorization;
-    if (!authorization) {
-        console.log("No authorization header");
-        return res.status(401).json({ error: "Unauthorized" });
-    }
-    const idToken = authorization.split("Bearer ")[1];
-    if (!idToken) {
-        console.log("No idToken");
-        return res.status(401).json({ error: "Unauthorized" });
-    }
+    const authorization = await authorizeRequest(req, res, applicationRoles);
+    if (!authorization) return;
 
     try {
-        console.log("Verifying token");
-        const decodedToken = await admin.auth().verifyIdToken(idToken);
-        console.log("Token verified", decodedToken.uid);
-        const user = await admin.firestore().collection("users").doc(decodedToken.uid).get();
-        const userData = user.data();
-        
-        // Example check: Manager or Admin can view all
-        // For now, let's just return all patients - refinement needed for role-based
         console.log("Fetching patients");
-        const snapshot = await admin.firestore().collection("patients").get();
-        const patients = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const role = authorization.userProfile.role as string;
+        let patients: Array<{ id: string } & Record<string, unknown>>;
+
+        if (globalBranchRoles.has(role)) {
+            const snapshot = await db.collection("patients").get();
+            patients = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        } else {
+            const assignedBranchIds = getAssignedBranchIds(authorization.userProfile);
+            if (assignedBranchIds.length === 0) {
+                return res.json([]);
+            }
+
+            const snapshots = await Promise.all(
+                chunk(assignedBranchIds, firestoreInLimit).map(branchIds =>
+                    db.collection("patients").where("homeBranchId", "in", branchIds).get()
+                )
+            );
+            const patientsById = new Map<string, { id: string } & Record<string, unknown>>();
+            snapshots.forEach(snapshot => snapshot.docs.forEach(doc => {
+                patientsById.set(doc.id, { id: doc.id, ...doc.data() });
+            }));
+            patients = [...patientsById.values()];
+        }
+
         res.json(patients);
     } catch (error) {
         console.error("Error in /api/patients", error);

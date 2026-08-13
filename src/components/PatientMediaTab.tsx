@@ -1,11 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { db } from '../firebase';
-import { collection, query, where, getDocs, orderBy, onSnapshot } from 'firebase/firestore';
+import React, { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, FileText, Image as ImageIcon, Calendar } from 'lucide-react';
 import Lightbox from './Lightbox';
 import { useTimezone } from '../contexts/TimezoneContext';
 
-export default function PatientMediaTab({ patientId, users, branches }: { patientId: string, users: any[], branches: any[] }) {
+export default function PatientMediaTab({ patientId, users, branches, visits }: { patientId: string, users: any[], branches: any[], visits: any[] }) {
     const timezone = useTimezone();
 const formatDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -18,36 +16,15 @@ const formatDate = (dateString: string) => {
         hour12: timezone?.format === '12h'
     });
 };
-    const [items, setItems] = useState<any[]>([]);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
     const [failedLoadFiles, setFailedLoadFiles] = useState<Set<string>>(new Set());
 
-    useEffect(() => {
-        if (!patientId) return;
-        
-        const visitQ = query(collection(db, 'visits'), where('patientId', '==', patientId));
-        
-        let visitsData: any[] = [];
-
-        function updateItems() {
-            const allItems = [...visitsData]
-                .filter(item => item.data.attachments && item.data.attachments.length > 0)
-                .sort((a, b) => {
-                    const dateA = new Date(a.data.visitDate).getTime();
-                    const dateB = new Date(b.data.visitDate).getTime();
-                    return dateB - dateA;
-                });
-            setItems(allItems);
-        }
-
-        const unsubVisit = onSnapshot(visitQ, (visitSnap) => {
-            visitsData = visitSnap.docs.map(d => ({ id: d.id, type: 'visit' as const, data: d.data() as any }));
-            updateItems();
-        });
-
-        return () => { unsubVisit(); };
-    }, [patientId]);
+    const items = useMemo(() => visits
+        .filter(visit => visit.patientId === patientId && visit.attachments?.length > 0)
+        .map(visit => ({ id: visit.id, type: 'visit' as const, data: visit }))
+        .sort((a, b) => new Date(b.data.visitDate).getTime() - new Date(a.data.visitDate).getTime()),
+    [patientId, visits]);
 
     const toggleItem = (itemId: string) => {
         const next = new Set(expandedItems);

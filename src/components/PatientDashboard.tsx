@@ -4,8 +4,9 @@ import PatientForm from './PatientForm';
 import PatientProfile from './PatientProfile';
 import { hasPermission, Role } from '../rbac';
 import { formatDateTime } from '../utils';
+import { getAccessibleBranches, subscribeToBranchScopedCollection } from '../utils/branchAccess';
 
-export default function PatientDashboard({ db, user, role }: { db: any, user: any, role: string|null }) {
+export default function PatientDashboard({ db, user, role, userProfile }: { db: any, user: any, role: string|null, userProfile: any }) {
   const [patients, setPatients] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [branches, setBranches] = useState<any[]>([]);
@@ -33,9 +34,9 @@ export default function PatientDashboard({ db, user, role }: { db: any, user: an
     setLoadingAppointments(true);
     setLoadingVisits(true);
     
-    const unsubPatients = onSnapshot(collection(db, 'patients'), 
-      (snapshot) => {
-        setPatients(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const unsubPatients = subscribeToBranchScopedCollection(db, 'patients', 'homeBranchId', userProfile,
+      (documents) => {
+        setPatients(documents);
         setLoadingPatients(false);
       }, (error) => { console.error("Error fetching patients", error); setLoadingPatients(false); }
     );
@@ -51,15 +52,15 @@ export default function PatientDashboard({ db, user, role }: { db: any, user: an
           setLoadingBranches(false);
         }, (error) => { console.error("Error fetching branches", error); setLoadingBranches(false); }
     );
-    const unsubAppointments = onSnapshot(collection(db, 'appointments'),
-      (snapshot) => {
-        setAppointments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const unsubAppointments = subscribeToBranchScopedCollection(db, 'appointments', 'branchId', userProfile,
+      (documents) => {
+        setAppointments(documents);
         setLoadingAppointments(false);
       }, (error) => { console.error("Error fetching appointments", error); setLoadingAppointments(false); }
     );
-    const unsubVisits = onSnapshot(collection(db, 'visits'),
-      (snapshot) => {
-        setVisits(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const unsubVisits = subscribeToBranchScopedCollection(db, 'visits', 'branchId', userProfile,
+      (documents) => {
+        setVisits(documents);
         setLoadingVisits(false);
       }, (error) => { console.error("Error fetching visits", error); setLoadingVisits(false); }
     );
@@ -71,14 +72,14 @@ export default function PatientDashboard({ db, user, role }: { db: any, user: an
       unsubAppointments();
       unsubVisits();
     };
-  }, [db, user]);
+  }, [db, user, userProfile]);
 
   const canCreate = role ? hasPermission(role as Role, 'patientRecord', 'create') : false;
   const canUpdate = role ? hasPermission(role as Role, 'patientRecord', 'update') : false;
   
-  const userProfile = users.find(u => u.email === user.email);
+  const accessibleBranches = getAccessibleBranches(branches, userProfile);
   
-  const patientCountsByBranch = branches.map(branch => ({
+  const patientCountsByBranch = accessibleBranches.map(branch => ({
     name: branch.branchName,
     count: patients.filter(p => p.homeBranchId === branch.id).length
   }));
@@ -193,7 +194,7 @@ export default function PatientDashboard({ db, user, role }: { db: any, user: an
               onChange={e => handleBranchChange(e.target.value)}
             >
                 <option value="All">All Branches</option>
-                {branches.map(b => <option key={b.id} value={b.id}>{b.branchName}</option>)}
+                {accessibleBranches.map(b => <option key={b.id} value={b.id}>{b.branchName}</option>)}
             </select>
         </div>
         {canCreate && (
@@ -391,9 +392,9 @@ export default function PatientDashboard({ db, user, role }: { db: any, user: an
         )}
       </div>
   
-      {showAddForm && <PatientForm db={db} user={user} users={users} patients={patients} branches={branches} userProfile={userProfile} onClose={() => setShowAddForm(false)} onSave={() => setShowAddForm(false)} />}
-      {editingPatient && <PatientForm db={db} user={user} users={users} patients={patients} branches={branches} userProfile={userProfile} patient={editingPatient} onClose={() => setEditingPatient(null)} onSave={() => setEditingPatient(null)} />}
-      {selectedPatient && <PatientProfile db={db} patient={selectedPatient} onClose={() => setSelectedPatient(null)} userRole={role ?? undefined} users={users} />}
+      {showAddForm && <PatientForm db={db} user={user} users={users} patients={patients} branches={accessibleBranches} userProfile={userProfile} onClose={() => setShowAddForm(false)} onSave={() => setShowAddForm(false)} />}
+      {editingPatient && <PatientForm db={db} user={user} users={users} patients={patients} branches={accessibleBranches} userProfile={userProfile} patient={editingPatient} onClose={() => setEditingPatient(null)} onSave={() => setEditingPatient(null)} />}
+      {selectedPatient && <PatientProfile patient={selectedPatient} onClose={() => setSelectedPatient(null)} userRole={role ?? undefined} users={users} branches={accessibleBranches} visits={visits} appointments={appointments} />}
     </div>
   );
 }

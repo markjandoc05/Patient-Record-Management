@@ -1,17 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { db } from '../firebase';
 import { formatDateTime } from '../utils';
 import PatientTimeline from './PatientTimeline';
 import PatientAppointments from './PatientAppointments';
 import NotesTab from './NotesTab';
 import AppointmentForm from './AppointmentForm';
-import { collection, onSnapshot } from 'firebase/firestore';
 import PatientMediaTab from './PatientMediaTab';
 
-export default function PatientProfile({ db, patient, onClose, userRole, users }: { db: any, patient: any, onClose: () => void, userRole?: string, users: any[] }) {
+export default function PatientProfile({ patient, onClose, userRole, users, branches, visits, appointments }: { patient: any, onClose: () => void, userRole?: string, users: any[], branches: any[], visits: any[], appointments: any[] }) {
   const [showAddAppointment, setShowAddAppointment] = useState(false);
   const [activeTab, setActiveTab ] = useState<'visits' | 'appointments' | 'notes' | 'media'>('visits');
-  const [branches, setBranches] = useState<any[]>([]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -20,10 +17,6 @@ export default function PatientProfile({ db, patient, onClose, userRole, users }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
-
-  useEffect(() => {
-    return onSnapshot(collection(db, 'branches'), (snap) => setBranches(snap.docs.map(d => ({id: d.id, ...d.data()}))));
-  }, [db]);
 
   const summary = [
       { label: 'Last Visit', value: patient.lastVisitDate ? formatDateTime(patient.lastVisitDate) : 'N/A' },
@@ -180,13 +173,13 @@ export default function PatientProfile({ db, patient, onClose, userRole, users }
               </div>
 
               {activeTab === 'visits' ? (
-                <PatientTimeline patientId={patient.id} users={users} branches={branches} />
+                <PatientTimeline patientId={patient.id} users={users} branches={branches} visits={visits} />
               ) : activeTab === 'appointments' ? (
-                <PatientAppointments patientId={patient.id} users={users} branches={branches} />
+                <PatientAppointments patientId={patient.id} users={users} branches={branches} appointments={appointments} />
               ) : activeTab === 'notes' ? (
-                <NotesTab patient={patient} />
+                <NotesTab patient={patient} userRole={userRole} />
               ) : (
-                <PatientMediaTab patientId={patient.id} users={users} branches={branches} />
+                <PatientMediaTab patientId={patient.id} users={users} branches={branches} visits={visits} />
               )}
             </div>
 
@@ -194,7 +187,7 @@ export default function PatientProfile({ db, patient, onClose, userRole, users }
         </div>
       </div>
     </div>
-    {showAddAppointment && <AppointmentForm patients={[patient]} branches={branches} users={users} onClose={() => setShowAddAppointment(false)} onSave={() => { setShowAddAppointment(false); onClose(); }} />}
+    {showAddAppointment && <AppointmentForm patients={[patient]} branches={branches} users={users} onClose={() => setShowAddAppointment(false)} onSave={() => { setShowAddAppointment(false); onClose(); }} appointments={appointments} />}
   </>
   );
 }

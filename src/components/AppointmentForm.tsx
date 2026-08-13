@@ -48,7 +48,8 @@ export default function AppointmentForm({
   const currentUserRecord = users.find(u => u.email === currentUser?.email);
   const currentUserRole = currentUserRecord?.role?.toLowerCase();
   
-  const canModifySealed = ['admin', 'manager', 'doctor'].includes(currentUserRole || '');
+  const canModifySealed = ['admin', 'manager', 'doctor', 'support_developer'].includes(currentUserRole || '');
+  const canViewHistory = ['admin', 'support_developer'].includes(currentUserRole || '');
   const isLocked = isVisitCreated || (isCompleted && !canModifySealed);
   const isView = currentMode === 'view';
   const isReadOnly = isView || isLocked;
@@ -64,18 +65,11 @@ export default function AppointmentForm({
   }, [onClose]);
 
   useEffect(() => {
-    if (appointments && appointments.length > 0) {
-      setLocalAppointments(appointments);
-    } else {
-      const unsub = onSnapshot(collection(db, 'appointments'), (snapshot) => {
-        setLocalAppointments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      });
-      return () => unsub();
-    }
+    setLocalAppointments(appointments);
   }, [appointments]);
 
   useEffect(() => {
-    if (appointment?.id) {
+    if (appointment?.id && canViewHistory) {
       const q = query(
         collection(db, 'audit_logs'),
         where('resourceId', '==', appointment.id),
@@ -89,7 +83,7 @@ export default function AppointmentForm({
       });
       return () => unsub();
     }
-  }, [appointment?.id]);
+  }, [appointment?.id, canViewHistory]);
 
   const timeSlots = [];
   for (let h = 10; h <= 19; h++) {
@@ -269,7 +263,7 @@ export default function AppointmentForm({
           </h2>
           <div className="flex gap-2 bg-slate-100 p-1 rounded-xl">
              <button type="button" onClick={() => setActiveTab('details')} className={`px-4 py-1.5 rounded-lg text-xs font-semibold ${activeTab === 'details' ? 'bg-white shadow-sm text-teal-700' : 'text-slate-500'}`}>Details</button>
-             {appointment && <button type="button" onClick={() => setActiveTab('history')} className={`px-4 py-1.5 rounded-lg text-xs font-semibold ${activeTab === 'history' ? 'bg-white shadow-sm text-teal-700' : 'text-slate-500'}`}>History</button>}
+             {appointment && canViewHistory && <button type="button" onClick={() => setActiveTab('history')} className={`px-4 py-1.5 rounded-lg text-xs font-semibold ${activeTab === 'history' ? 'bg-white shadow-sm text-teal-700' : 'text-slate-500'}`}>History</button>}
           </div>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors">
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

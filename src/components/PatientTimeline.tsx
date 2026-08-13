@@ -1,45 +1,17 @@
-import React, { useEffect, useState } from 'react';
-import { db } from '../firebase';
-import { collection, query, where, getDocs, orderBy } from 'firebase/firestore';
+import React, { useState } from 'react';
 import { formatDateTime } from '../utils';
 
-export default function PatientTimeline({ patientId, users, branches }: { patientId: string, users: any[], branches: any[] }) {
-  const [visits, setVisits] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+export default function PatientTimeline({ patientId, users, branches, visits }: { patientId: string, users: any[], branches: any[], visits: any[] }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedVisit, setSelectedVisit] = useState<any | null>(null);
   const visitsPerPage = 5;
 
-  useEffect(() => {
-    async function fetchVisits() {
-      if (!patientId) return;
-      try {
-        const q = query(
-          collection(db, 'visits'),
-          where('patientId', '==', patientId)
-        );
-        const querySnapshot = await getDocs(q);
-        const data = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as any[];
-        // Sort on client side by most recent (descending)
-        data.sort((a, b) => {
-          const dateA = a.visitDate || '';
-          const dateB = b.visitDate || '';
-          return dateB.localeCompare(dateA);
-        });
-        setVisits(data);
-      } catch (error) {
-        console.error("Error fetching visits:", error);
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchVisits();
-  }, [patientId]);
+  const patientVisits = visits
+    .filter(visit => visit.patientId === patientId)
+    .sort((a, b) => (b.visitDate || '').localeCompare(a.visitDate || ''));
 
-  const totalPages = Math.ceil(visits.length / visitsPerPage);
-  const paginatedVisits = visits.slice((currentPage - 1) * visitsPerPage, currentPage * visitsPerPage);
-
-  if (loading) return <div className="text-sm text-slate-500">Loading timeline...</div>;
+  const totalPages = Math.ceil(patientVisits.length / visitsPerPage);
+  const paginatedVisits = patientVisits.slice((currentPage - 1) * visitsPerPage, currentPage * visitsPerPage);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -58,7 +30,7 @@ export default function PatientTimeline({ patientId, users, branches }: { patien
   return (
     <div className="border-t pt-4">
       <h3 className="font-bold text-lg mb-4 text-slate-800">Visit History Timeline</h3>
-      {visits.length === 0 ? (
+      {patientVisits.length === 0 ? (
         <p className="text-sm text-slate-500">No visit history.</p>
       ) : (
         <div className="space-y-4">

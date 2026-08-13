@@ -4,7 +4,6 @@
  */
 
 import { useState, useEffect } from 'react';
-import { initializeApp } from 'firebase/app';
 import { auth, db } from './firebase';
 import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut, signInWithEmailAndPassword, sendPasswordResetEmail, createUserWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
@@ -64,6 +63,8 @@ const defaultTimezone = {
   displayName: '(UTC+08:00) Philippine Standard Time',
   format: '12h'
 };
+
+const approvedRoles = new Set(['admin', 'manager', 'staff', 'doctor', 'support_developer']);
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
@@ -316,20 +317,12 @@ export default function App() {
           
           if (userDoc && userDoc.exists()) {
              const data = userDoc.data();
-             if (user.email === 'markjandoc@gmail.com') {
-                if (data.role !== 'admin' || !data.active) {
-                   await setDoc(doc(db, 'users', user.uid), { ...data, role: 'admin', active: true }, { merge: true });
-                }
-                setUserRole('admin');
-                setUserProfile({ ...data, role: 'admin', active: true });
-             } else if (user.email === 'hello@aiph.tech') {
-                if (data.role !== 'support_developer' || !data.active) {
-                   await setDoc(doc(db, 'users', user.uid), { ...data, role: 'support_developer', active: true }, { merge: true });
-                }
-                setUserRole('support_developer');
-                setUserProfile({ ...data, role: 'support_developer', active: true });
-             } else if (!data.active) {
+             if (!data.active) {
                 setAuthError("Your account is awaiting approval by an administrator. Please contact the administrator or check back later.");
+                await signOut(auth);
+                setUser(null);
+             } else if (!approvedRoles.has(data.role)) {
+                setAuthError("Your account has an invalid role configuration. Please contact the administrator.");
                 await signOut(auth);
                 setUser(null);
              } else {
@@ -337,42 +330,24 @@ export default function App() {
                 setUserProfile(data);
              }
           } else {
-             // If user document does not exist, create it for special emails
-             if (user.email === 'markjandoc@gmail.com') {
-                await setDoc(doc(db, 'users', user.uid), {
-                   email: user.email,
-                   fullName: user.displayName || 'Admin',
-                   role: 'admin',
-                   active: true
-                });
-                setUserRole('admin');
-                setUserProfile({ email: user.email, fullName: user.displayName || 'Admin', role: 'admin', active: true });
-             } else if (user.email === 'hello@aiph.tech') {
-                await setDoc(doc(db, 'users', user.uid), {
-                   email: user.email,
-                   fullName: user.displayName || 'Support',
-                   role: 'support_developer',
-                   active: true
-                });
-                setUserRole('support_developer');
-                setUserProfile({ email: user.email, fullName: user.displayName || 'Support', role: 'support_developer', active: true });
-             } else {
-                 // Support auto-registration for regular Google sign-ins, requiring approval in App
-                 const newProfile = {
-                    email: user.email || '',
-                    fullName: user.displayName || (user.email ? user.email.split('@')[0] : 'Google User'),
-                    role: 'staff',
-                    active: false,
-                    assignedBranches: [],
-                    assignedBranchNames: [],
-                    defaultBranchId: null,
-                    defaultBranchName: null
-                 };
-                 await setDoc(doc(db, 'users', user.uid), newProfile);
-                 setSuccessMessage("Account created successfully! Your registration is subject for approval in the App.");
-                 await signOut(auth);
-                 setUser(null);
-             }
+             // Every new account starts as a disabled Staff profile. Privileged
+             // roles are assigned only by an approved administrator or trusted
+             // Admin SDK tooling, never by browser-side email checks.
+             const newProfile = {
+                email: user.email || '',
+                fullName: user.displayName || (user.email ? user.email.split('@')[0] : 'Google User'),
+                role: 'staff',
+                active: false,
+                assignedBranches: [],
+                assignedBranchNames: [],
+                defaultBranchId: null,
+                defaultBranchName: null
+             };
+             await setDoc(doc(db, 'users', user.uid), newProfile);
+             setAccountMissingProfile(true);
+             setSuccessMessage("Account created successfully! Your registration is subject for administrator approval.");
+             await signOut(auth);
+             setUser(null);
           }
         } catch (e) {
           console.error("Error fetching user role", e);
@@ -522,7 +497,7 @@ export default function App() {
                 {!isSidebarCollapsed && <span className="whitespace-nowrap">Insights & Analytics</span>}
               </button>
               
-              {(userRole === 'admin' || userRole === 'support_developer' || userRole === 'manager') && (
+              {(userRole === 'admin' || userRole === 'support_developer') && (
                 <>
                   <button 
                     title="App Setting" 
@@ -656,10 +631,10 @@ export default function App() {
         
         <div className="flex-grow overflow-auto flex flex-col">
             <div className="flex-1 p-4 md:p-8">
-                {activeView === 'Records' && <PatientDashboard db={db} user={user} role={userRole} />}
-                {activeView === 'Appointments' && <AppointmentsDashboard role={userRole} />}
-                {activeView === 'VisitHistory' && <VisitHistoryDashboard db={db} role={userRole} />}
-                {activeView === 'Insights' && <InsightsAnalyticsDashboard />}
+                {activeView === 'Records' && <PatientDashboard db={db} user={user} role={userRole} userProfile={userProfile} />}
+                {activeView === 'Appointments' && <AppointmentsDashboard role={userRole} userProfile={userProfile} />}
+                {activeView === 'VisitHistory' && <VisitHistoryDashboard db={db} role={userRole} userProfile={userProfile} />}
+                {activeView === 'Insights' && <InsightsAnalyticsDashboard userProfile={userProfile} />}
                 {activeView === 'Inventory' && (userRole === 'admin' || userRole === 'support_developer') && <InventoryDashboard userProfile={userProfile} />}
                 {activeView === 'Inventory' && userRole !== 'admin' && userRole !== 'support_developer' && (
                   <div className="p-8 text-center"><p className="text-slate-500 font-medium">Access Denied: Inventory controls are restricted to administrators.</p></div>
@@ -679,7 +654,7 @@ export default function App() {
                     userRole={userRole}
                   />
                 )}
-                {activeView === 'AuditTrail' && <AuditTrailDashboard role={userRole} />}
+                {activeView === 'AuditTrail' && (userRole === 'admin' || userRole === 'support_developer') && <AuditTrailDashboard role={userRole} />}
             </div>
 
             {/* Dynamic White-Label Footer */}

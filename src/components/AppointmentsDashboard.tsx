@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import AppointmentForm from './AppointmentForm';
 import VisitForm from './VisitForm';
@@ -7,8 +7,9 @@ import CalendarView from './CalendarView';
 import { hasPermission, Role } from '../rbac';
 import { formatDateTime } from '../utils';
 import { Calendar, CheckCircle, Clock, CheckSquare } from 'lucide-react';
+import { getAccessibleBranches, subscribeToBranchScopedCollection } from '../utils/branchAccess';
 
-export default function AppointmentsDashboard({ role }: { role: string | null }) {
+export default function AppointmentsDashboard({ role, userProfile }: { role: string | null, userProfile: any }) {
   const [appointments, setAppointments] = useState<any[]>([]);
   const [visits, setVisits] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
@@ -31,16 +32,17 @@ export default function AppointmentsDashboard({ role }: { role: string | null })
   const canCreateVisit = role ? hasPermission(role as Role, 'visitHistory', 'create') : false;
 
   useEffect(() => {
-    const qAppointments = query(collection(db, 'appointments'), orderBy('appointmentDate', 'desc'));
-    const unsubAppointments = onSnapshot(qAppointments, (snap) => setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()}))));
-    const unsubVisits = onSnapshot(collection(db, 'visits'), (snap) => setVisits(snap.docs.map(d => ({id: d.id, ...d.data()}))));
-    const unsubPatients = onSnapshot(collection(db, 'patients'), (snap) => setPatients(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubAppointments = subscribeToBranchScopedCollection(db, 'appointments', 'branchId', userProfile, setAppointments);
+    const unsubVisits = subscribeToBranchScopedCollection(db, 'visits', 'branchId', userProfile, setVisits);
+    const unsubPatients = subscribeToBranchScopedCollection(db, 'patients', 'homeBranchId', userProfile, setPatients);
     const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => setUsers(snap.docs.map(d => ({id: d.id, ...d.data()}))));
     const unsubBranches = onSnapshot(collection(db, 'branches'), (snap) => setBranches(snap.docs.map(d => ({id: d.id, ...d.data()}))));
     
     Promise.all([unsubAppointments, unsubVisits, unsubPatients, unsubUsers, unsubBranches]).then(() => setLoading(false));
     return () => { unsubAppointments(); unsubVisits(); unsubPatients(); unsubUsers(); unsubBranches(); };
-  }, []);
+  }, [userProfile]);
+
+  const accessibleBranches = getAccessibleBranches(branches, userProfile);
 
   const handleSearchChange = (value: string) => {
     setSearchTerm(value);
@@ -130,7 +132,7 @@ export default function AppointmentsDashboard({ role }: { role: string | null })
               onChange={e => setFilterBranch(e.target.value)}
             >
               <option value="All">All Branches</option>
-              {branches.map(b => (
+              {accessibleBranches.map(b => (
                 <option key={b.id} value={b.id}>{b.branchName}</option>
               ))}
             </select>
@@ -342,8 +344,8 @@ export default function AppointmentsDashboard({ role }: { role: string | null })
       ) : (
         <CalendarView appointments={appointments} onSelectEvent={(event) => { setSelectedAppointment(event.resource); setFormMode('view'); setShowAddForm(true); }} />
       )}
-      {showAddForm && <AppointmentForm patients={patients} branches={branches} users={users} onClose={() => { setShowAddForm(false); setSelectedAppointment(null); }} onSave={() => { setShowAddForm(false); setSelectedAppointment(null); }} appointment={selectedAppointment} mode={formMode} appointments={appointments} />}
-      {showVisitForm && <VisitForm patients={patients} branches={branches} users={users} onClose={() => setShowVisitForm(false)} onSave={() => setShowVisitForm(false)} appointment={selectedAppointment} userRole={role} visits={visits} appointments={appointments} />}
+      {showAddForm && <AppointmentForm patients={patients} branches={accessibleBranches} users={users} onClose={() => { setShowAddForm(false); setSelectedAppointment(null); }} onSave={() => { setShowAddForm(false); setSelectedAppointment(null); }} appointment={selectedAppointment} mode={formMode} appointments={appointments} />}
+      {showVisitForm && <VisitForm patients={patients} branches={accessibleBranches} users={users} onClose={() => setShowVisitForm(false)} onSave={() => setShowVisitForm(false)} appointment={selectedAppointment} userRole={role} visits={visits} appointments={appointments} />}
     </div>
   );
 }

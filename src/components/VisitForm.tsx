@@ -81,9 +81,10 @@ export default function VisitForm({ patients, branches, users, onClose, onSave, 
   const [logs, setLogs] = useState<any[]>([]);
 
   const isAppointment = visitSource === 'Appointment';
+  const canViewHistory = ['admin', 'support_developer'].includes(userRole || '');
 
   useEffect(() => {
-    if (visit?.id && (userRole === 'admin' || userRole === 'manager')) {
+    if (visit?.id && canViewHistory) {
       const q = query(
         collection(db, 'audit_logs'),
         where('resourceId', '==', visit.id),
@@ -97,7 +98,7 @@ export default function VisitForm({ patients, branches, users, onClose, onSave, 
       });
       return () => unsub();
     }
-  }, [visit?.id, userRole]);
+  }, [visit?.id, canViewHistory]);
 
   const timeSlots = [];
   for (let h = 10; h <= 19; h++) {
@@ -308,7 +309,7 @@ export default function VisitForm({ patients, branches, users, onClose, onSave, 
           <h2 className="text-2xl font-bold text-slate-800 tracking-tight">{visit ? 'Edit Visit' : 'New Visit'}</h2>
           <div className="flex gap-2 bg-slate-100 p-1 rounded-xl">
              <button type="button" onClick={() => setActiveTab('form')} className={`px-4 py-1.5 rounded-lg text-xs font-semibold ${activeTab === 'form' ? 'bg-white shadow-sm text-teal-700' : 'text-slate-500'}`}>Form</button>
-             {visit && <button type="button" onClick={() => setActiveTab('history')} className={`px-4 py-1.5 rounded-lg text-xs font-semibold ${activeTab === 'history' ? 'bg-white shadow-sm text-teal-700' : 'text-slate-500'}`}>History</button>}
+             {visit && canViewHistory && <button type="button" onClick={() => setActiveTab('history')} className={`px-4 py-1.5 rounded-lg text-xs font-semibold ${activeTab === 'history' ? 'bg-white shadow-sm text-teal-700' : 'text-slate-500'}`}>History</button>}
           </div>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors">
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>

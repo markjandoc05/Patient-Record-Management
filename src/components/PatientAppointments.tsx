@@ -1,45 +1,17 @@
-import React, { useEffect, useState } from 'react';
-import { db } from '../firebase';
-import { collection, query, where, getDocs, orderBy } from 'firebase/firestore';
+import React, { useState } from 'react';
 import { formatDateTime } from '../utils';
 
-export default function PatientAppointments({ patientId, users, branches }: { patientId: string, users: any[], branches: any[] }) {
-  const [appointments, setAppointments] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+export default function PatientAppointments({ patientId, users, branches, appointments }: { patientId: string, users: any[], branches: any[], appointments: any[] }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedAppointment, setSelectedAppointment] = useState<any | null>(null);
   const itemsPerPage = 5;
 
-  useEffect(() => {
-    async function fetchAppointments() {
-      if (!patientId) return;
-      try {
-        const q = query(
-          collection(db, 'appointments'),
-          where('patientId', '==', patientId)
-        );
-        const querySnapshot = await getDocs(q);
-        const data = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as any[];
-        // Sort on client side by most recent (descending)
-        data.sort((a, b) => {
-          const dateA = a.appointmentDate || '';
-          const dateB = b.appointmentDate || '';
-          return dateB.localeCompare(dateA);
-        });
-        setAppointments(data);
-      } catch (error) {
-        console.error("Error fetching appointments:", error);
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchAppointments();
-  }, [patientId]);
+  const patientAppointments = appointments
+    .filter(appointment => appointment.patientId === patientId)
+    .sort((a, b) => (b.appointmentDate || '').localeCompare(a.appointmentDate || ''));
 
-  const totalPages = Math.ceil(appointments.length / itemsPerPage);
-  const paginatedAppointments = appointments.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
-
-  if (loading) return <div className="text-sm text-slate-500">Loading appointments...</div>;
+  const totalPages = Math.ceil(patientAppointments.length / itemsPerPage);
+  const paginatedAppointments = patientAppointments.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -61,7 +33,7 @@ export default function PatientAppointments({ patientId, users, branches }: { pa
   return (
     <div className="border-t pt-4">
       <h3 className="font-bold text-lg mb-4 text-slate-800">Appointment History</h3>
-      {appointments.length === 0 ? (
+      {patientAppointments.length === 0 ? (
         <p className="text-sm text-slate-500">No appointments scheduled yet.</p>
       ) : (
         <div className="space-y-4">

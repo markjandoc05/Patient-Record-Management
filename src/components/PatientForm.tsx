@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { addDoc, collection, updateDoc, doc, getDocs, query, orderBy, limit } from 'firebase/firestore';
+import { addDoc, collection, updateDoc, doc } from 'firebase/firestore';
 import { formatDateTime } from '../utils';
 import { hasPermission, Role } from '../rbac';
 import { CustomDatePicker } from './CustomDatePicker';
@@ -126,16 +126,15 @@ export default function PatientForm({ db, user, users, patients, branches, userP
     // Ensure all audit fields are initialized correctly
     if (!patient) {
         // Generate new ID: ID-YY-####
-        const querySnapshot = await getDocs(query(collection(db, 'patients'), orderBy('patientID', 'desc'), limit(1)));
         let lastId = 0;
         const currentYear = new Date().getFullYear() % 100;
-        
-        if (!querySnapshot.empty) {
-            const lastPatient = querySnapshot.docs[0].data();
-            const lastPatientID = lastPatient.patientID; // Expected ID-YY-####
+
+        for (const existingPatient of patients) {
+            const lastPatientID = existingPatient.patientID;
+            if (typeof lastPatientID !== 'string') continue;
             const parts = lastPatientID.split('-');
             if (parts.length === 3 && parseInt(parts[1]) === currentYear) {
-                lastId = parseInt(parts[2]);
+                lastId = Math.max(lastId, parseInt(parts[2]) || 0);
             }
         }
         

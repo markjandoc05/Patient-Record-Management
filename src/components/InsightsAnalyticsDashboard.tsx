@@ -4,8 +4,9 @@ import { db } from '../firebase';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { Briefcase, Users, UserPlus, Zap, Calendar, Award } from 'lucide-react';
 import { startOfDay, endOfDay, subDays, startOfWeek, endOfWeek, startOfMonth, endOfMonth, isWithinInterval, parseISO } from 'date-fns';
+import { getAccessibleBranches, subscribeToBranchScopedCollection } from '../utils/branchAccess';
 
-export default function InsightsAnalyticsDashboard() {
+export default function InsightsAnalyticsDashboard({ userProfile }: { userProfile: any }) {
   const [patients, setPatients] = useState<any[]>([]);
   const [appointments, setAppointments] = useState<any[]>([]);
   const [visits, setVisits] = useState<any[]>([]);
@@ -17,15 +18,17 @@ export default function InsightsAnalyticsDashboard() {
   const [filterBranch, setFilterBranch] = useState('All');
 
   useEffect(() => {
-    const unsubPatients = onSnapshot(collection(db, 'patients'), (snap) => setPatients(snap.docs.map(d => ({id: d.id, ...d.data()}))));
-    const unsubAppointments = onSnapshot(collection(db, 'appointments'), (snap) => setAppointments(snap.docs.map(d => ({id: d.id, ...d.data()}))));
-    const unsubVisits = onSnapshot(collection(db, 'visits'), (snap) => setVisits(snap.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubPatients = subscribeToBranchScopedCollection(db, 'patients', 'homeBranchId', userProfile, setPatients);
+    const unsubAppointments = subscribeToBranchScopedCollection(db, 'appointments', 'branchId', userProfile, setAppointments);
+    const unsubVisits = subscribeToBranchScopedCollection(db, 'visits', 'branchId', userProfile, setVisits);
     const unsubBranches = onSnapshot(collection(db, 'branches'), (snap) => setBranches(snap.docs.map(d => ({id: d.id, ...d.data()}))));
     const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => setUsers(snap.docs.map(d => ({id: d.id, ...d.data()}))));
     
     Promise.all([unsubPatients, unsubAppointments, unsubVisits, unsubBranches, unsubUsers]).then(() => setLoading(false));
     return () => { unsubPatients(); unsubAppointments(); unsubVisits(); unsubBranches(); unsubUsers(); };
-  }, []);
+  }, [userProfile]);
+
+  const accessibleBranches = getAccessibleBranches(branches, userProfile);
 
   const getFilteredData = () => {
     const now = new Date();
@@ -48,7 +51,7 @@ export default function InsightsAnalyticsDashboard() {
     const filteredPatients = patients.filter(p => {
         const createdDate = p.createdAt ? parseISO(p.createdAt) : null;
         return !createdDate || isWithinInterval(createdDate, { start: startDate, end: endDate }) || 
-               (filterBranch === 'All' || p.branchId === filterBranch);
+               (filterBranch === 'All' || p.homeBranchId === filterBranch);
     });
 
     const filteredVisits = visits.filter(v => {
@@ -63,7 +66,7 @@ export default function InsightsAnalyticsDashboard() {
   const { filteredAppointments, filteredPatients, filteredVisits, startDate, endDate } = getFilteredData();
 
   // Simple stats calculation
-  const totalPatients = filterBranch === 'All' ? patients.length : patients.filter(p => p.branchId === filterBranch).length;
+  const totalPatients = filterBranch === 'All' ? patients.length : patients.filter(p => p.homeBranchId === filterBranch).length;
   const newPatients = filteredPatients.length; 
   
   const totalAppointments = filteredAppointments.length;
@@ -86,7 +89,7 @@ export default function InsightsAnalyticsDashboard() {
         </select>
         <select className="border border-slate-300 px-3 py-2 rounded-lg text-sm" value={filterBranch} onChange={e => setFilterBranch(e.target.value)}>
             <option value="All">All Branches</option>
-            {branches.map(b => <option key={b.id} value={b.id}>{b.branchName}</option>)}
+            {accessibleBranches.map(b => <option key={b.id} value={b.id}>{b.branchName}</option>)}
         </select>
       </div>
 

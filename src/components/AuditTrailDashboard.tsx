@@ -40,7 +40,7 @@ export default function AuditTrailDashboard({ role }: AuditTrailDashboardProps) 
   const itemsPerPage = 12;
 
   useEffect(() => {
-    if (!['admin', 'support_developer', 'manager'].includes(role || '')) {
+    if (!['admin', 'support_developer'].includes(role || '')) {
       setLoading(false);
       return;
     }
