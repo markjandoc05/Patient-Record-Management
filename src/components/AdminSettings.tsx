@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot, doc, updateDoc, setDoc, getDoc, addDoc, deleteDoc, writeBatch, getDocs, query } from 'firebase/firestore';
-import { auth, storage } from '../firebase';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { auth } from '../firebase';
 import imageCompression from 'browser-image-compression';
 import { getChangedFields } from '../utils/diffUtils';
 import { handleFirestoreError, OperationType } from '../utils';
@@ -137,10 +136,9 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     // Verify role directly from DB
     const userDoc = await getDoc(doc(db, 'users', auth.currentUser!.uid));
     const dbRole = userDoc.exists() ? userDoc.data()?.role : null;
-    const isOwner = auth.currentUser?.email === 'markjandoc@gmail.com';
-    console.log("AdminSettings: DB role verification:", dbRole, "IsOwner:", isOwner);
+    console.log("AdminSettings: DB role verification:", dbRole);
 
-    if (dbRole !== 'admin' && dbRole !== 'support_developer' && !isOwner) {
+    if (dbRole !== 'admin' && dbRole !== 'support_developer') {
         console.error("Branding upload failed: unauthorized access by role:", dbRole);
         setError("Permission Denied: Only Admin and Support / Developer can update branding.");
         return;
@@ -158,9 +156,6 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         ogImageUrl: 'open-graph'
     };
     const folder = pathMap[fieldName] || 'misc';
-    const storagePath = `branding/${folder}/${Date.now()}_${file.name}`;
-    console.log("AdminSettings: Uploading branding asset to storage path:", storagePath);
-    
     try {
         let fileToUpload: File | Blob = file;
         
@@ -179,12 +174,18 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
             }
         }
 
-        const storageRef = ref(storage, storagePath);
-        console.log("AdminSettings: About to upload bytes to storageRef");
-        await uploadBytes(storageRef, fileToUpload);
-        console.log("AdminSettings: Upload bytes successful");
-        const downloadUrl = await getDownloadURL(storageRef);
-        console.log("AdminSettings: Upload success, URL obtained. Updating Firestore path: settings/branding");
+        const token = await auth.currentUser!.getIdToken();
+        const formData = new FormData();
+        formData.append('file', fileToUpload, file.name);
+        formData.append('folder', folder);
+        const uploadResponse = await fetch('/api/branding/upload', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+            body: formData
+        });
+        const uploadResult = await uploadResponse.json();
+        if (!uploadResponse.ok) throw new Error(uploadResult?.error || 'Branding upload failed');
+        const { downloadUrl, storagePath } = uploadResult;
         const newTimestamp = Date.now();
         const assetMetadata = {
             fileName: file.name,
@@ -1480,4 +1481,3 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     </div>
   );
 }
-

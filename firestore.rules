@@ -137,11 +137,13 @@ service cloud.firestore {
         && canAccessBranch(resource.data.branchId);
       allow create: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
         && canAccessBranch(request.resource.data.branchId)
-        && canAccessPatient(request.resource.data.patientId);
+        && canAccessPatient(request.resource.data.patientId)
+        && request.resource.data.get('attachments', []) == [];
       allow update: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
         && canAccessBranch(resource.data.branchId)
         && canAccessBranch(request.resource.data.branchId)
-        && canAccessPatient(request.resource.data.patientId);
+        && canAccessPatient(request.resource.data.patientId)
+        && request.resource.data.get('attachments', []) == resource.data.get('attachments', []);
       allow delete: if hasAnyRole(['admin', 'support_developer']);
     }
 
@@ -150,11 +152,13 @@ service cloud.firestore {
         && canAccessBranch(resource.data.branchId);
       allow create: if hasAnyRole(['admin', 'manager', 'support_developer'])
         && canAccessBranch(request.resource.data.branchId)
-        && canAccessPatient(request.resource.data.patientId);
+        && canAccessPatient(request.resource.data.patientId)
+        && request.resource.data.get('attachments', []) == [];
       allow update: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
         && canAccessBranch(resource.data.branchId)
         && canAccessBranch(request.resource.data.branchId)
-        && canAccessPatient(request.resource.data.patientId);
+        && canAccessPatient(request.resource.data.patientId)
+        && request.resource.data.get('attachments', []) == resource.data.get('attachments', []);
       allow delete: if hasAnyRole(['admin', 'support_developer']);
     }
 
@@ -162,10 +166,12 @@ service cloud.firestore {
       allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
         && canAccessBranch(resource.data.homeBranchId);
       allow create: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
-        && canAccessBranch(request.resource.data.homeBranchId);
+        && canAccessBranch(request.resource.data.homeBranchId)
+        && request.resource.data.get('attachments', []) == [];
       allow update: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
         && canAccessBranch(resource.data.homeBranchId)
-        && canAccessBranch(request.resource.data.homeBranchId);
+        && canAccessBranch(request.resource.data.homeBranchId)
+        && request.resource.data.get('attachments', []) == resource.data.get('attachments', []);
       allow delete: if hasAnyRole(['admin', 'support_developer']);
 
       match /privateNotes/{noteId} {

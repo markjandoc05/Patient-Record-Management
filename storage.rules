@@ -1,17 +1,23 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    function getUserRole(uid) {
-      let userDoc = firestore.get(/databases/(default)/documents/users/$(uid));
-      return userDoc.exists ? userDoc.data.role : null;
-    }
+    // Branding is intentionally public because it appears before sign-in.
+    // Writes go through the authenticated server endpoint so roles can be
+    // checked against Vine's named Firestore database.
     match /branding/{allPaths=**} {
       allow read: if true;
-      allow write: if request.auth != null && (request.auth.token.email == 'markjandoc@gmail.com' || getUserRole(request.auth.uid) in ['admin', 'support_developer']);
-    }
-    match /{allPaths=**} {
-      allow read: if true;
       allow write: if false;
+    }
+
+    // Clinical attachments are never served directly by Storage. The server
+    // validates the active profile, role, patient, resource, and both branch
+    // assignments before streaming, uploading, or deleting an object.
+    match /uploads/{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

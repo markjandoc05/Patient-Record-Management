@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, FileText, Image as ImageIcon, Calendar } from 'lucide-react';
 import Lightbox from './Lightbox';
 import { useTimezone } from '../contexts/TimezoneContext';
+import { downloadAttachment, fetchAttachmentBlob, isImageAttachment, openAttachment } from '../utils/attachmentApi';
 
 export default function PatientMediaTab({ patientId, users, branches, visits }: { patientId: string, users: any[], branches: any[], visits: any[] }) {
     const timezone = useTimezone();
@@ -19,12 +20,39 @@ const formatDate = (dateString: string) => {
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
     const [failedLoadFiles, setFailedLoadFiles] = useState<Set<string>>(new Set());
+    const [secureUrls, setSecureUrls] = useState<Record<string, string>>({});
 
     const items = useMemo(() => visits
         .filter(visit => visit.patientId === patientId && visit.attachments?.length > 0)
         .map(visit => ({ id: visit.id, type: 'visit' as const, data: visit }))
         .sort((a, b) => new Date(b.data.visitDate).getTime() - new Date(a.data.visitDate).getTime()),
     [patientId, visits]);
+
+    const attachments = useMemo(() => items.flatMap(item => item.data.attachments || []), [items]);
+
+    useEffect(() => {
+        let active = true;
+        const createdUrls: string[] = [];
+        Promise.all(attachments.filter(file => file?.storagePath && isImageAttachment(file)).map(async file => {
+            try {
+                const blob = await fetchAttachmentBlob(file.storagePath);
+                const objectUrl = URL.createObjectURL(blob);
+                createdUrls.push(objectUrl);
+                return [file.storagePath, objectUrl] as const;
+            } catch (error) {
+                console.error('Failed to load protected media preview:', error);
+                setFailedLoadFiles(previous => new Set(previous).add(file.id));
+                return null;
+            }
+        })).then(entries => {
+            if (active) setSecureUrls(Object.fromEntries(entries.filter(Boolean) as Array<readonly [string, string]>));
+        });
+
+        return () => {
+            active = false;
+            createdUrls.forEach(url => URL.revokeObjectURL(url));
+        };
+    }, [attachments]);
 
     const toggleItem = (itemId: string) => {
         const next = new Set(expandedItems);
@@ -33,15 +61,34 @@ const formatDate = (dateString: string) => {
         setExpandedItems(next);
     };
 
-    const handleFileClick = (file: any) => {
+    const handleFileClick = async (file: any) => {
         if (failedLoadFiles.has(file.id)) {
             alert('File not found or missing from storage.');
             return;
         }
-        if (file.name.match(/\.(jpg|jpeg|png|gif|bmp|webp)$/i)) {
-            setPreviewUrl(file.url);
-        } else {
-            window.open(file.url, '_blank');
+        try {
+            if (isImageAttachment(file)) {
+                let objectUrl = secureUrls[file.storagePath];
+                if (!objectUrl) {
+                    objectUrl = URL.createObjectURL(await fetchAttachmentBlob(file.storagePath));
+                    setSecureUrls(previous => ({ ...previous, [file.storagePath]: objectUrl }));
+                }
+                setPreviewUrl(objectUrl);
+            } else {
+                await openAttachment(file);
+            }
+        } catch (error: any) {
+            console.error('Protected media open failed:', error);
+            alert(error?.message || 'File could not be opened.');
+        }
+    };
+
+    const handleDownload = async (file: any) => {
+        try {
+            await downloadAttachment(file);
+        } catch (error: any) {
+            console.error('Protected media download failed:', error);
+            alert(error?.message || 'File could not be downloaded.');
         }
     };
 
@@ -84,14 +131,16 @@ const formatDate = (dateString: string) => {
                                         {item.data.attachments.map((file: any) => (
                                             <div key={file.id} className="border border-slate-100 rounded-lg p-3 hover:shadow-sm transition">
                                                 <div className="aspect-video bg-slate-100 rounded overflow-hidden mb-2 flex items-center justify-center relative cursor-pointer" onClick={() => handleFileClick(file)}>
-                                                    {file.name.match(/\.(jpg|jpeg|png|gif|bmp|webp)$/i) ? (
-                                                        <img src={file.url} alt={file.name} loading="lazy" className="w-full h-full object-cover" onError={(e) => setFailedLoadFiles(prev => new Set(prev.add(file.id)))} />
+                                                    {isImageAttachment(file) ? (
+                                                        secureUrls[file.storagePath]
+                                                            ? <img src={secureUrls[file.storagePath]} alt={file.name} loading="lazy" className="w-full h-full object-cover" onError={() => setFailedLoadFiles(prev => new Set(prev).add(file.id))} />
+                                                            : <span className="text-xs text-slate-400">Loading preview...</span>
                                                     ) : (
                                                         <FileText size={32} className="text-slate-400" />
                                                     )}
                                                 </div>
                                                 <button className="text-xs font-medium text-slate-700 truncate hover:text-teal-700 hover:underline block w-full text-left" onClick={() => handleFileClick(file)}>{file.name}</button>
-                                                <a href={file.url} target="_blank" rel="noreferrer" className="text-[10px] text-teal-600 hover:underline block mt-1">Download/View</a>
+                                                <button type="button" onClick={() => handleDownload(file)} className="text-[10px] text-teal-600 hover:underline block mt-1">Download</button>
                                                 <p className="text-[10px] text-slate-400 italic mt-1 truncate">{file.note || 'No note'}</p>
                                                 <p className="text-[10px] text-slate-500 mt-1">Uploaded: {formatDate(new Date(parseInt(file.id.split('_')[0])).toISOString())}</p>
                                             </div>
