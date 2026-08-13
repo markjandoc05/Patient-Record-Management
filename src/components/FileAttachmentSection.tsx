@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { collection, doc, onSnapshot, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { LayoutGrid, List, X } from 'lucide-react';
+import imageCompression from 'browser-image-compression';
 import { db, storage } from '../firebase';
 import Lightbox from './Lightbox';
 import ConfirmationModal from './ConfirmationModal';
@@ -60,8 +61,15 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
             alert(`File ${file.name} not allowed.`);
             return false;
         }
-        if (file.size > settings.maxFileSizeMB * 1024 * 1024) {
+        // Increase the allowed selection size for images because we will compress them before upload
+        const isImage = file.name.match(/\.(jpg|jpeg|png|webp)$/i);
+        if (!isImage && file.size > settings.maxFileSizeMB * 1024 * 1024) {
             alert(`File ${file.name} too large.`);
+            return false;
+        }
+        // For images, we allow up to 20MB for selection since we will compress it to < 500KB
+        if (isImage && file.size > 20 * 1024 * 1024) {
+            alert(`Image ${file.name} is too large (max 20MB for processing).`);
             return false;
         }
         return true;
@@ -77,11 +85,29 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
     try {
         const uploadedAttachments = [];
         for (const { file, note } of selectedFiles) {
+            let fileToUpload: File | Blob = file;
+            
+            // Compress image if it's an image
+            if (file.name.match(/\.(jpg|jpeg|png|webp)$/i)) {
+                console.log(`Compressing ${file.name}... original size: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+                const options = {
+                    maxSizeMB: 0.5, // Max 500KB as requested
+                    maxWidthOrHeight: 1920,
+                    useWebWorker: true,
+                };
+                try {
+                    fileToUpload = await imageCompression(file, options);
+                    console.log(`Compression success for ${file.name}. New size: ${(fileToUpload.size / 1024 / 1024).toFixed(2)}MB`);
+                } catch (compressionError) {
+                    console.error("Compression failed, uploading original:", compressionError);
+                }
+            }
+
             const fileId = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
             const storagePath = `uploads/${patientId}/${isGeneral ? 'general' : collectionName}/${resourceId}/${fileId}`;
             console.log("Uploading to storage path:", storagePath);
             const storageRef = ref(storage, storagePath);
-            await uploadBytes(storageRef, file);
+            await uploadBytes(storageRef, fileToUpload);
             
             // Wait for eventual consistency
             await new Promise(resolve => setTimeout(resolve, 500));

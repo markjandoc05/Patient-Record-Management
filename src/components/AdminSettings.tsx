@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot, doc, updateDoc, setDoc, getDoc, addDoc, deleteDoc, writeBatch, getDocs, query } from 'firebase/firestore';
 import { auth, storage } from '../firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import imageCompression from 'browser-image-compression';
 import { getChangedFields } from '../utils/diffUtils';
 import { handleFirestoreError, OperationType } from '../utils';
 import { RBAC } from '../rbac';
 import { logActivity } from '../utils/auditLogger';
 import ConfirmationModal from './ConfirmationModal';
-
+ 
 export default function AdminSettings({ db, userRole, branding, timezone, footer, userProfile }: { db: any, userRole: string|null, branding: any, timezone: any, footer: any, userProfile: any }) {
   const [users, setUsers] = useState<any[]>([]);
   const [branches, setBranches] = useState<any[]>([]);
@@ -161,9 +162,26 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     console.log("AdminSettings: Uploading branding asset to storage path:", storagePath);
     
     try {
+        let fileToUpload: File | Blob = file;
+        
+        // Compress image if it's an image
+        if (file.name.match(/\.(jpg|jpeg|png|webp|ico)$/i)) {
+            console.log(`Compressing branding asset ${file.name}...`);
+            const options = {
+                maxSizeMB: 0.2, // Branding logos should be even smaller, 200KB max
+                maxWidthOrHeight: 800,
+                useWebWorker: true,
+            };
+            try {
+                fileToUpload = await imageCompression(file, options);
+            } catch (compressionError) {
+                console.error("Compression failed for branding asset:", compressionError);
+            }
+        }
+
         const storageRef = ref(storage, storagePath);
         console.log("AdminSettings: About to upload bytes to storageRef");
-        await uploadBytes(storageRef, file);
+        await uploadBytes(storageRef, fileToUpload);
         console.log("AdminSettings: Upload bytes successful");
         const downloadUrl = await getDownloadURL(storageRef);
         console.log("AdminSettings: Upload success, URL obtained. Updating Firestore path: settings/branding");
