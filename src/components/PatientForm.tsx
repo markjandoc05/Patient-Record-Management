@@ -1,10 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { addDoc, collection, updateDoc, doc } from 'firebase/firestore';
-import { formatDateTime } from '../utils';
 import { hasPermission, Role } from '../rbac';
 import { CustomDatePicker } from './CustomDatePicker';
-import { getChangedFields } from '../utils/diffUtils';
-import { logActivity } from '../utils/auditLogger';
+import { createPatientRecord, updatePatientRecord } from '../utils/recordApi';
 
 const ErrorMessage = ({ error }: { error?: boolean }) => {
   if (!error) return null;
@@ -112,75 +109,29 @@ export default function PatientForm({ db, user, users, patients, branches, userP
         }
     }
 
-    let dataToSave = { ...formData };
-    const now = new Date().toISOString(); 
-    const currentUser = users.find(u => u.id === user.uid);
-    const userName = currentUser ? (currentUser.fullName || "System User") : "System User";
-    
-    // Set branch info
-    const branch = branches.find(b => b.id === dataToSave.homeBranchId);
-    if (branch) {
-        dataToSave.homeBranchName = branch.branchName;
-    }
-
-    // Ensure all audit fields are initialized correctly
-    if (!patient) {
-        // Generate new ID: ID-YY-####
-        let lastId = 0;
-        const currentYear = new Date().getFullYear() % 100;
-
-        for (const existingPatient of patients) {
-            const lastPatientID = existingPatient.patientID;
-            if (typeof lastPatientID !== 'string') continue;
-            const parts = lastPatientID.split('-');
-            if (parts.length === 3 && parseInt(parts[1]) === currentYear) {
-                lastId = Math.max(lastId, parseInt(parts[2]) || 0);
-            }
-        }
-        
-        const newId = `ID-${currentYear.toString().padStart(2, '0')}-${(lastId + 1).toString().padStart(4, '0')}`;
-        dataToSave.patientID = newId;
-        dataToSave.dateRegistered = now;
-        
-        // Audit branch creation
-        dataToSave.createdBranchId = dataToSave.homeBranchId;
-        dataToSave.createdBranchName = dataToSave.homeBranchName;
-        dataToSave.createdByUid = user.uid;
-        dataToSave.createdByName = userName;
-        dataToSave.createdAt = now;
-        dataToSave.createdByUserDefaultBranchId = userProfile.defaultBranchId || null;
-        dataToSave.createdByUserDefaultBranchName = userProfile.defaultBranchName || null;
-    } 
-    
-    // Audit branch update
-    dataToSave.lastUpdatedBranchId = dataToSave.homeBranchId;
-    dataToSave.lastUpdatedBranchName = dataToSave.homeBranchName;
-    dataToSave.lastUpdatedByUid = user.uid;
-    dataToSave.lastUpdatedByName = userName;
-    dataToSave.lastUpdatedAt = now;
+    const dataToSave = {
+      name: formData.name,
+      contactNumber: formData.contactNumber,
+      email: formData.email,
+      birthday: formData.birthday,
+      gender: formData.gender,
+      address: formData.address,
+      emergencyContact: formData.emergencyContact,
+      mainConcern: formData.mainConcern,
+      skinType: formData.skinType,
+      allergies: formData.allergies,
+      medications: formData.medications,
+      medicalConditions: formData.medicalConditions,
+      notes: formData.notes,
+      status: formData.status,
+      homeBranchId: formData.homeBranchId
+    };
     
     try {
         if (patient) {
-          await updateDoc(doc(db, 'patients', patient.id), dataToSave);
-          const changedFields = getChangedFields(patient, dataToSave);
-          await logActivity({
-            action: 'UPDATE',
-            resource: 'Patient',
-            resourceId: patient.id,
-            resourceName: patient.patientID || dataToSave.patientID || '',
-            details: `Updated Patient details. Fields modified: ${changedFields.join(', ')}`,
-            userProfile
-          });
+          await updatePatientRecord(patient.id, dataToSave);
         } else {
-          const docRef = await addDoc(collection(db, 'patients'), dataToSave);
-          await logActivity({
-            action: 'CREATE',
-            resource: 'Patient',
-            resourceId: docRef.id,
-            resourceName: dataToSave.patientID || '',
-            details: 'Registered a new patient record',
-            userProfile
-          });
+          await createPatientRecord(dataToSave);
         }
         onSave();
         onClose();

@@ -1,5 +1,4 @@
-import { collection, addDoc, getDocs, query, where } from 'firebase/firestore';
-import { db, auth } from '../firebase';
+import { auth } from '../firebase';
 import { ChangeDetail } from './diffUtils';
 
 export interface AuditLogOptions {
@@ -13,16 +12,18 @@ export interface AuditLogOptions {
 }
 
 /**
- * Logs a lightweight, HIPAA-compliant security activity to the ledger.
+ * Reports a security event to the trusted server. Actor identity, time,
+ * branch, safe resource label, and display details are derived server-side.
+ * Only changed field names are transmitted; old/new values stay out of logs.
  */
 export async function logActivity({
   action,
   resource,
   resourceId,
-  resourceName = '',
-  details = '',
+  resourceName: _resourceName = '',
+  details: _details = '',
   changes = [],
-  userProfile = null
+  userProfile: _userProfile = null
 }: AuditLogOptions) {
   try {
     const currentUser = auth.currentUser;
@@ -31,35 +32,24 @@ export async function logActivity({
       return;
     }
 
-    // HIPAA Compliance Guard: Ensure detail strings do not leak raw, unencrypted medical / clinical secrets.
-    // We strictly record activity context (metadata, action type, and field names) instead of actual clinical values.
-    const cleanDetails = details.replace(/[\n\r]/g, ' ').trim();
-
-    let actualUserProfile = userProfile;
-    if (!actualUserProfile && currentUser.email) {
-       const userSnap = await getDocs(query(collection(db, 'users'), where('email', '==', currentUser.email)));
-       if (!userSnap.empty) {
-           actualUserProfile = userSnap.docs[0].data();
-       }
-    }
-
-    // Prepare immutable log payload
-    const logData = {
-      timestamp: new Date().toISOString(),
-      userId: currentUser.uid,
-      userEmail: currentUser.email || 'unknown',
-      userName: actualUserProfile?.fullName || 'Unknown User',
-      userRole: actualUserProfile?.role || 'staff',
+    const token = await currentUser.getIdToken();
+    const response = await fetch('/api/audit-events', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
       action,
       resource,
       resourceId,
-      resourceName,
-      details: cleanDetails || '',
-      changes: changes || [],
-      userAgent: typeof window !== 'undefined' ? window.navigator.userAgent.slice(0, 200) : 'unknown'
-    };
-
-    await addDoc(collection(db, 'audit_logs'), logData);
+        changeFields: (changes || []).map(change => change.field)
+      })
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.error || 'Audit event was rejected');
+    }
   } catch (error) {
     console.error('Failed to register audit trail entry:', error);
   }

@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { collection, addDoc, updateDoc, doc, getDoc, onSnapshot, query, where, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, orderBy } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { hasPermission, Role } from '../rbac';
 import { CustomDatePicker } from './CustomDatePicker';
-import { getChangedFields } from '../utils/diffUtils';
-import { logActivity } from '../utils/auditLogger';
+import { createAppointmentRecord, createVisitRecord, updateVisitRecord } from '../utils/recordApi';
 import FileAttachmentSection from './FileAttachmentSection';
 
 // Enum for operation types
@@ -179,15 +178,8 @@ export default function VisitForm({ patients, branches, users, onClose, onSave, 
     }
     
     setIsSaving(true);
-    const currentUser = auth.currentUser;
-    const currentUserRecord = users.find(u => u.email === currentUser?.email);
-    const userDisplayName = currentUserRecord?.fullName || currentUser?.email || 'unknown';
-
-    let derivedStatus = 'Completed';
-
     const visitData = {
       patientId,
-      patientName: patients.find(p => p.id === patientId)?.name,
       visitDate,
       branchId,
       doctorId,
@@ -199,107 +191,50 @@ export default function VisitForm({ patients, branches, users, onClose, onSave, 
       treatmentPlan,
       visitOutcome: outcome,
       followUpRequired: followUpRequired,
-      status: derivedStatus,
-      visitSource,
       nextVisitDate,
       followUpInstructions,
-      appointmentId: visit?.appointmentId || appointment?.id || null,
-      updatedAt: new Date().toISOString(),
-      updatedBy: userDisplayName
+      appointmentId: visit?.appointmentId || appointment?.id || null
     };
- 
-    if (visit) {
-        try {
-            const allChangedFields = getChangedFields(visit, visitData);
-            const significantChanges = allChangedFields.filter(c => 
-                !['updatedAt', 'updatedBy', 'createdAt', 'createdBy'].includes(c.field)
-            );
-            
-            await updateDoc(doc(db, 'visits', visit.id), visitData);
-            
-            await logActivity({
-              action: 'UPDATE',
-              resource: 'Visit',
-              resourceId: visit.id,
-              resourceName: visitData.patientName || '',
-              details: `Updated Patient Visit details. Status: ${derivedStatus}. Modified fields: ${significantChanges.map(c => c.field).join(', ')}`,
-              changes: significantChanges,
-              userProfile: currentUserRecord || null
-            });
-        } catch (error) {
-            console.error('Error updating visit:', error);
-            alert('Failed to update visit. Please check console for details.');
+
+    try {
+        if (visit) await updateVisitRecord(visit.id, visitData);
+        else await createVisitRecord(visitData);
+
+        if (followUpRequired
+            && confirm('This patient requires a follow-up visit. Would you like to create the follow-up appointment now?')) {
+            try {
+                const defaultFollowUp = new Date();
+                defaultFollowUp.setDate(defaultFollowUp.getDate() + 7);
+                const defaultDate = [
+                  defaultFollowUp.getFullYear(),
+                  String(defaultFollowUp.getMonth() + 1).padStart(2, '0'),
+                  String(defaultFollowUp.getDate()).padStart(2, '0')
+                ].join('-');
+                await createAppointmentRecord({
+                  patientId,
+                  branchId,
+                  doctorId,
+                  appointmentDate: `${nextVisitDate || defaultDate}T10:00`,
+                  status: 'Scheduled',
+                  visitType: 'Follow-up',
+                  mainConcern: '',
+                  notes: followUpInstructions
+                });
+                alert('Follow-up appointment created.');
+            } catch (followUpError: any) {
+                console.error('Visit saved, but follow-up creation failed:', followUpError);
+                alert(`The visit was saved, but the follow-up appointment was not created: ${followUpError.message}`);
+            }
         }
-    } else {
-        const visitDocRef = await addDoc(collection(db, 'visits'), {
-            ...visitData,
-            createdAt: new Date().toISOString(),
-            createdBy: userDisplayName
-        });
-        
-        await logActivity({
-          action: 'CREATE',
-          resource: 'Visit',
-          resourceId: visitDocRef.id,
-          resourceName: visitData.patientName || '',
-          details: `Logged new patient visit. Type: ${visitType}, Status: ${derivedStatus}`,
-          userProfile: currentUserRecord || null
-        });
-        
-        if (appointment?.id) {
-            await updateDoc(doc(db, 'appointments', appointment.id), {
-                visitHistoryId: visitDocRef.id,
-                visitHistoryCreated: true,
-                status: 'Completed'
-            });
-        }
- 
-        const patientDocRef = doc(db, 'patients', patientId);
-        const patientSnapshot = await getDoc(patientDocRef);
-        const patientData = patientSnapshot.data();
-        
-        const updates: any = {
-          lastVisitDate: visitDate,
-          lastVisitBranch: branches.find(b => b.id === branchId)?.branchName,
-          totalVisits: (patientData?.totalVisits || 0) + 1,
-          currentPatientStatus: derivedStatus
-        };
-        
-        if (!(patientData?.totalVisits) || (patientData?.totalVisits === 0)) {
-            updates.firstVisitDate = visitDate;
-        }
-        
-        if (derivedStatus === 'Completed') {
-            updates.totalCompletedVisits = (patientData?.totalCompletedVisits || 0) + 1;
-        }
-        if (derivedStatus === 'No Show') {
-            updates.totalNoShowVisits = (patientData?.totalNoShowVisits || 0) + 1;
-        }
- 
-        await updateDoc(patientDocRef, updates);
+
+        onSave();
+        onClose();
+    } catch (error: any) {
+        console.error('Error saving visit:', error);
+        alert(`Failed to save visit: ${error.message}`);
+    } finally {
+        setIsSaving(false);
     }
-    
-    // Handle Follow-up prompt
-    if (followUpRequired) {
-        if (confirm(`This patient requires a follow-up visit. Would you like to create the follow-up appointment now?`)) {
-            await addDoc(collection(db, 'appointments'), {
-                patientId,
-                branchId,
-                doctorId,
-                appointmentDate: nextVisitDate || new Date(new Date().setDate(new Date().getDate() + 7)).toISOString(), // Default to 7 days from now if nextVisitDate not provided
-                status: 'Scheduled',
-                visitType: 'Follow-up',
-                notes: followUpInstructions,
-                createdAt: new Date().toISOString(),
-                createdBy: userDisplayName
-            });
-            alert("Follow-up appointment created.");
-        }
-    }
-    
-    onSave();
-    onClose();
-    setIsSaving(false);
   };
 
   return (
@@ -327,9 +262,9 @@ export default function VisitForm({ patients, branches, users, onClose, onSave, 
                         <input type="text" value={patientId ? patients.find(p => p.id === patientId)?.name : patientSearch}
                             onChange={e => {setPatientSearch(e.target.value); setPatientId(''); setIsDropdownOpen(true);}}
                             onFocus={() => setIsDropdownOpen(true)}
-                            required disabled={isAppointment}
+                            required disabled={isAppointment || !!visit}
                             placeholder="Type to search patient..."
-                            className={`w-full h-[42px] border border-slate-300 px-3 rounded-xl text-sm transition-all focus:ring-4 focus:ring-teal-500/10 focus:border-teal-500 outline-none ${isAppointment ? 'bg-slate-50 text-slate-500 border-slate-200 cursor-not-allowed' : 'bg-white text-slate-800'}`} />
+                            className={`w-full h-[42px] border border-slate-300 px-3 rounded-xl text-sm transition-all focus:ring-4 focus:ring-teal-500/10 focus:border-teal-500 outline-none ${isAppointment || visit ? 'bg-slate-50 text-slate-500 border-slate-200 cursor-not-allowed' : 'bg-white text-slate-800'}`} />
                         {isDropdownOpen && !patientId && patientSearch && filteredPatients.length > 0 && (
                             <div className="absolute z-10 w-full bg-white border border-slate-200 mt-1 max-h-40 overflow-y-auto rounded-xl shadow-xl divide-y divide-slate-100">
                                 {filteredPatients.map(p => (
@@ -522,12 +457,16 @@ export default function VisitForm({ patients, branches, users, onClose, onSave, 
                                   return String(value);
                                 };
 
+                                const containsLegacyValues = Object.prototype.hasOwnProperty.call(c, 'oldValue')
+                                  || Object.prototype.hasOwnProperty.call(c, 'newValue');
                                 return (
                                   <div key={idx} className="flex justify-between py-0.5">
                                     <span className="font-semibold text-slate-700 capitalize">{c.field.replace(/([A-Z])/g, ' $1')}:</span>
-                                    <span className="text-slate-500 truncate max-w-[150px] text-right" title={`${getDisplayValue(c.field, c.oldValue)} → ${getDisplayValue(c.field, c.newValue)}`}>
-                                      {getDisplayValue(c.field, c.oldValue)} <span className="text-teal-600">→</span> {getDisplayValue(c.field, c.newValue)}
-                                    </span>
+                                    {containsLegacyValues ? (
+                                      <span className="text-slate-500 truncate max-w-[150px] text-right" title={`${getDisplayValue(c.field, c.oldValue)} → ${getDisplayValue(c.field, c.newValue)}`}>
+                                        {getDisplayValue(c.field, c.oldValue)} <span className="text-teal-600">→</span> {getDisplayValue(c.field, c.newValue)}
+                                      </span>
+                                    ) : <span className="text-slate-500">Field changed</span>}
                                   </div>
                                 );
                             })}

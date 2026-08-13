@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, doc, updateDoc, setDoc, getDoc, addDoc, deleteDoc, writeBatch, getDocs, query } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, setDoc, getDoc, addDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { auth } from '../firebase';
 import imageCompression from 'browser-image-compression';
 import { getChangedFields } from '../utils/diffUtils';
@@ -579,43 +579,6 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     }
   };
 
-  const handlePurgeCollection = async (collectionName: string) => {
-    try {
-        const querySnapshot = await getDocs(collection(db, collectionName));
-        const docs = querySnapshot.docs;
-        
-        // Firestore writeBatch has a limit of 500 operations.
-        // Chunk docs into batches of 500.
-        for (let i = 0; i < docs.length; i += 500) {
-            const batch = writeBatch(db);
-            const chunk = docs.slice(i, i + 500);
-            chunk.forEach((doc) => {
-                batch.delete(doc.ref);
-            });
-            await batch.commit();
-        }
-
-        alert(`Successfully purged ${collectionName}.`);
-        await logActivity({
-            action: 'DELETE',
-            resource: 'Settings',
-            resourceId: 'purge',
-            details: `Purged collection: ${collectionName}`,
-            userProfile: { role: userRole }
-        });
-    } catch (e: any) {
-        setError(`Failed to purge ${collectionName}: ${e.message}`);
-    }
-  }
-
-  const confirmPurge = (collectionName: string) => {
-      setActionToConfirm({
-          onConfirm: () => handlePurgeCollection(collectionName),
-          title: `Purge ${collectionName}?`,
-          message: `Are you sure you want to permanently delete all records in ${collectionName}? This action cannot be undone.`
-      });
-  }
-
   return (
     <div className="space-y-8 p-6 bg-slate-50 min-h-screen">
         <ConfirmationModal 
@@ -1167,13 +1130,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
             
             {isDataManagementOpen && (
                 <div className="mt-6 space-y-4 animate-fade-in">
-                    <p className="text-xs text-red-600 font-bold">WARNING: Destructive Actions. Cannot be undone.</p>
-                    <div className="flex gap-4">
-                        <button onClick={() => confirmPurge('appointments')} className="bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-bold">Purge All Appointments</button>
-                        <button onClick={() => confirmPurge('visits')} className="bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-bold">Purge All Visits</button>
-                        <button onClick={() => confirmPurge('patients')} className="bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-bold">Purge All Patients</button>
-                        <button onClick={() => confirmPurge('audit_logs')} className="bg-red-500 text-white px-4 py-2 rounded-lg text-sm font-bold">Purge All Audit Logs</button>
-                    </div>
+                    <p className="text-xs text-slate-600">Patient, appointment, visit, and audit records cannot be purged from the browser. Destructive cleanup requires a controlled retention process with a backup and server-side audit trail.</p>
                 </div>
             )}
         </div>

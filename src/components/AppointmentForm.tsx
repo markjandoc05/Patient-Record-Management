@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { collection, addDoc, updateDoc, doc, onSnapshot, query, where, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, orderBy } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { CustomDatePicker } from './CustomDatePicker';
-import { getChangedFields } from '../utils/diffUtils';
-import { logActivity } from '../utils/auditLogger';
+import { createAppointmentRecord, updateAppointmentRecord } from '../utils/recordApi';
 import FileAttachmentSection from './FileAttachmentSection';
 
 export default function AppointmentForm({ 
@@ -163,80 +162,30 @@ export default function AppointmentForm({
         return;
     }
     
-    setIsSaving(true);
-    const now = new Date().toISOString();
     const finalStatus = targetStatus || status;
 
     if (finalStatus === 'Completed') {
         if (!mainConcern) return alert('Please provide a main concern summary before completing.');
         if (!notes) return alert('Please provide clinical notes before completing.');
     }
-    
-    const userData = {
-        uid: currentUser?.uid || 'unknown',
-        name: currentUserRecord?.fullName || currentUser?.email || 'Unknown'
+
+    setIsSaving(true);
+    const appointmentData = {
+      patientId,
+      appointmentDate,
+      branchId,
+      doctorId,
+      visitType,
+      mainConcern,
+      notes,
+      status: finalStatus
     };
 
     try {
         if (appointment) {
-            const updateData: any = {
-                appointmentDate,
-                branchId,
-                doctorId,
-                visitType,
-                mainConcern,
-                notes,
-                status: finalStatus,
-                updatedAt: now,
-                updatedByUid: userData.uid,
-                updatedByName: userData.name
-            };
-            
-            if (finalStatus !== appointment.status) {
-                updateData.lastStatusChangedAt = now;
-                updateData.lastStatusChangedByUid = userData.uid;
-                updateData.lastStatusChangedByName = userData.name;
-            }
-
-            await updateDoc(doc(db, 'appointments', appointment.id), updateData);
-            const allChangedFields = getChangedFields(appointment, updateData);
-            const significantChanges = allChangedFields.filter(c => 
-                !['updatedAt', 'updatedByUid', 'updatedByName', 'lastStatusChangedAt', 'lastStatusChangedByUid', 'lastStatusChangedByName'].includes(c.field)
-            );
-            
-            await logActivity({
-              action: 'UPDATE',
-              resource: 'Appointment',
-              resourceId: appointment.id,
-              resourceName: appointment.patientName || '',
-              details: `Updated appointment. Status: ${finalStatus}. Modified: ${significantChanges.map(c => c.field).join(', ')}`,
-              changes: significantChanges,
-              userProfile: currentUserRecord
-            });
+            await updateAppointmentRecord(appointment.id, appointmentData);
         } else {
-            const patientName = patients.find(p => p.id === patientId)?.name || '';
-            const docRef = await addDoc(collection(db, 'appointments'), {
-                patientId,
-                patientName,
-                appointmentDate,
-                branchId,
-                doctorId,
-                visitType,
-                mainConcern,
-                notes,
-                status: finalStatus,
-                createdAt: now,
-                createdByUid: userData.uid,
-                createdByName: userData.name
-            });
-            await logActivity({
-              action: 'CREATE',
-              resource: 'Appointment',
-              resourceId: docRef.id,
-              resourceName: patientName,
-              details: `Created new appointment scheduled on ${appointmentDate}`,
-              userProfile: currentUserRecord
-            });
+            await createAppointmentRecord(appointmentData);
         }
         
         onSave();
@@ -468,12 +417,16 @@ export default function AppointmentForm({
                                       return String(value);
                                     };
 
+                                    const containsLegacyValues = Object.prototype.hasOwnProperty.call(c, 'oldValue')
+                                      || Object.prototype.hasOwnProperty.call(c, 'newValue');
                                     return (
                                       <div key={idx} className="flex justify-between py-0.5">
                                         <span className="font-semibold text-slate-700 capitalize">{c.field.replace(/([A-Z])/g, ' $1')}:</span>
-                                        <span className="text-slate-500 truncate max-w-[150px] text-right" title={`${getDisplayValue(c.field, c.oldValue)} → ${getDisplayValue(c.field, c.newValue)}`}>
-                                          {getDisplayValue(c.field, c.oldValue)} <span className="text-teal-600">→</span> {getDisplayValue(c.field, c.newValue)}
-                                        </span>
+                                        {containsLegacyValues ? (
+                                          <span className="text-slate-500 truncate max-w-[150px] text-right" title={`${getDisplayValue(c.field, c.oldValue)} → ${getDisplayValue(c.field, c.newValue)}`}>
+                                            {getDisplayValue(c.field, c.oldValue)} <span className="text-teal-600">→</span> {getDisplayValue(c.field, c.newValue)}
+                                          </span>
+                                        ) : <span className="text-slate-500">Field changed</span>}
                                       </div>
                                     );
                                 })}

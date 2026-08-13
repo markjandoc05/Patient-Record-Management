@@ -58,6 +58,8 @@ function chunk<T>(values: T[], size: number) {
 }
 
 type ResourceType = 'patient' | 'appointment' | 'visit';
+type AuditAction = 'CREATE' | 'UPDATE' | 'DELETE' | 'VIEW' | 'AUTH';
+type AuditResource = 'Patient' | 'Appointment' | 'Visit' | 'User' | 'Settings' | 'Branch';
 
 const resourceCollections: Record<ResourceType, string> = {
     patient: 'patients',
@@ -69,6 +71,28 @@ const attachmentWriteRoles: Record<ResourceType, readonly string[]> = {
     patient: ['admin', 'manager', 'doctor', 'support_developer'],
     appointment: applicationRoles,
     visit: ['admin', 'manager', 'doctor', 'support_developer']
+};
+const auditActions = new Set<AuditAction>(['CREATE', 'UPDATE', 'DELETE', 'VIEW', 'AUTH']);
+const auditResources = new Set<AuditResource>(['Patient', 'Appointment', 'Visit', 'User', 'Settings', 'Branch']);
+const auditActionRoles: Record<'Patient' | 'Appointment' | 'Visit', Record<Exclude<AuditAction, 'AUTH'>, readonly string[]>> = {
+    Patient: {
+        CREATE: ['admin', 'manager', 'doctor', 'support_developer'],
+        UPDATE: ['admin', 'manager', 'doctor', 'support_developer'],
+        DELETE: ['admin', 'support_developer'],
+        VIEW: applicationRoles
+    },
+    Appointment: {
+        CREATE: applicationRoles,
+        UPDATE: applicationRoles,
+        DELETE: ['admin', 'support_developer'],
+        VIEW: applicationRoles
+    },
+    Visit: {
+        CREATE: ['admin', 'manager', 'support_developer'],
+        UPDATE: ['admin', 'manager', 'doctor', 'support_developer'],
+        DELETE: ['admin', 'support_developer'],
+        VIEW: applicationRoles
+    }
 };
 
 const allowedAttachmentTypes: Record<string, { extensions: string[], signature: (buffer: Buffer) => boolean }> = {
@@ -176,6 +200,359 @@ function publicStorageUrl(storagePath: string) {
     return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(firebaseConfig.storageBucket)}/o/${encodeURIComponent(storagePath)}?alt=media`;
 }
 
+class RequestError extends Error {
+    constructor(public status: number, message: string) {
+        super(message);
+    }
+}
+
+const patientTextLimits: Record<string, number> = {
+    name: 120,
+    contactNumber: 40,
+    email: 160,
+    gender: 20,
+    address: 300,
+    emergencyContact: 160,
+    mainConcern: 2000,
+    skinType: 30,
+    allergies: 1000,
+    medications: 2000,
+    medicalConditions: 2000,
+    notes: 3000,
+    status: 30
+};
+const appointmentTextLimits: Record<string, number> = {
+    visitType: 80,
+    mainConcern: 2000,
+    notes: 3000,
+    status: 30
+};
+const visitTextLimits: Record<string, number> = {
+    visitType: 80,
+    treatmentService: 120,
+    mainConcern: 2000,
+    notes: 5000,
+    diagnosis: 3000,
+    treatmentPlan: 5000,
+    visitOutcome: 100,
+    visitSource: 30,
+    nextVisitDate: 40,
+    followUpInstructions: 2000
+};
+const appointmentStatuses = new Set(['Scheduled', 'Confirmed', 'Arrived', 'Completed', 'Cancelled', 'No Show']);
+const visitTypes = new Set(['Initial Consultation', 'Follow-up', 'Treatment Session', 'Assessment']);
+
+function cleanRecordText(payload: Record<string, unknown>, limits: Record<string, number>): Record<string, string> {
+    return Object.fromEntries(Object.entries(limits).map(([field, maxLength]) => {
+        const value = payload[field];
+        if (value === undefined || value === null) return [field, ''];
+        if (typeof value !== 'string') throw new RequestError(400, `${field} must be text`);
+        const cleaned = value.replace(/\u0000/g, '').trim();
+        if (cleaned.length > maxLength) throw new RequestError(400, `${field} is too long`);
+        return [field, cleaned];
+    }));
+}
+
+function requireRecordFields(data: Record<string, any>, fields: string[]) {
+    const missing = fields.find(field => typeof data[field] !== 'string' || data[field].length === 0);
+    if (missing) throw new RequestError(400, `${missing} is required`);
+}
+
+function isValidLocalDateTime(value: unknown): value is string {
+    return typeof value === 'string'
+        && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})?$/.test(value)
+        && !Number.isNaN(new Date(value).getTime());
+}
+
+function normalizeLocalDateTime(value: string) {
+    return value.slice(0, 16);
+}
+
+function isValidDate(value: unknown): value is string {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const date = new Date(`${value}T00:00:00Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function calculateAge(birthday: string) {
+    const birthDate = new Date(`${birthday}T00:00:00`);
+    if (Number.isNaN(birthDate.getTime())) throw new RequestError(400, 'Invalid birthday');
+    const today = new Date();
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const monthDifference = today.getMonth() - birthDate.getMonth();
+    if (monthDifference < 0 || (monthDifference === 0 && today.getDate() < birthDate.getDate())) age -= 1;
+    if (age < 0 || age > 130) throw new RequestError(400, 'Invalid birthday');
+    return age;
+}
+
+function getChangedFieldNames(before: Record<string, any>, updates: Record<string, any>) {
+    return Object.keys(updates).filter(field => JSON.stringify(before[field]) !== JSON.stringify(updates[field]));
+}
+
+function trustedUserName(authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> }) {
+    return typeof authorization.userProfile.fullName === 'string'
+        ? authorization.userProfile.fullName.slice(0, 120)
+        : authorization.decodedToken.email || 'Unknown User';
+}
+
+function requireRole(userProfile: Record<string, any>, allowedRoles: readonly string[]) {
+    if (typeof userProfile.role !== 'string' || !allowedRoles.includes(userProfile.role)) {
+        throw new RequestError(403, 'Insufficient permissions');
+    }
+}
+
+async function assertDoctorAvailability(
+    transaction: admin.firestore.Transaction,
+    doctorId: string,
+    dateTime: string,
+    exclusions: { appointmentId?: string | null, visitId?: string | null } = {}
+) {
+    const minutePrefix = normalizeLocalDateTime(dateTime);
+    const appointmentQuery = db.collection('appointments')
+        .where('appointmentDate', '>=', minutePrefix)
+        .where('appointmentDate', '<', `${minutePrefix}\uf8ff`);
+    const visitQuery = db.collection('visits')
+        .where('visitDate', '>=', minutePrefix)
+        .where('visitDate', '<', `${minutePrefix}\uf8ff`);
+    const [appointments, visits] = await Promise.all([
+        transaction.get(appointmentQuery),
+        transaction.get(visitQuery)
+    ]);
+    const appointmentConflict = appointments.docs.some(document =>
+        document.id !== exclusions.appointmentId
+        && document.data().doctorId === doctorId
+        && document.data().status !== 'Cancelled'
+        && typeof document.data().appointmentDate === 'string'
+        && normalizeLocalDateTime(document.data().appointmentDate) === normalizeLocalDateTime(dateTime)
+    );
+    const visitConflict = visits.docs.some(document =>
+        document.id !== exclusions.visitId
+        && document.data().doctorId === doctorId
+        && document.data().status !== 'Cancelled'
+        && document.data().appointmentId !== exclusions.appointmentId
+        && typeof document.data().visitDate === 'string'
+        && normalizeLocalDateTime(document.data().visitDate) === normalizeLocalDateTime(dateTime)
+    );
+    if (appointmentConflict || visitConflict) throw new RequestError(409, 'Doctor already has a booking at this time');
+}
+
+function sendRecordError(res: express.Response, error: unknown, operation: string) {
+    if (error instanceof RequestError) return res.status(error.status).json({ error: error.message });
+    console.error(`${operation} failed`, error);
+    return res.status(500).json({ error: `${operation} failed` });
+}
+
+function requestPayload(req: express.Request) {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+        throw new RequestError(400, 'Invalid request body');
+    }
+    return req.body as Record<string, unknown>;
+}
+
+function parsePatientPayload(payload: Record<string, unknown>): Record<string, any> {
+    const data = cleanRecordText(payload, patientTextLimits);
+    requireRecordFields(data, ['name', 'contactNumber', 'email', 'gender', 'address', 'mainConcern']);
+    if (!isValidDocumentId(payload.homeBranchId)) throw new RequestError(400, 'homeBranchId is required');
+    if (!isValidDate(payload.birthday)) throw new RequestError(400, 'Invalid birthday');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) throw new RequestError(400, 'Invalid email address');
+    if (!['Male', 'Female', 'Other'].includes(data.gender)) throw new RequestError(400, 'Invalid gender');
+    if (!['Active', 'Inactive'].includes(data.status || 'Active')) throw new RequestError(400, 'Invalid patient status');
+    return {
+        ...data,
+        email: data.email.toLowerCase(),
+        birthday: payload.birthday,
+        age: calculateAge(payload.birthday),
+        status: data.status || 'Active',
+        homeBranchId: payload.homeBranchId
+    };
+}
+
+function parseAppointmentPayload(payload: Record<string, unknown>): Record<string, any> {
+    const data = cleanRecordText(payload, appointmentTextLimits);
+    if (!isValidDocumentId(payload.patientId)) throw new RequestError(400, 'patientId is required');
+    if (!isValidDocumentId(payload.branchId)) throw new RequestError(400, 'branchId is required');
+    if (!isValidDocumentId(payload.doctorId)) throw new RequestError(400, 'doctorId is required');
+    if (!isValidLocalDateTime(payload.appointmentDate)) throw new RequestError(400, 'Invalid appointment date');
+    requireRecordFields(data, ['visitType', 'status']);
+    if (!visitTypes.has(data.visitType)) throw new RequestError(400, 'Invalid visit type');
+    if (!appointmentStatuses.has(data.status)) throw new RequestError(400, 'Invalid appointment status');
+    if (data.status === 'Completed' && (!data.mainConcern || !data.notes)) {
+        throw new RequestError(400, 'Main concern and clinical notes are required before completion');
+    }
+    return {
+        ...data,
+        patientId: payload.patientId,
+        branchId: payload.branchId,
+        doctorId: payload.doctorId,
+        appointmentDate: normalizeLocalDateTime(payload.appointmentDate)
+    };
+}
+
+function parseVisitPayload(payload: Record<string, unknown>): Record<string, any> {
+    const data = cleanRecordText(payload, visitTextLimits);
+    if (!isValidDocumentId(payload.patientId)) throw new RequestError(400, 'patientId is required');
+    if (!isValidDocumentId(payload.branchId)) throw new RequestError(400, 'branchId is required');
+    if (!isValidDocumentId(payload.doctorId)) throw new RequestError(400, 'doctorId is required');
+    if (!isValidLocalDateTime(payload.visitDate)) throw new RequestError(400, 'Invalid visit date');
+    requireRecordFields(data, ['visitType']);
+    if (!visitTypes.has(data.visitType)) throw new RequestError(400, 'Invalid visit type');
+    if (payload.appointmentId !== null && payload.appointmentId !== undefined
+        && !isValidDocumentId(payload.appointmentId)) {
+        throw new RequestError(400, 'Invalid appointmentId');
+    }
+    if (data.nextVisitDate && !isValidDate(data.nextVisitDate)) throw new RequestError(400, 'Invalid follow-up date');
+    return {
+        ...data,
+        patientId: payload.patientId,
+        branchId: payload.branchId,
+        doctorId: payload.doctorId,
+        visitDate: normalizeLocalDateTime(payload.visitDate),
+        appointmentId: (payload.appointmentId || null) as string | null,
+        followUpRequired: payload.followUpRequired === true,
+        status: 'Completed'
+    };
+}
+
+async function transactionRecordContext(
+    transaction: admin.firestore.Transaction,
+    authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> },
+    patientId: string,
+    branchId: string,
+    doctorId: string
+) {
+    const patientRef = db.collection('patients').doc(patientId);
+    const branchRef = db.collection('branches').doc(branchId);
+    const doctorRef = db.collection('users').doc(doctorId);
+    const [patientSnapshot, branchSnapshot, doctorSnapshot] = await Promise.all([
+        transaction.get(patientRef),
+        transaction.get(branchRef),
+        transaction.get(doctorRef)
+    ]);
+    if (!patientSnapshot.exists) throw new RequestError(404, 'Patient not found');
+    if (!branchSnapshot.exists) throw new RequestError(400, 'Branch not found');
+    const patientData = patientSnapshot.data() || {};
+    const branchData = branchSnapshot.data() || {};
+    const doctorData = doctorSnapshot.data() || {};
+    if (!canAccessBranch(authorization.userProfile, patientData.homeBranchId)
+        || !canAccessBranch(authorization.userProfile, branchId)) {
+        throw new RequestError(403, 'Branch access denied');
+    }
+    if (!doctorSnapshot.exists || doctorData.active !== true || doctorData.role !== 'doctor'
+        || !Array.isArray(doctorData.assignedBranches) || !doctorData.assignedBranches.includes(branchId)) {
+        throw new RequestError(400, 'Doctor is not active in the selected branch');
+    }
+    return { patientRef, patientData, branchRef, branchData, doctorRef, doctorData };
+}
+
+function getSafeChangeFields(value: unknown) {
+    if (!Array.isArray(value)) return [];
+    return [...new Set(value.filter((field): field is string =>
+        typeof field === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(field)
+    ))].slice(0, 30);
+}
+
+function buildAuditLogData(options: {
+    authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> };
+    action: AuditAction;
+    resource: AuditResource;
+    resourceId: string;
+    resourceName?: string;
+    branchId?: string | null;
+    changeFields?: string[];
+    userAgent?: string;
+    eventType?: string;
+}) {
+    const changeFields = getSafeChangeFields(options.changeFields);
+    const verb: Record<AuditAction, string> = {
+        CREATE: 'Created',
+        UPDATE: 'Updated',
+        DELETE: 'Deleted',
+        VIEW: 'Viewed',
+        AUTH: 'Authenticated for'
+    };
+    const detailSuffix = changeFields.length > 0 ? `. Fields: ${changeFields.join(', ')}` : '';
+    const eventDetails: Record<string, string> = {
+        attachment_uploaded: `Uploaded attachment for ${options.resource.toLowerCase()} record`,
+        attachment_deleted: `Deleted attachment from ${options.resource.toLowerCase()} record`
+    };
+    return {
+        timestamp: new Date().toISOString(),
+        recordedAt: admin.firestore.FieldValue.serverTimestamp(),
+        userId: options.authorization.decodedToken.uid,
+        userEmail: options.authorization.decodedToken.email || 'unknown',
+        userName: typeof options.authorization.userProfile.fullName === 'string'
+            ? options.authorization.userProfile.fullName.slice(0, 120)
+            : 'Unknown User',
+        userRole: options.authorization.userProfile.role,
+        action: options.action,
+        resource: options.resource,
+        resourceId: options.resourceId,
+        resourceName: options.resourceName || '',
+        details: eventDetails[options.eventType || '']
+            || `${verb[options.action]} ${options.resource.toLowerCase()} record${detailSuffix}`,
+        changes: changeFields.map(field => ({ field })),
+        branchId: options.branchId || null,
+        eventType: options.eventType || 'record_activity',
+        userAgent: (options.userAgent || 'unknown').replace(/[\r\n]/g, ' ').slice(0, 200),
+        source: 'trusted_server',
+        integrityVersion: 1,
+        requestId: randomUUID()
+    };
+}
+
+async function authorizeAuditResource(
+    authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> },
+    action: AuditAction,
+    resource: AuditResource,
+    resourceId: string
+) {
+    const role = authorization.userProfile.role as string;
+    const hasGlobalAccess = globalBranchRoles.has(role);
+
+    if (resource === 'Settings') {
+        return hasGlobalAccess ? { branchId: null, resourceName: '' } : null;
+    }
+    if (resource === 'Branch') {
+        if (!hasGlobalAccess) return null;
+        const snapshot = await db.collection('branches').doc(resourceId).get();
+        const branchName = snapshot.exists && typeof snapshot.data()?.branchName === 'string'
+            ? snapshot.data()!.branchName.slice(0, 120)
+            : '';
+        return { branchId: resourceId, resourceName: branchName };
+    }
+    if (resource === 'User') {
+        if (authorization.decodedToken.uid !== resourceId && !hasGlobalAccess) return null;
+        if (!hasGlobalAccess && !['UPDATE', 'VIEW', 'AUTH'].includes(action)) return null;
+        const snapshot = await db.collection('users').doc(resourceId).get();
+        const data = snapshot.data() || {};
+        const branchId = typeof data.defaultBranchId === 'string' ? data.defaultBranchId : null;
+        return { branchId, resourceName: '' };
+    }
+
+    if (action === 'AUTH' || !auditActionRoles[resource].hasOwnProperty(action)
+        || !auditActionRoles[resource][action as Exclude<AuditAction, 'AUTH'>].includes(role)) {
+        return null;
+    }
+
+    const collectionName = resource === 'Patient' ? 'patients' : resource === 'Appointment' ? 'appointments' : 'visits';
+    const snapshot = await db.collection(collectionName).doc(resourceId).get();
+    if (!snapshot.exists) {
+        return action === 'DELETE' && hasGlobalAccess ? { branchId: null, resourceName: '' } : null;
+    }
+    const data = snapshot.data() || {};
+    const branchId = resource === 'Patient' ? data.homeBranchId : data.branchId;
+    if (!canAccessBranch(authorization.userProfile, branchId)) return null;
+
+    let resourceName = resource === 'Patient' && typeof data.patientID === 'string' ? data.patientID.slice(0, 80) : '';
+    if (resource !== 'Patient' && typeof data.patientId === 'string') {
+        const patientSnapshot = await db.collection('patients').doc(data.patientId).get();
+        const patientData = patientSnapshot.data() || {};
+        if (!canAccessBranch(authorization.userProfile, patientData.homeBranchId)) return null;
+        resourceName = typeof patientData.patientID === 'string' ? patientData.patientID.slice(0, 80) : '';
+    }
+    return { branchId, resourceName };
+}
+
 async function authorizeRequest(
     req: express.Request,
     res: express.Response,
@@ -211,6 +588,48 @@ async function authorizeRequest(
         return null;
     }
 }
+
+// Clients may report that an event occurred, but all identity, role, time,
+// branch, and safe resource-label fields are derived by this trusted server.
+app.post("/api/audit-events", async (req, res) => {
+    const authorization = await authorizeRequest(req, res, applicationRoles);
+    if (!authorization) return;
+
+    const { action, resource, resourceId } = req.body as Record<string, unknown>;
+    if (!auditActions.has(action as AuditAction)
+        || !auditResources.has(resource as AuditResource)
+        || !isValidDocumentId(resourceId)) {
+        return res.status(400).json({ error: "Invalid audit event" });
+    }
+
+    try {
+        const typedAction = action as AuditAction;
+        const typedResource = resource as AuditResource;
+        const context = await authorizeAuditResource(
+            authorization,
+            typedAction,
+            typedResource,
+            resourceId
+        );
+        if (!context) return res.status(403).json({ error: "Audit resource access denied" });
+
+        const log = buildAuditLogData({
+            authorization,
+            action: typedAction,
+            resource: typedResource,
+            resourceId,
+            resourceName: context.resourceName,
+            branchId: context.branchId,
+            changeFields: getSafeChangeFields(req.body.changeFields),
+            userAgent: req.get('user-agent')
+        });
+        const logRef = await db.collection('audit_logs').add(log);
+        res.status(201).json({ id: logRef.id });
+    } catch (error) {
+        console.error("Audit event creation failed", error);
+        res.status(500).json({ error: "Audit event creation failed" });
+    }
+});
 
 // Branding remains publicly readable, but only this trusted endpoint may write it.
 app.post("/api/branding/upload", uploadSingleFile, async (req, res) => {
@@ -331,6 +750,17 @@ app.post("/api/attachments/upload", uploadSingleFile, async (req, res) => {
             const attachments = Array.isArray(data.attachments) ? data.attachments : [];
             if (attachments.length >= settings.maxFiles) throw new Error('Maximum attachment count reached');
             transaction.update(context.resourceRef, { attachments: [...attachments, attachment] });
+            const auditRef = db.collection('audit_logs').doc();
+            transaction.set(auditRef, buildAuditLogData({
+                authorization,
+                action: 'UPDATE',
+                resource: typedResource === 'patient' ? 'Patient' : typedResource === 'appointment' ? 'Appointment' : 'Visit',
+                resourceId,
+                resourceName: typeof context.patientData.patientID === 'string' ? context.patientData.patientID.slice(0, 80) : '',
+                branchId,
+                userAgent: req.get('user-agent'),
+                eventType: 'attachment_uploaded'
+            }));
         });
 
         res.status(201).json({ attachment });
@@ -426,12 +856,486 @@ app.delete("/api/attachments", async (req, res) => {
             transaction.update(context.resourceRef, {
                 attachments: attachments.filter((attachment: any) => attachment?.storagePath !== storagePath)
             });
+            const auditRef = db.collection('audit_logs').doc();
+            transaction.set(auditRef, buildAuditLogData({
+                authorization,
+                action: 'UPDATE',
+                resource: parsed.resourceType === 'patient' ? 'Patient' : parsed.resourceType === 'appointment' ? 'Appointment' : 'Visit',
+                resourceId: parsed.resourceId,
+                resourceName: typeof context.patientData.patientID === 'string' ? context.patientData.patientID.slice(0, 80) : '',
+                branchId,
+                userAgent: req.get('user-agent'),
+                eventType: 'attachment_deleted'
+            }));
         });
         await admin.storage().bucket(firebaseConfig.storageBucket).file(storagePath).delete({ ignoreNotFound: true });
         res.status(204).send();
     } catch (error) {
         console.error("Attachment deletion failed", error);
         res.status(500).json({ error: "Attachment deletion failed" });
+    }
+});
+
+app.post("/api/records/patients", async (req, res) => {
+    const authorization = await authorizeRequest(req, res, applicationRoles);
+    if (!authorization) return;
+
+    try {
+        requireRole(authorization.userProfile, auditActionRoles.Patient.CREATE);
+        const patient = parsePatientPayload(requestPayload(req));
+        const branchSnapshot = await db.collection('branches').doc(patient.homeBranchId).get();
+        const branchData = branchSnapshot.data() || {};
+        if (!branchSnapshot.exists || branchData.status !== 'Active') throw new RequestError(400, 'Branch is not active');
+        if (!canAccessBranch(authorization.userProfile, patient.homeBranchId)) throw new RequestError(403, 'Branch access denied');
+
+        const duplicateSnapshot = await db.collection('patients').where('email', '==', patient.email).limit(20).get();
+        const duplicate = duplicateSnapshot.docs.some(document => {
+            const data = document.data();
+            return String(data.name || '').trim().toLowerCase() === patient.name.toLowerCase()
+                && String(data.contactNumber || '').trim() === patient.contactNumber
+                && data.birthday === patient.birthday;
+        });
+        if (duplicate) throw new RequestError(409, 'A patient with these details already exists');
+
+        const currentYear = new Date().getFullYear() % 100;
+        const patientPrefix = `ID-${String(currentYear).padStart(2, '0')}-`;
+        const counterRef = db.collection('counters').doc(`patient-${String(currentYear).padStart(2, '0')}`);
+        const counterExists = (await counterRef.get()).exists;
+        let existingMax = 0;
+        if (!counterExists) {
+            const existingPatients = await db.collection('patients').get();
+            existingMax = existingPatients.docs.reduce((maximum, document) => {
+                const patientId = document.data().patientID;
+                if (typeof patientId !== 'string' || !patientId.startsWith(patientPrefix)) return maximum;
+                return Math.max(maximum, Number.parseInt(patientId.slice(patientPrefix.length), 10) || 0);
+            }, 0);
+        }
+        const patientRef = db.collection('patients').doc();
+        const now = new Date().toISOString();
+        const actorName = trustedUserName(authorization);
+        let patientID = '';
+
+        await db.runTransaction(async transaction => {
+            const [counterSnapshot, latestBranchSnapshot] = await Promise.all([
+                transaction.get(counterRef),
+                transaction.get(db.collection('branches').doc(patient.homeBranchId))
+            ]);
+            const latestBranch = latestBranchSnapshot.data() || {};
+            if (!latestBranchSnapshot.exists || latestBranch.status !== 'Active') throw new RequestError(400, 'Branch is not active');
+            const lastNumber = Math.max(Number(counterSnapshot.data()?.lastNumber) || 0, existingMax);
+            const nextNumber = lastNumber + 1;
+            patientID = `${patientPrefix}${String(nextNumber).padStart(4, '0')}`;
+            transaction.set(counterRef, { lastNumber: nextNumber, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+            transaction.create(patientRef, {
+                ...patient,
+                patientID,
+                homeBranchName: typeof latestBranch.branchName === 'string' ? latestBranch.branchName : '',
+                dateRegistered: now,
+                attachments: [],
+                createdBranchId: patient.homeBranchId,
+                createdBranchName: typeof latestBranch.branchName === 'string' ? latestBranch.branchName : '',
+                createdByUid: authorization.decodedToken.uid,
+                createdByName: actorName,
+                createdAt: now,
+                createdByUserDefaultBranchId: authorization.userProfile.defaultBranchId || null,
+                createdByUserDefaultBranchName: authorization.userProfile.defaultBranchName || null,
+                lastUpdatedBranchId: patient.homeBranchId,
+                lastUpdatedBranchName: typeof latestBranch.branchName === 'string' ? latestBranch.branchName : '',
+                lastUpdatedByUid: authorization.decodedToken.uid,
+                lastUpdatedByName: actorName,
+                lastUpdatedAt: now
+            });
+            transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
+                authorization,
+                action: 'CREATE',
+                resource: 'Patient',
+                resourceId: patientRef.id,
+                resourceName: patientID,
+                branchId: patient.homeBranchId,
+                userAgent: req.get('user-agent')
+            }));
+        });
+        res.status(201).json({ id: patientRef.id, patientID });
+    } catch (error) {
+        return sendRecordError(res, error, 'Patient creation');
+    }
+});
+
+app.patch("/api/records/patients/:patientId", async (req, res) => {
+    const authorization = await authorizeRequest(req, res, applicationRoles);
+    if (!authorization) return;
+
+    try {
+        requireRole(authorization.userProfile, auditActionRoles.Patient.UPDATE);
+        if (!isValidDocumentId(req.params.patientId)) throw new RequestError(400, 'Invalid patient ID');
+        const updates = parsePatientPayload(requestPayload(req));
+        const patientRef = db.collection('patients').doc(req.params.patientId);
+        const branchRef = db.collection('branches').doc(updates.homeBranchId);
+        const now = new Date().toISOString();
+        const actorName = trustedUserName(authorization);
+
+        await db.runTransaction(async transaction => {
+            const [patientSnapshot, branchSnapshot] = await Promise.all([
+                transaction.get(patientRef),
+                transaction.get(branchRef)
+            ]);
+            if (!patientSnapshot.exists) throw new RequestError(404, 'Patient not found');
+            if (!branchSnapshot.exists) throw new RequestError(400, 'Branch not found');
+            const patientData = patientSnapshot.data() || {};
+            const branchData = branchSnapshot.data() || {};
+            if (!canAccessBranch(authorization.userProfile, patientData.homeBranchId)
+                || !canAccessBranch(authorization.userProfile, updates.homeBranchId)) {
+                throw new RequestError(403, 'Branch access denied');
+            }
+            if (updates.homeBranchId !== patientData.homeBranchId && branchData.status !== 'Active') {
+                throw new RequestError(400, 'Branch is not active');
+            }
+            const trustedUpdates = {
+                ...updates,
+                homeBranchName: typeof branchData.branchName === 'string' ? branchData.branchName : '',
+                lastUpdatedBranchId: updates.homeBranchId,
+                lastUpdatedBranchName: typeof branchData.branchName === 'string' ? branchData.branchName : '',
+                lastUpdatedByUid: authorization.decodedToken.uid,
+                lastUpdatedByName: actorName,
+                lastUpdatedAt: now
+            };
+            const changedFields = getChangedFieldNames(patientData, updates);
+            transaction.update(patientRef, trustedUpdates);
+            transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
+                authorization,
+                action: 'UPDATE',
+                resource: 'Patient',
+                resourceId: patientRef.id,
+                resourceName: typeof patientData.patientID === 'string' ? patientData.patientID : '',
+                branchId: updates.homeBranchId,
+                changeFields: changedFields,
+                userAgent: req.get('user-agent')
+            }));
+        });
+        res.status(200).json({ id: patientRef.id });
+    } catch (error) {
+        return sendRecordError(res, error, 'Patient update');
+    }
+});
+
+app.post("/api/records/appointments", async (req, res) => {
+    const authorization = await authorizeRequest(req, res, applicationRoles);
+    if (!authorization) return;
+
+    try {
+        requireRole(authorization.userProfile, auditActionRoles.Appointment.CREATE);
+        const appointment = parseAppointmentPayload(requestPayload(req));
+        const appointmentRef = db.collection('appointments').doc();
+        const now = new Date().toISOString();
+        const actorName = trustedUserName(authorization);
+
+        await db.runTransaction(async transaction => {
+            const context = await transactionRecordContext(
+                transaction,
+                authorization,
+                appointment.patientId,
+                appointment.branchId,
+                appointment.doctorId
+            );
+            if (context.branchData.status !== 'Active') throw new RequestError(400, 'Branch is not active');
+            await assertDoctorAvailability(transaction, appointment.doctorId, appointment.appointmentDate);
+            transaction.create(appointmentRef, {
+                ...appointment,
+                patientName: typeof context.patientData.name === 'string' ? context.patientData.name : '',
+                attachments: [],
+                createdAt: now,
+                createdByUid: authorization.decodedToken.uid,
+                createdByName: actorName
+            });
+            transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
+                authorization,
+                action: 'CREATE',
+                resource: 'Appointment',
+                resourceId: appointmentRef.id,
+                resourceName: typeof context.patientData.patientID === 'string' ? context.patientData.patientID : '',
+                branchId: appointment.branchId,
+                userAgent: req.get('user-agent')
+            }));
+        });
+        res.status(201).json({ id: appointmentRef.id });
+    } catch (error) {
+        return sendRecordError(res, error, 'Appointment creation');
+    }
+});
+
+app.patch("/api/records/appointments/:appointmentId", async (req, res) => {
+    const authorization = await authorizeRequest(req, res, applicationRoles);
+    if (!authorization) return;
+
+    try {
+        requireRole(authorization.userProfile, auditActionRoles.Appointment.UPDATE);
+        if (!isValidDocumentId(req.params.appointmentId)) throw new RequestError(400, 'Invalid appointment ID');
+        const updates = parseAppointmentPayload(requestPayload(req));
+        const appointmentRef = db.collection('appointments').doc(req.params.appointmentId);
+        const now = new Date().toISOString();
+        const actorName = trustedUserName(authorization);
+
+        await db.runTransaction(async transaction => {
+            const appointmentSnapshot = await transaction.get(appointmentRef);
+            if (!appointmentSnapshot.exists) throw new RequestError(404, 'Appointment not found');
+            const appointmentData = appointmentSnapshot.data() || {};
+            if (!canAccessBranch(authorization.userProfile, appointmentData.branchId)) {
+                throw new RequestError(403, 'Branch access denied');
+            }
+            if (appointmentData.visitHistoryCreated === true) throw new RequestError(409, 'Appointment is sealed by a visit record');
+            if (appointmentData.status === 'Completed' && authorization.userProfile.role === 'staff') {
+                throw new RequestError(403, 'Completed appointments require clinical or administrative access');
+            }
+            if (appointmentData.patientId !== updates.patientId && isValidDocumentId(appointmentData.patientId)) {
+                const oldPatientSnapshot = await transaction.get(db.collection('patients').doc(appointmentData.patientId));
+                if (!oldPatientSnapshot.exists
+                    || !canAccessBranch(authorization.userProfile, oldPatientSnapshot.data()?.homeBranchId)) {
+                    throw new RequestError(403, 'Original patient access denied');
+                }
+            }
+            const context = await transactionRecordContext(
+                transaction,
+                authorization,
+                updates.patientId,
+                updates.branchId,
+                updates.doctorId
+            );
+            if (updates.branchId !== appointmentData.branchId && context.branchData.status !== 'Active') {
+                throw new RequestError(400, 'Branch is not active');
+            }
+            await assertDoctorAvailability(transaction, updates.doctorId, updates.appointmentDate, {
+                appointmentId: appointmentRef.id
+            });
+            const trustedUpdates: Record<string, unknown> = {
+                ...updates,
+                patientName: typeof context.patientData.name === 'string' ? context.patientData.name : '',
+                updatedAt: now,
+                updatedByUid: authorization.decodedToken.uid,
+                updatedByName: actorName
+            };
+            if (updates.status !== appointmentData.status) {
+                trustedUpdates.lastStatusChangedAt = now;
+                trustedUpdates.lastStatusChangedByUid = authorization.decodedToken.uid;
+                trustedUpdates.lastStatusChangedByName = actorName;
+            }
+            const changedFields = getChangedFieldNames(appointmentData, updates);
+            transaction.update(appointmentRef, trustedUpdates);
+            transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
+                authorization,
+                action: 'UPDATE',
+                resource: 'Appointment',
+                resourceId: appointmentRef.id,
+                resourceName: typeof context.patientData.patientID === 'string' ? context.patientData.patientID : '',
+                branchId: updates.branchId,
+                changeFields: changedFields,
+                userAgent: req.get('user-agent')
+            }));
+        });
+        res.status(200).json({ id: appointmentRef.id });
+    } catch (error) {
+        return sendRecordError(res, error, 'Appointment update');
+    }
+});
+
+app.post("/api/records/visits", async (req, res) => {
+    const authorization = await authorizeRequest(req, res, applicationRoles);
+    if (!authorization) return;
+
+    try {
+        requireRole(authorization.userProfile, auditActionRoles.Visit.CREATE);
+        const visit = parseVisitPayload(requestPayload(req));
+        const visitRef = db.collection('visits').doc();
+        const now = new Date().toISOString();
+        const actorName = trustedUserName(authorization);
+
+        await db.runTransaction(async transaction => {
+            const context = await transactionRecordContext(
+                transaction,
+                authorization,
+                visit.patientId,
+                visit.branchId,
+                visit.doctorId
+            );
+            if (context.branchData.status !== 'Active') throw new RequestError(400, 'Branch is not active');
+
+            let linkedAppointmentRef: admin.firestore.DocumentReference | null = null;
+            if (visit.appointmentId) {
+                linkedAppointmentRef = db.collection('appointments').doc(visit.appointmentId);
+                const appointmentSnapshot = await transaction.get(linkedAppointmentRef);
+                if (!appointmentSnapshot.exists) throw new RequestError(404, 'Linked appointment not found');
+                const appointmentData = appointmentSnapshot.data() || {};
+                if (!canAccessBranch(authorization.userProfile, appointmentData.branchId)) {
+                    throw new RequestError(403, 'Appointment access denied');
+                }
+                if (appointmentData.visitHistoryCreated === true) throw new RequestError(409, 'A visit already exists for this appointment');
+                if (appointmentData.patientId !== visit.patientId
+                    || appointmentData.branchId !== visit.branchId
+                    || appointmentData.doctorId !== visit.doctorId
+                    || normalizeLocalDateTime(String(appointmentData.appointmentDate || '')) !== visit.visitDate) {
+                    throw new RequestError(409, 'Visit details do not match the linked appointment');
+                }
+            }
+
+            await assertDoctorAvailability(transaction, visit.doctorId, visit.visitDate, {
+                appointmentId: visit.appointmentId
+            });
+            const visitSource = linkedAppointmentRef ? 'Appointment' : 'Walk-In';
+            transaction.create(visitRef, {
+                ...visit,
+                visitSource,
+                patientName: typeof context.patientData.name === 'string' ? context.patientData.name : '',
+                attachments: [],
+                createdAt: now,
+                createdBy: actorName,
+                createdByUid: authorization.decodedToken.uid,
+                updatedAt: now,
+                updatedBy: actorName,
+                updatedByUid: authorization.decodedToken.uid
+            });
+            if (linkedAppointmentRef) {
+                transaction.update(linkedAppointmentRef, {
+                    visitHistoryId: visitRef.id,
+                    visitHistoryCreated: true,
+                    status: 'Completed',
+                    updatedAt: now,
+                    updatedByUid: authorization.decodedToken.uid,
+                    updatedByName: actorName,
+                    lastStatusChangedAt: now,
+                    lastStatusChangedByUid: authorization.decodedToken.uid,
+                    lastStatusChangedByName: actorName
+                });
+            }
+            const totalVisits = Number(context.patientData.totalVisits) || 0;
+            const totalCompletedVisits = Number(context.patientData.totalCompletedVisits) || 0;
+            transaction.update(context.patientRef, {
+                lastVisitDate: visit.visitDate,
+                lastVisitBranch: typeof context.branchData.branchName === 'string' ? context.branchData.branchName : '',
+                totalVisits: totalVisits + 1,
+                totalCompletedVisits: totalCompletedVisits + 1,
+                currentPatientStatus: 'Completed',
+                ...(totalVisits === 0 ? { firstVisitDate: visit.visitDate } : {})
+            });
+            transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
+                authorization,
+                action: 'CREATE',
+                resource: 'Visit',
+                resourceId: visitRef.id,
+                resourceName: typeof context.patientData.patientID === 'string' ? context.patientData.patientID : '',
+                branchId: visit.branchId,
+                userAgent: req.get('user-agent')
+            }));
+        });
+        res.status(201).json({ id: visitRef.id });
+    } catch (error) {
+        return sendRecordError(res, error, 'Visit creation');
+    }
+});
+
+app.patch("/api/records/visits/:visitId", async (req, res) => {
+    const authorization = await authorizeRequest(req, res, applicationRoles);
+    if (!authorization) return;
+
+    try {
+        requireRole(authorization.userProfile, auditActionRoles.Visit.UPDATE);
+        if (!isValidDocumentId(req.params.visitId)) throw new RequestError(400, 'Invalid visit ID');
+        const updates = parseVisitPayload(requestPayload(req));
+        const visitRef = db.collection('visits').doc(req.params.visitId);
+        const now = new Date().toISOString();
+        const actorName = trustedUserName(authorization);
+
+        await db.runTransaction(async transaction => {
+            const visitSnapshot = await transaction.get(visitRef);
+            if (!visitSnapshot.exists) throw new RequestError(404, 'Visit not found');
+            const visitData = visitSnapshot.data() || {};
+            if (!canAccessBranch(authorization.userProfile, visitData.branchId)) {
+                throw new RequestError(403, 'Branch access denied');
+            }
+            if (updates.patientId !== visitData.patientId) throw new RequestError(409, 'A visit cannot be moved to another patient');
+            if (updates.appointmentId !== (visitData.appointmentId || null)) {
+                throw new RequestError(409, 'The linked appointment cannot be changed');
+            }
+            const context = await transactionRecordContext(
+                transaction,
+                authorization,
+                updates.patientId,
+                updates.branchId,
+                updates.doctorId
+            );
+            if (updates.branchId !== visitData.branchId && context.branchData.status !== 'Active') {
+                throw new RequestError(400, 'Branch is not active');
+            }
+            if (updates.appointmentId) {
+                const appointmentSnapshot = await transaction.get(
+                    db.collection('appointments').doc(updates.appointmentId)
+                );
+                const appointmentData = appointmentSnapshot.data() || {};
+                if (!appointmentSnapshot.exists
+                    || appointmentData.patientId !== updates.patientId
+                    || appointmentData.branchId !== updates.branchId
+                    || appointmentData.doctorId !== updates.doctorId
+                    || normalizeLocalDateTime(String(appointmentData.appointmentDate || '')) !== updates.visitDate
+                    || appointmentData.visitHistoryId !== visitRef.id) {
+                    throw new RequestError(409, 'Visit details must remain consistent with the linked appointment');
+                }
+            }
+            await assertDoctorAvailability(transaction, updates.doctorId, updates.visitDate, {
+                appointmentId: updates.appointmentId,
+                visitId: visitRef.id
+            });
+
+            const visitsSnapshot = await transaction.get(
+                db.collection('visits').where('patientId', '==', updates.patientId)
+            );
+            const prospectiveVisits = visitsSnapshot.docs.map(document =>
+                document.id === visitRef.id ? { ...visitData, ...updates } : document.data()
+            );
+            const chronologicalVisits = prospectiveVisits
+                .filter(item => isValidLocalDateTime(item.visitDate))
+                .sort((left, right) => left.visitDate.localeCompare(right.visitDate));
+            const firstVisit = chronologicalVisits[0];
+            const lastVisit = chronologicalVisits[chronologicalVisits.length - 1];
+            let lastVisitBranchName = '';
+            if (lastVisit?.branchId === updates.branchId) {
+                lastVisitBranchName = typeof context.branchData.branchName === 'string' ? context.branchData.branchName : '';
+            } else if (isValidDocumentId(lastVisit?.branchId)) {
+                const lastBranchSnapshot = await transaction.get(db.collection('branches').doc(lastVisit.branchId));
+                lastVisitBranchName = typeof lastBranchSnapshot.data()?.branchName === 'string'
+                    ? lastBranchSnapshot.data()!.branchName
+                    : '';
+            }
+            const trustedUpdates = {
+                ...updates,
+                visitSource: updates.appointmentId ? 'Appointment' : 'Walk-In',
+                patientName: typeof context.patientData.name === 'string' ? context.patientData.name : '',
+                updatedAt: now,
+                updatedBy: actorName,
+                updatedByUid: authorization.decodedToken.uid
+            };
+            const changedFields = getChangedFieldNames(visitData, updates);
+            transaction.update(visitRef, trustedUpdates);
+            transaction.update(context.patientRef, {
+                totalVisits: prospectiveVisits.length,
+                totalCompletedVisits: prospectiveVisits.filter(item => item.status === 'Completed').length,
+                totalNoShowVisits: prospectiveVisits.filter(item => item.status === 'No Show').length,
+                firstVisitDate: firstVisit?.visitDate || null,
+                lastVisitDate: lastVisit?.visitDate || null,
+                lastVisitBranch: lastVisitBranchName,
+                currentPatientStatus: lastVisit?.status || null
+            });
+            transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
+                authorization,
+                action: 'UPDATE',
+                resource: 'Visit',
+                resourceId: visitRef.id,
+                resourceName: typeof context.patientData.patientID === 'string' ? context.patientData.patientID : '',
+                branchId: updates.branchId,
+                changeFields: changedFields,
+                userAgent: req.get('user-agent')
+            }));
+        });
+        res.status(200).json({ id: visitRef.id });
+    } catch (error) {
+        return sendRecordError(res, error, 'Visit update');
     }
 });
 

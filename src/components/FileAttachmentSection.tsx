@@ -5,7 +5,6 @@ import imageCompression from 'browser-image-compression';
 import { db } from '../firebase';
 import Lightbox from './Lightbox';
 import ConfirmationModal from './ConfirmationModal';
-import { logActivity } from '../utils/auditLogger';
 import { deleteAttachment, downloadAttachment, fetchAttachmentBlob, isImageAttachment, openAttachment, uploadAttachment } from '../utils/attachmentApi';
  
 export default function FileAttachmentSection({ patientId, appointmentId, visitId, isGeneral = false }: { patientId: string, appointmentId: string | null, visitId: string | null, isGeneral?: boolean }) {
@@ -138,12 +137,6 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
               resourceType,
               resourceId,
             });
-            await logActivity({
-                action: 'UPDATE',
-                resource: visitId ? 'Visit' : appointmentId ? 'Appointment' : 'Patient',
-                resourceId: resourceId!,
-                details: `Uploaded attachment: ${file.name}`
-            });
         }
         
         setSelectedFiles([]);
@@ -159,12 +152,6 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
     if (!resourceId) return;
     try {
         await deleteAttachment(file.storagePath);
-        await logActivity({
-            action: 'UPDATE',
-            resource: visitId ? 'Visit' : appointmentId ? 'Appointment' : 'Patient',
-            resourceId: resourceId!,
-            details: `Deleted attachment: ${file.name}`
-        });
         setFileToDelete(null);
     } catch (e) {
         console.error(e);
@@ -205,14 +192,7 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
   };
 
   const removeSelectedFile = (index: number) => {
-    const fileToRemove = selectedFiles[index];
     setSelectedFiles(selectedFiles.filter((_, i) => i !== index));
-    logActivity({
-            action: 'UPDATE',
-            resource: visitId ? 'Visit' : appointmentId ? 'Appointment' : 'Patient',
-            resourceId: resourceId!,
-            details: `Removed attachment from selection: ${fileToRemove.file.name}`
-    });
     setFileToRemoveIndex(null);
   };
 

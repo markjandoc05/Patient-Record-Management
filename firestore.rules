@@ -135,44 +135,22 @@ service cloud.firestore {
     match /appointments/{appointmentId} {
       allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
         && canAccessBranch(resource.data.branchId);
-      allow create: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
-        && canAccessBranch(request.resource.data.branchId)
-        && canAccessPatient(request.resource.data.patientId)
-        && request.resource.data.get('attachments', []) == [];
-      allow update: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
-        && canAccessBranch(resource.data.branchId)
-        && canAccessBranch(request.resource.data.branchId)
-        && canAccessPatient(request.resource.data.patientId)
-        && request.resource.data.get('attachments', []) == resource.data.get('attachments', []);
-      allow delete: if hasAnyRole(['admin', 'support_developer']);
+      // Record mutations are validated and audited by the trusted server API.
+      allow create, update, delete: if false;
     }
 
     match /visits/{visitId} {
       allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
         && canAccessBranch(resource.data.branchId);
-      allow create: if hasAnyRole(['admin', 'manager', 'support_developer'])
-        && canAccessBranch(request.resource.data.branchId)
-        && canAccessPatient(request.resource.data.patientId)
-        && request.resource.data.get('attachments', []) == [];
-      allow update: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
-        && canAccessBranch(resource.data.branchId)
-        && canAccessBranch(request.resource.data.branchId)
-        && canAccessPatient(request.resource.data.patientId)
-        && request.resource.data.get('attachments', []) == resource.data.get('attachments', []);
-      allow delete: if hasAnyRole(['admin', 'support_developer']);
+      // Record mutations are validated and audited by the trusted server API.
+      allow create, update, delete: if false;
     }
 
     match /patients/{patientId} {
       allow read: if hasAnyRole(['admin', 'manager', 'staff', 'doctor', 'support_developer'])
         && canAccessBranch(resource.data.homeBranchId);
-      allow create: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
-        && canAccessBranch(request.resource.data.homeBranchId)
-        && request.resource.data.get('attachments', []) == [];
-      allow update: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
-        && canAccessBranch(resource.data.homeBranchId)
-        && canAccessBranch(request.resource.data.homeBranchId)
-        && request.resource.data.get('attachments', []) == resource.data.get('attachments', []);
-      allow delete: if hasAnyRole(['admin', 'support_developer']);
+      // Record mutations are validated and audited by the trusted server API.
+      allow create, update, delete: if false;
 
       match /privateNotes/{noteId} {
         allow read: if hasAnyRole(['admin', 'manager', 'doctor', 'support_developer'])
@@ -229,10 +207,9 @@ service cloud.firestore {
       // Managers regain branch-scoped audit access after audit records carry a
       // trusted branchId. Until then, global audit visibility is admin-only.
       allow read: if hasAnyRole(['admin', 'support_developer']);
-      // Audit creation remains client-based for now and will move to a trusted
-      // backend in the dedicated audit-integrity change.
-      allow create: if hasActiveProfile();
-      allow update, delete: if false;
+      // Audit records are written only by trusted Admin SDK server operations.
+      // Clients cannot forge actors, timestamps, roles, or event details.
+      allow create, update, delete: if false;
     }
 
     match /inventory_items/{itemId} {
