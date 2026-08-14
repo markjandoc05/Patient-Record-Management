@@ -647,6 +647,8 @@ function buildAuditLogData(options: {
         record_restored: `Restored ${options.resource.toLowerCase()} record`,
         user_archived: 'Archived user account',
         user_restored: 'Restored user account',
+        user_activated: 'Activated pending user account',
+        user_deactivated: 'Deactivated user account',
         user_deleted: 'Deleted user account'
     };
     return {
@@ -958,6 +960,7 @@ app.post('/api/users/:userId/archive', async (req, res) => {
             transaction.update(userRef, {
                 active: false,
                 isArchived: true,
+                accountStatus: 'archived',
                 archivedAt: now,
                 archivedByUid: authorization.decodedToken.uid,
                 archivedByName: trustedUserName(authorization)
@@ -968,7 +971,7 @@ app.post('/api/users/:userId/archive', async (req, res) => {
                 resource: 'User',
                 resourceId: userRef.id,
                 eventType: 'user_archived',
-                changeFields: ['active', 'isArchived']
+                changeFields: ['active', 'isArchived', 'accountStatus']
             }));
         });
         await admin.auth().revokeRefreshTokens(userRef.id).catch(error => {
@@ -992,6 +995,7 @@ app.post('/api/users/:userId/restore', async (req, res) => {
             transaction.update(userRef, {
                 active: true,
                 isArchived: false,
+                accountStatus: 'active',
                 archivedAt: admin.firestore.FieldValue.delete(),
                 archivedByUid: admin.firestore.FieldValue.delete(),
                 archivedByName: admin.firestore.FieldValue.delete(),
@@ -1005,12 +1009,79 @@ app.post('/api/users/:userId/restore', async (req, res) => {
                 resource: 'User',
                 resourceId: userRef.id,
                 eventType: 'user_restored',
-                changeFields: ['active', 'isArchived']
+                changeFields: ['active', 'isArchived', 'accountStatus']
             }));
         });
         res.status(200).json({ id: userRef.id, restoredAt: now });
     } catch (error) {
         return sendRecordError(res, error, 'User restore');
+    }
+});
+
+app.post('/api/users/:userId/activate', async (req, res) => {
+    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    if (!authorization) return;
+
+    try {
+        const { userRef, targetProfile } = await getManagedUser(authorization, req.params.userId);
+        if (targetProfile.isArchived === true) throw new RequestError(409, 'Archived users must be restored before activation');
+        if (targetProfile.active === true) throw new RequestError(409, 'User account is already active');
+        const now = new Date().toISOString();
+        await db.runTransaction(async transaction => {
+            transaction.update(userRef, {
+                active: true,
+                accountStatus: 'active',
+                activatedAt: now,
+                activatedByUid: authorization.decodedToken.uid,
+                activatedByName: trustedUserName(authorization)
+            });
+            transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
+                authorization,
+                action: 'UPDATE',
+                resource: 'User',
+                resourceId: userRef.id,
+                eventType: 'user_activated',
+                changeFields: ['active', 'accountStatus']
+            }));
+        });
+        res.status(200).json({ id: userRef.id, activatedAt: now });
+    } catch (error) {
+        return sendRecordError(res, error, 'User activation');
+    }
+});
+
+app.post('/api/users/:userId/deactivate', async (req, res) => {
+    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    if (!authorization) return;
+
+    try {
+        const { userRef, targetProfile } = await getManagedUser(authorization, req.params.userId);
+        if (targetProfile.isArchived === true) throw new RequestError(409, 'Archived user accounts are already inactive');
+        if (targetProfile.active !== true) throw new RequestError(409, 'User account is already inactive');
+        const now = new Date().toISOString();
+        await db.runTransaction(async transaction => {
+            transaction.update(userRef, {
+                active: false,
+                accountStatus: 'inactive',
+                deactivatedAt: now,
+                deactivatedByUid: authorization.decodedToken.uid,
+                deactivatedByName: trustedUserName(authorization)
+            });
+            transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
+                authorization,
+                action: 'UPDATE',
+                resource: 'User',
+                resourceId: userRef.id,
+                eventType: 'user_deactivated',
+                changeFields: ['active', 'accountStatus']
+            }));
+        });
+        await admin.auth().revokeRefreshTokens(userRef.id).catch(error => {
+            if (error?.code !== 'auth/user-not-found') throw error;
+        });
+        res.status(200).json({ id: userRef.id, deactivatedAt: now });
+    } catch (error) {
+        return sendRecordError(res, error, 'User deactivation');
     }
 });
 

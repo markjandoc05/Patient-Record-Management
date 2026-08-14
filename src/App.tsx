@@ -388,7 +388,9 @@ export default function App() {
           if (userDoc && userDoc.exists()) {
              const data = userDoc.data();
              if (!data.active) {
-                setAuthError("Your account is awaiting approval by an administrator. Please contact the administrator or check back later.");
+                setAuthError(data.accountStatus === 'pending_activation'
+                  ? 'Your account is pending activation. An administrator will assign your access before you can sign in.'
+                  : 'Your account is inactive. Please contact an administrator.');
                 await signOut(auth);
                 setUser(null);
              } else if (!approvedRoles.has(data.role)) {
@@ -409,6 +411,7 @@ export default function App() {
                 fullName: user.displayName || (user.email ? user.email.split('@')[0] : 'Google User'),
                 role: 'staff',
                 active: false,
+                accountStatus: 'pending_activation',
                 assignedBranches: [],
                 assignedBranchNames: [],
                 defaultBranchId: null,
@@ -416,7 +419,7 @@ export default function App() {
              };
              await setDoc(doc(db, 'users', user.uid), newProfile);
              setAccountMissingProfile(true);
-             setSuccessMessage("Account created successfully! Your registration is subject for administrator approval.");
+             setSuccessMessage("Your account has been created and is pending activation. An administrator will review your access shortly.");
              await signOut(auth);
              setUser(null);
           }

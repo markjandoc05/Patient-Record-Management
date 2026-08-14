@@ -44,6 +44,7 @@ service cloud.firestore {
           'fullName',
           'role',
           'active',
+          'accountStatus',
           'assignedBranches',
           'assignedBranchNames',
           'defaultBranchId',
@@ -54,6 +55,7 @@ service cloud.firestore {
           'fullName',
           'role',
           'active',
+          'accountStatus',
           'assignedBranches',
           'assignedBranchNames',
           'defaultBranchId',
@@ -63,6 +65,7 @@ service cloud.firestore {
         && request.resource.data.fullName is string
         && request.resource.data.role == 'staff'
         && request.resource.data.active == false
+        && request.resource.data.accountStatus == 'pending_activation'
         && request.resource.data.assignedBranches == []
         && request.resource.data.assignedBranchNames == []
         && request.resource.data.defaultBranchId == null
@@ -95,6 +98,23 @@ service cloud.firestore {
         );
     }
 
+    function doesNotChangeUserLifecycle() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        'active',
+        'accountStatus',
+        'isArchived',
+        'archivedAt',
+        'archivedByUid',
+        'archivedByName',
+        'restoredAt',
+        'restoredByUid',
+        'restoredByName',
+        'activatedAt',
+        'activatedByUid',
+        'activatedByName'
+      ]);
+    }
+
     match /users/{userId} {
       // Pending users may only see their own profile. Approved users need the
       // directory for doctor assignment and display names.
@@ -110,8 +130,8 @@ service cloud.firestore {
       // Self-service writes are restricted to personal profile fields. Role,
       // approval state, and branch access cannot be changed by the account owner.
       allow update: if isSafeSelfProfileUpdate(userId)
-        || isAdminUserUpdate(userId)
-        || isSupportDeveloper();
+        || (isAdminUserUpdate(userId) && doesNotChangeUserLifecycle())
+        || (isSupportDeveloper() && doesNotChangeUserLifecycle());
 
       allow delete: if isAdmin()
         && resource.data.role != 'support_developer'

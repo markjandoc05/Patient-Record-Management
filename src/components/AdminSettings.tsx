@@ -6,7 +6,7 @@ import { getChangedFields } from '../utils/diffUtils';
 import { handleFirestoreError, OperationType } from '../utils';
 import { RBAC } from '../rbac';
 import { logActivity } from '../utils/auditLogger';
-import { archiveUserAccount, deleteUserAccount, restoreUserAccount } from '../utils/userAccountApi';
+import { activateUserAccount, archiveUserAccount, deactivateUserAccount, deleteUserAccount, restoreUserAccount } from '../utils/userAccountApi';
 import { fetchLoginActivity, type LoginActivityRecord } from '../utils/loginActivityApi';
 import { DEFAULT_MEDIA_SETTINGS, IMAGE_OPTIMIZATION, normalizeMediaSettings } from '../mediaSettings';
 import ConfirmationModal from './ConfirmationModal';
@@ -138,6 +138,12 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const normalizedUserRole = userRole?.toLowerCase();
   const canManageSettings = normalizedUserRole === 'admin' || normalizedUserRole === 'support_developer';
   const canManageFooter = normalizedUserRole === 'support_developer';
+  const getAccountStatus = (account: any) => {
+    if (account.isArchived === true || account.accountStatus === 'archived') return { label: 'Archived', className: 'bg-slate-100 text-slate-600' };
+    if (account.active === true) return { label: 'Active', className: 'bg-emerald-50 text-emerald-700' };
+    if (account.accountStatus === 'pending_activation') return { label: 'Pending activation', className: 'bg-amber-50 text-amber-700' };
+    return { label: 'Inactive', className: 'bg-slate-100 text-slate-600' };
+  };
 
   const loadLoginActivity = async () => {
     if (!canManageSettings) return;
@@ -630,13 +636,15 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const toggleUserStatus = async (user: any) => {
     if (!canManageSettings || user.id === auth.currentUser?.uid) return;
     try {
-      await updateDoc(doc(db, 'users', user.id), { active: !user.active });
-      await logActivity({
-        action: 'UPDATE', resource: 'User', resourceId: user.id,
-        details: `${user.active ? 'Disabled' : 'Activated'} user account`,
-        userProfile: { role: userRole, fullName: userProfile?.fullName }
-      });
-      showActionSuccess(`${user.fullName || user.email} is now ${user.active ? 'disabled' : 'active'}.`);
+      if (!user.active) {
+        await activateUserAccount(user.id);
+        showActionSuccess('User account activated. Their assigned role and clinic access now apply.');
+        return;
+      } else {
+        await deactivateUserAccount(user.id);
+        showActionSuccess('User account disabled. They can no longer sign in until activated.');
+        return;
+      }
     } catch (updateError) {
       showActionError('Unable to update the user account status.');
       handleFirestoreError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
@@ -1555,6 +1563,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                           const isOwnAccount = user.id === auth.currentUser?.uid;
                           const canManageLifecycle = !isOwnAccount;
                           const clinicCount = user.assignedBranches?.length || 0;
+                          const accountStatus = getAccountStatus(user);
                           return <article key={user.id} className="relative">
                             <div className="flex min-h-16 items-center gap-3 px-5 py-3 sm:px-6">
                               <button type="button" onClick={() => { setExpandedUserId(isExpanded ? null : user.id); setOpenUserActionMenuId(null); }} aria-expanded={isExpanded} className="grid min-w-0 flex-1 items-center gap-3 text-left sm:grid-cols-[minmax(190px,1.25fr)_minmax(200px,1.45fr)_130px_110px_82px]">
@@ -1562,12 +1571,12 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                 <span className="hidden truncate text-sm text-slate-500 sm:block">{user.email || 'No email address'}</span>
                                 <span className="hidden text-sm capitalize text-slate-600 sm:block">{user.role === 'support_developer' ? 'Support / Developer' : user.role || 'Staff'}</span>
                                 <span className="hidden text-sm text-slate-500 sm:block">{clinicCount} {clinicCount === 1 ? 'clinic' : 'clinics'}</span>
-                                <span className={`hidden w-fit rounded-full px-2 py-1 text-[10px] font-semibold sm:inline-flex ${user.active ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{user.active ? 'Active' : 'Inactive'}</span>
+                                <span className={`hidden w-fit rounded-full px-2 py-1 text-[10px] font-semibold sm:inline-flex ${accountStatus.className}`}>{accountStatus.label}</span>
                               </button>
                               <div className="relative flex shrink-0 items-center gap-1">
-                                <span className={`rounded-full px-2 py-1 text-[10px] font-semibold sm:hidden ${user.active ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{user.active ? 'Active' : 'Inactive'}</span>
+                                <span className={`rounded-full px-2 py-1 text-[10px] font-semibold sm:hidden ${accountStatus.className}`}>{accountStatus.label}</span>
                                 <button type="button" onClick={() => setOpenUserActionMenuId(openUserActionMenuId === user.id ? null : user.id)} aria-label={`More actions for ${user.fullName || user.email}`} aria-expanded={openUserActionMenuId === user.id} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"><MoreHorizontal className="h-4 w-4" /></button>
-                                {openUserActionMenuId === user.id && <div className="absolute right-0 top-9 z-10 w-44 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg"><p className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">More actions</p>{userAccessView === 'archived' ? <button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => restoreArchivedUser(user), title: 'Restore Archived User', message: `Restore ${user.fullName || user.email}? They will become active and regain access based on their assigned role and clinics.`, confirmLabel: 'Restore user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"><RotateCcw className="h-3.5 w-3.5" /> Restore</button> : <><button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => toggleUserStatus(user), title: user.active ? 'Disable User' : 'Activate User', message: `${user.active ? 'Disable' : 'Activate'} ${user.fullName || user.email}? ${user.active ? 'They will lose access until reactivated.' : 'They will be able to sign in with their assigned role and clinics.'}`, confirmLabel: user.active ? 'Disable user' : 'Activate user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">{user.active ? 'Disable user' : 'Activate user'}</button><button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => archiveUser(user), title: 'Archive User', message: `Archive ${user.fullName || user.email}? Their account will be deactivated, their records will be retained, and an administrator can restore it later.`, confirmLabel: 'Archive user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-40"><Archive className="h-3.5 w-3.5" /> Archive user</button></>}<button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => deleteUser(user), title: 'Delete User', message: `Permanently delete ${user.fullName || user.email}? They will no longer be able to sign in. Clinical records and audit history will not be removed.`, confirmLabel: 'Delete user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" /> Delete user</button></div>}
+                                {openUserActionMenuId === user.id && <div className="absolute right-0 top-9 z-10 w-44 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg"><p className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">More actions</p>{userAccessView === 'archived' ? <button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => restoreArchivedUser(user), title: 'Restore Archived User', message: `Restore ${user.fullName || user.email}? They will become active and regain access based on their assigned role and clinics.`, confirmLabel: 'Restore user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"><RotateCcw className="h-3.5 w-3.5" /> Restore</button> : <><button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => toggleUserStatus(user), title: user.active ? 'Disable User' : user.accountStatus === 'pending_activation' ? 'Approve Pending User' : 'Activate User', message: user.active ? `Disable ${user.fullName || user.email}? They will lose access until reactivated.` : `Approve and activate ${user.fullName || user.email}? They can sign in with their assigned role and clinic access.`, confirmLabel: user.active ? 'Disable user' : user.accountStatus === 'pending_activation' ? 'Approve & activate' : 'Activate user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">{user.active ? 'Disable user' : user.accountStatus === 'pending_activation' ? 'Approve & activate' : 'Activate user'}</button><button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => archiveUser(user), title: 'Archive User', message: `Archive ${user.fullName || user.email}? Their account will be deactivated, their records will be retained, and an administrator can restore it later.`, confirmLabel: 'Archive user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-40"><Archive className="h-3.5 w-3.5" /> Archive user</button></>}<button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => deleteUser(user), title: 'Delete User', message: `Permanently delete ${user.fullName || user.email}? They will no longer be able to sign in. Clinical records and audit history will not be removed.`, confirmLabel: 'Delete user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" /> Delete user</button></div>}
                               </div>
                               <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                             </div>
