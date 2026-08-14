@@ -6,7 +6,7 @@
 import { useState, useEffect, useRef, type ComponentType } from 'react';
 import { auth, db } from './firebase';
 import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { collection, doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from './utils';
 import Login from './components/Login';
 import PatientDashboard from './components/PatientDashboard';
@@ -21,6 +21,7 @@ import InventoryDashboard from './components/InventoryDashboard';
 import AuditTrailDashboard from './components/AuditTrailDashboard';
 import DeveloperDashboard, { DevTab } from './components/DeveloperDashboard';
 import { recordLoginActivity } from './utils/loginActivityApi';
+import { registerPendingGoogleAccount } from './utils/pendingActivationApi';
 import { Users, Settings, UserCircle, Calendar, Clock, Menu, X, Shield, PanelLeftClose, PanelLeftOpen, Cpu, Zap, Package, LayoutDashboard, MapPin, LogOut } from 'lucide-react';
 import { TimezoneProvider } from './contexts/TimezoneContext';
 import { setActiveTimezoneSettings } from './utils/timezone';
@@ -404,18 +405,7 @@ export default function App() {
              // Every new account starts as a disabled Staff profile. Privileged
              // roles are assigned only by an approved administrator or trusted
              // Admin SDK tooling, never by browser-side email checks.
-             const newProfile = {
-                email: user.email || '',
-                fullName: user.displayName || (user.email ? user.email.split('@')[0] : 'Google User'),
-                role: 'staff',
-                active: false,
-                accountStatus: 'pending_activation',
-                assignedBranches: [],
-                assignedBranchNames: [],
-                defaultBranchId: null,
-                defaultBranchName: null
-             };
-             await setDoc(doc(db, 'users', user.uid), newProfile);
+             await registerPendingGoogleAccount();
              setAccountMissingProfile(true);
              setSuccessMessage("Your account has been created and is pending activation. An administrator will review your access shortly.");
              await signOut(auth);

@@ -783,6 +783,61 @@ async function authorizeRequest(
     }
 }
 
+// A Firebase Authentication identity is created before the browser can write a
+// Firestore profile. Create the initial profile through the trusted server so a
+// transient client-side Firestore failure cannot leave a Google user invisible
+// to administrators. This endpoint is deliberately limited to the caller's
+// own Google identity and never grants access or assigns a privileged role.
+app.post('/api/auth/register-pending-profile', async (req, res) => {
+    const authorization = req.headers.authorization;
+    const match = authorization?.match(/^Bearer\s+(.+)$/i);
+    if (!match) return res.status(401).json({ error: 'Unauthorized' });
+
+    try {
+        const decodedToken = await admin.auth().verifyIdToken(match[1]);
+        if ((decodedToken as any).firebase?.sign_in_provider !== 'google.com') {
+            return res.status(403).json({ error: 'Google sign-in is required' });
+        }
+
+        const email = typeof decodedToken.email === 'string' ? decodedToken.email.trim() : '';
+        if (!email) return res.status(400).json({ error: 'A Google email address is required' });
+
+        const tokenName = typeof decodedToken.name === 'string' ? decodedToken.name.trim() : '';
+        const fullName = (tokenName || email.split('@')[0] || 'Google User').slice(0, 120);
+        const userRef = db.collection('users').doc(decodedToken.uid);
+        let created = false;
+
+        await db.runTransaction(async transaction => {
+            const existing = await transaction.get(userRef);
+            if (existing.exists) return;
+            created = true;
+            transaction.create(userRef, {
+                email,
+                fullName,
+                role: 'staff',
+                active: false,
+                accountStatus: 'pending_activation',
+                assignedBranches: [],
+                assignedBranchNames: [],
+                defaultBranchId: null,
+                defaultBranchName: null,
+                createdAt: new Date().toISOString()
+            });
+        });
+
+        const profile = await userRef.get();
+        res.status(created ? 201 : 200).json({
+            id: userRef.id,
+            created,
+            accountStatus: profile.data()?.accountStatus || 'pending_activation',
+            active: profile.data()?.active === true
+        });
+    } catch (error) {
+        console.error('Pending profile registration failed', error);
+        res.status(401).json({ error: 'Unable to register this Google account' });
+    }
+});
+
 function allowDeveloperRequest(userId: string) {
     const now = Date.now();
     const existing = developerRequestWindows.get(userId);
