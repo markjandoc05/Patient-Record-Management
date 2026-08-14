@@ -391,6 +391,11 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
               <Inbox className="mx-auto h-9 w-9 text-slate-300" />
               <h3 className="mt-3 text-sm font-semibold text-slate-800">No patient records found</h3>
               <p className="mt-1 text-xs text-slate-500">Try changing the search or filters.</p>
+              {hasActiveFilters && (
+                <button type="button" onClick={clearFilters} className="mt-4 inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-900">
+                  <X className="h-3.5 w-3.5" /> Clear filters
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -443,7 +448,16 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
                 ))
               ) : (
                 <tr>
-                  <td colSpan={5} className="py-14 text-center"><Inbox className="mx-auto h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">No patient records found</p><p className="mt-1 text-xs text-slate-400">Try changing the search or filters.</p></td>
+                  <td colSpan={5} className="py-14 text-center">
+                    <Inbox className="mx-auto h-8 w-8 text-slate-300" />
+                    <p className="mt-3 text-sm font-semibold text-slate-700">No patient records found</p>
+                    <p className="mt-1 text-xs text-slate-400">Try changing the search or filters.</p>
+                    {hasActiveFilters && (
+                      <button type="button" onClick={clearFilters} className="mt-4 inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-900">
+                        <X className="h-3.5 w-3.5" /> Clear filters
+                      </button>
+                    )}
+                  </td>
                 </tr>
               )}
             </tbody>
