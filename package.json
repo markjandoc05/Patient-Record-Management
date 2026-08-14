@@ -10,7 +10,8 @@
     "lint": "tsc --noEmit",
     "test:rules": "node scripts/test-firestore-rules.mjs",
     "test:rbac": "node --import tsx scripts/test-rbac.ts",
-    "test:audit": "node --import tsx scripts/test-audit-policy.ts"
+    "test:audit": "node --import tsx scripts/test-audit-policy.ts",
+    "test:developer-tools": "node --import tsx scripts/test-developer-tools.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

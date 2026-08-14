@@ -120,8 +120,7 @@ export default function AppointmentForm({
       limit(50),
     );
     void getDocs(auditQuery).then(snapshot => setLogs(snapshot.docs
-      .map(document => ({ id: document.id, ...document.data() } as any))
-      .filter(log => log.userRole !== 'support_developer')))
+      .map(document => ({ id: document.id, ...document.data() } as any))))
       .catch(error => console.error('Failed to load appointment audit logs:', error));
   }, [activeTab, appointment?.id, canViewHistory]);
 

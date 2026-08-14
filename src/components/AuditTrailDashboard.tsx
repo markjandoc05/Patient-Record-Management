@@ -16,7 +16,7 @@ import {
   Trash2,
   UserCog,
 } from 'lucide-react';
-import { AUDIT_EXCLUDED_ROLE, AUDIT_QUERY_LIMIT } from '../auditPolicy';
+import { AUDIT_QUERY_LIMIT } from '../auditPolicy';
 import { useTimezone } from '../contexts/TimezoneContext';
 import { db } from '../firebase';
 import { getActiveDatePrefix } from '../utils/timezone';
@@ -96,8 +96,7 @@ export default function AuditTrailDashboard({ role }: AuditTrailDashboardProps) 
         limit(AUDIT_QUERY_LIMIT),
       ));
       setLogs(snapshot.docs
-        .map(document => ({ id: document.id, ...document.data() } as AuditLog))
-        .filter(log => log.userRole !== AUDIT_EXCLUDED_ROLE));
+        .map(document => ({ id: document.id, ...document.data() } as AuditLog)));
     } catch (error) {
       console.error('Failed to load audit trail:', error);
       setLoadError('The audit trail could not be loaded. Check your connection and try again.');

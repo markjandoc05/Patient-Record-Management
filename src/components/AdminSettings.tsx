@@ -6,6 +6,7 @@ import { getChangedFields } from '../utils/diffUtils';
 import { handleFirestoreError, OperationType } from '../utils';
 import { RBAC } from '../rbac';
 import { logActivity } from '../utils/auditLogger';
+import { archiveUserAccount, deleteUserAccount, restoreUserAccount } from '../utils/userAccountApi';
 import { DEFAULT_MEDIA_SETTINGS, IMAGE_OPTIMIZATION, normalizeMediaSettings } from '../mediaSettings';
 import ConfirmationModal from './ConfirmationModal';
 import {
@@ -17,11 +18,16 @@ import {
   Palette,
   Settings2,
   ShieldCheck,
+  Archive,
+  MoreHorizontal,
+  RotateCcw,
+  Trash2,
   Users,
 } from 'lucide-react';
 
 type SettingsTab = 'general' | 'branches' | 'access' | 'data';
 type GeneralSection = 'general' | 'time' | 'theme' | 'footer';
+type UserAccessView = 'active' | 'archived';
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; description: string; icon: React.ElementType }> = [
   { id: 'general', label: 'General', description: 'Brand, uploads, time and footer', icon: Settings2 },
@@ -68,7 +74,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     privacyPolicyUrl: '',
     termsConditionsUrl: '',
     showDeveloperCredit: true,
-    developerCreditText: 'Developed by AIPH Tech',
+    developerCreditText: 'Developed by AIPH.TECH',
     developerCreditUrl: 'https://aiph.tech'
   });
   const [savingFooter, setSavingFooter] = useState(false);
@@ -76,6 +82,9 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const [newBranch, setNewBranch] = useState({ branchName: '', address: '', contactNumber: '', email: '' });
   const [isBranchOpen, setIsBranchOpen] = useState(true);
   const [isUserAccessOpen, setIsUserAccessOpen] = useState(true);
+  const [userAccessView, setUserAccessView] = useState<UserAccessView>('active');
+  const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
+  const [openUserActionMenuId, setOpenUserActionMenuId] = useState<string | null>(null);
   const [isRoleAccessOpen, setIsRoleAccessOpen] = useState(false);
   const [isDataManagementOpen, setIsDataManagementOpen] = useState(false);
   const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
@@ -84,6 +93,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     onConfirm: () => Promise<void>;
     title: string;
     message: string;
+    confirmLabel?: string;
   }>(null);
 
   // Dynamic white-label branding configurations
@@ -108,7 +118,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     privacyPolicyUrl: '',
     termsConditionsUrl: '',
     showDeveloperCredit: true,
-    developerCreditText: 'Developed by AIPH Tech',
+    developerCreditText: 'Developed by AIPH.TECH',
     developerCreditUrl: 'https://aiph.tech'
   });
 
@@ -181,7 +191,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         privacyPolicyUrl: branding.privacyPolicyUrl || '',
         termsConditionsUrl: branding.termsConditionsUrl || '',
         showDeveloperCredit: branding.showDeveloperCredit !== false,
-        developerCreditText: branding.developerCreditText || 'Developed by AIPH Tech',
+        developerCreditText: branding.developerCreditText || 'Developed by AIPH.TECH',
         developerCreditUrl: branding.developerCreditUrl || 'https://aiph.tech'
       });
     }
@@ -606,6 +616,36 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     }
   };
 
+  const archiveUser = async (user: any) => {
+    if (!canManageSettings || user.id === auth.currentUser?.uid) return;
+    try {
+      await archiveUserAccount(user.id);
+      showActionSuccess(`${user.fullName || user.email} was archived and can be restored later.`);
+    } catch (archiveError: any) {
+      showActionError(archiveError.message || 'Unable to archive this user account.');
+    }
+  };
+
+  const restoreArchivedUser = async (user: any) => {
+    if (!canManageSettings || user.id === auth.currentUser?.uid) return;
+    try {
+      await restoreUserAccount(user.id);
+      showActionSuccess(`${user.fullName || user.email} was restored and can sign in again.`);
+    } catch (restoreError: any) {
+      showActionError(restoreError.message || 'Unable to restore this user account.');
+    }
+  };
+
+  const deleteUser = async (user: any) => {
+    if (!canManageSettings || user.id === auth.currentUser?.uid) return;
+    try {
+      await deleteUserAccount(user.id);
+      showActionSuccess(`${user.fullName || user.email} was deleted. Clinical and audit history were retained.`);
+    } catch (deleteError: any) {
+      showActionError(deleteError.message || 'Unable to delete this user account.');
+    }
+  };
+
   const handleAddBranch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canManageSettings) {
@@ -860,7 +900,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
             setActionToConfirm(null);
           }}
           onCancel={() => setActionToConfirm(null)}
-          confirmLabel="Confirm Action"
+          confirmLabel={actionToConfirm?.confirmLabel || 'Confirm Action'}
         />
     {userRole === 'admin' || userRole === 'support_developer' ? (
       <>
@@ -1340,7 +1380,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm disabled:opacity-50" 
                                     value={footerForm.developerCreditText || ''} 
                                     onChange={e => setFooterForm({...footerForm, developerCreditText: e.target.value})} 
-                                    placeholder="Developed by AIPH Tech"
+                                    placeholder="Developed by AIPH.TECH"
                                     disabled={!footerForm.showDeveloperCredit}
                                 />
                             </div>
@@ -1463,38 +1503,54 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         <>
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left sm:px-6" onClick={() => setIsUserAccessOpen(!isUserAccessOpen)} aria-expanded={isUserAccessOpen}>
-              <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700"><Users className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">User access</span><span className="block text-xs font-normal text-slate-500">{users.filter(user => user.active).length} active of {users.length} accounts</span></span></span>
+              <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700"><Users className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">User access</span><span className="block text-xs font-normal text-slate-500">{users.filter(user => user.role !== 'support_developer' && user.active).length} active of {users.filter(user => user.role !== 'support_developer').length} accounts</span></span></span>
               <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${isUserAccessOpen ? 'rotate-180' : ''}`} />
           </button>
           {isUserAccessOpen && (
-              <div className="border-t border-slate-100 px-4 py-5 sm:px-6">
-                  <div className="flex justify-end mb-4">
-                      <button 
-                        onClick={() => setActionToConfirm({
-                            onConfirm: cleanupBranchAssignments,
-                            title: "Clean Invalid Assignments",
-                            message: "Are you sure you want to clean up invalid branch assignments for all users?"
-                        })}
-                        className="px-3 py-1.5 bg-amber-600 text-white rounded-lg font-semibold text-xs hover:bg-amber-700 transition"
-                      >
-                        Clean Invalid Assignments
-                      </button>
-                  </div>
-                  
-
-                  <div className="grid gap-3 xl:grid-cols-2">
-                    {users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer').map(user => (
-                      <article key={user.id} className="rounded-xl border border-slate-200 p-4 sm:p-5">
-                        <div className="flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="truncate text-sm font-semibold text-slate-900">{user.fullName || user.name || 'Name not set'}</h3><p className="truncate text-xs text-slate-500">{user.email}</p></div><span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${user.active ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{user.active ? 'Active' : 'Pending'}</span></div>
-                        <div className="mt-4 grid gap-4 sm:grid-cols-[180px_1fr]">
-                          <div><label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Role</label><select onChange={(e) => { const nextRole = e.target.value; setActionToConfirm({ onConfirm: () => updateRole(user.id, nextRole), title: 'Change User Role', message: `Change ${user.fullName || user.email} to ${nextRole === 'support_developer' ? 'Support / Developer' : nextRole}? Their permissions will update immediately.` }); }} value={user.role || 'staff'} className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm" disabled={(userRole !== 'support_developer' && user.role === 'support_developer') || (userRole !== 'support_developer' && user.id === auth.currentUser?.uid)}><option value="admin">Admin</option><option value="manager">Manager</option><option value="staff">Staff</option><option value="doctor">Doctor</option>{userRole === 'support_developer' && <option value="support_developer">Support / Developer</option>}</select></div>
-                          <div><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Clinic access</p><div className="max-h-36 space-y-1 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-2.5">{branches.filter(branch => branch.status === 'Active').map(branch => { const isChecked = user.assignedBranches?.includes(branch.id); return <div key={branch.id} className="flex items-center gap-2 text-xs"><input id={`user-${user.id}-branch-${branch.id}`} type="checkbox" checked={!!isChecked} onChange={(event) => updateUserBranches(user, branch, event.target.checked)} /><label htmlFor={`user-${user.id}-branch-${branch.id}`} className="cursor-pointer text-slate-700">{branch.branchName}</label>{isChecked && user.assignedBranches.length > 1 && <button type="button" className={`ml-auto text-[10px] font-semibold ${user.defaultBranchId === branch.id ? 'text-teal-700' : 'text-slate-400 hover:text-slate-700'}`} onClick={() => setUserDefaultBranch(user, branch)}>{user.defaultBranchId === branch.id ? 'Default' : 'Set default'}</button>}</div>; })}{branches.filter(branch => branch.status === 'Active').length === 0 && <p className="text-xs text-red-600">Add or activate a branch before assigning access.</p>}</div></div>
+              <div className="border-t border-slate-100">
+                  {(() => {
+                    const manageableUsers = users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer');
+                    const visibleUsers = manageableUsers.filter(user => userAccessView === 'archived' ? user.isArchived === true : user.isArchived !== true);
+                    const countedUsers = manageableUsers.filter(user => user.role !== 'support_developer');
+                    const activeCount = countedUsers.filter(user => user.isArchived !== true).length;
+                    const archivedCount = countedUsers.filter(user => user.isArchived === true).length;
+                    return <>
+                      <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3 sm:px-6">
+                        <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1" role="tablist" aria-label="User account status">
+                          <button type="button" role="tab" aria-selected={userAccessView === 'active'} onClick={() => { setUserAccessView('active'); setExpandedUserId(null); setOpenUserActionMenuId(null); }} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${userAccessView === 'active' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Active users <span className="ml-1 text-slate-400">{activeCount}</span></button>
+                          <button type="button" role="tab" aria-selected={userAccessView === 'archived'} onClick={() => { setUserAccessView('archived'); setExpandedUserId(null); setOpenUserActionMenuId(null); }} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${userAccessView === 'archived' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Archived users <span className="ml-1 text-slate-400">{archivedCount}</span></button>
                         </div>
-                        <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4"><p className="text-[11px] text-slate-400">{user.assignedBranches?.length || 0} assigned {(user.assignedBranches?.length || 0) === 1 ? 'clinic' : 'clinics'}</p><button type="button" onClick={() => setActionToConfirm({ onConfirm: () => toggleUserStatus(user), title: user.active ? 'Disable User' : 'Activate User', message: `${user.active ? 'Disable' : 'Activate'} ${user.fullName || user.email}? ${user.active ? 'They will lose access until reactivated.' : 'They will be able to sign in with their assigned role and clinics.'}` })} disabled={user.id === auth.currentUser?.uid} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${user.active ? 'bg-red-50 text-red-700 hover:bg-red-100' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`} title={user.id === auth.currentUser?.uid ? 'You cannot disable your own account' : undefined}>{user.active ? 'Disable account' : 'Activate account'}</button></div>
-                      </article>
-                    ))}
-                    {users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer').length === 0 && <div className="rounded-xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500 xl:col-span-2">No user accounts found.</div>}
-                  </div>
+                        <button type="button" onClick={() => setActionToConfirm({ onConfirm: cleanupBranchAssignments, title: 'Clean Invalid Assignments', message: 'Clean invalid branch assignments for all users?', confirmLabel: 'Clean assignments' })} className="text-xs font-semibold text-slate-500 transition hover:text-slate-900">Clean assignments</button>
+                      </div>
+                      <div className="divide-y divide-slate-100">
+                        {visibleUsers.map(user => {
+                          const isExpanded = expandedUserId === user.id;
+                          const isOwnAccount = user.id === auth.currentUser?.uid;
+                          const canManageLifecycle = !isOwnAccount;
+                          const clinicCount = user.assignedBranches?.length || 0;
+                          return <article key={user.id} className="relative">
+                            <div className="flex min-h-16 items-center gap-3 px-5 py-3 sm:px-6">
+                              <button type="button" onClick={() => { setExpandedUserId(isExpanded ? null : user.id); setOpenUserActionMenuId(null); }} aria-expanded={isExpanded} className="grid min-w-0 flex-1 items-center gap-3 text-left sm:grid-cols-[minmax(190px,1.25fr)_minmax(200px,1.45fr)_130px_110px_82px]">
+                                <span className="min-w-0"><span className="block truncate text-sm font-semibold text-slate-900">{user.fullName || user.name || 'Name not set'}</span><span className="block text-[10px] font-medium uppercase tracking-wide text-slate-400 sm:hidden">Name</span></span>
+                                <span className="hidden truncate text-sm text-slate-500 sm:block">{user.email || 'No email address'}</span>
+                                <span className="hidden text-sm capitalize text-slate-600 sm:block">{user.role === 'support_developer' ? 'Support / Developer' : user.role || 'Staff'}</span>
+                                <span className="hidden text-sm text-slate-500 sm:block">{clinicCount} {clinicCount === 1 ? 'clinic' : 'clinics'}</span>
+                                <span className={`hidden w-fit rounded-full px-2 py-1 text-[10px] font-semibold sm:inline-flex ${user.active ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{user.active ? 'Active' : 'Inactive'}</span>
+                              </button>
+                              <div className="relative flex shrink-0 items-center gap-1">
+                                <span className={`rounded-full px-2 py-1 text-[10px] font-semibold sm:hidden ${user.active ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{user.active ? 'Active' : 'Inactive'}</span>
+                                <button type="button" onClick={() => setOpenUserActionMenuId(openUserActionMenuId === user.id ? null : user.id)} aria-label={`More actions for ${user.fullName || user.email}`} aria-expanded={openUserActionMenuId === user.id} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"><MoreHorizontal className="h-4 w-4" /></button>
+                                {openUserActionMenuId === user.id && <div className="absolute right-0 top-9 z-10 w-44 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg"><p className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">More actions</p>{userAccessView === 'archived' ? <button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => restoreArchivedUser(user), title: 'Restore Archived User', message: `Restore ${user.fullName || user.email}? They will become active and regain access based on their assigned role and clinics.`, confirmLabel: 'Restore user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"><RotateCcw className="h-3.5 w-3.5" /> Restore</button> : <><button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => toggleUserStatus(user), title: user.active ? 'Disable User' : 'Activate User', message: `${user.active ? 'Disable' : 'Activate'} ${user.fullName || user.email}? ${user.active ? 'They will lose access until reactivated.' : 'They will be able to sign in with their assigned role and clinics.'}`, confirmLabel: user.active ? 'Disable user' : 'Activate user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">{user.active ? 'Disable user' : 'Activate user'}</button><button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => archiveUser(user), title: 'Archive User', message: `Archive ${user.fullName || user.email}? Their account will be deactivated, their records will be retained, and an administrator can restore it later.`, confirmLabel: 'Archive user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-40"><Archive className="h-3.5 w-3.5" /> Archive user</button></>}<button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => deleteUser(user), title: 'Delete User', message: `Permanently delete ${user.fullName || user.email}? They will no longer be able to sign in. Clinical records and audit history will not be removed.`, confirmLabel: 'Delete user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" /> Delete user</button></div>}
+                              </div>
+                              <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                            </div>
+                            {isExpanded && <div className="grid gap-4 bg-slate-50/70 px-5 py-4 sm:grid-cols-[180px_minmax(0,1fr)] sm:px-6"><div><label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Role</label><select onChange={(e) => { const nextRole = e.target.value; setActionToConfirm({ onConfirm: () => updateRole(user.id, nextRole), title: 'Change User Role', message: `Change ${user.fullName || user.email} to ${nextRole === 'support_developer' ? 'Support / Developer' : nextRole}? Their permissions will update immediately.`, confirmLabel: 'Change role' }); }} value={user.role || 'staff'} className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm" disabled={userAccessView === 'archived' || (userRole !== 'support_developer' && user.role === 'support_developer') || (userRole !== 'support_developer' && isOwnAccount)}><option value="admin">Admin</option><option value="manager">Manager</option><option value="staff">Staff</option><option value="doctor">Doctor</option>{userRole === 'support_developer' && <option value="support_developer">Support / Developer</option>}</select></div><div><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Clinic access</p><div className="grid gap-x-4 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">{branches.filter(branch => branch.status === 'Active').map(branch => { const isChecked = user.assignedBranches?.includes(branch.id); return <div key={branch.id} className="flex min-w-0 items-center gap-2 text-xs"><input id={`user-${user.id}-branch-${branch.id}`} type="checkbox" checked={!!isChecked} disabled={userAccessView === 'archived'} onChange={(event) => updateUserBranches(user, branch, event.target.checked)} /><label htmlFor={`user-${user.id}-branch-${branch.id}`} className="min-w-0 cursor-pointer truncate text-slate-700">{branch.branchName}</label>{isChecked && user.assignedBranches.length > 1 && <button type="button" disabled={userAccessView === 'archived'} className={`ml-auto text-[10px] font-semibold ${user.defaultBranchId === branch.id ? 'text-teal-700' : 'text-slate-400 hover:text-slate-700'}`} onClick={() => setUserDefaultBranch(user, branch)}>{user.defaultBranchId === branch.id ? 'Default' : 'Set default'}</button>}</div>; })}{branches.filter(branch => branch.status === 'Active').length === 0 && <p className="text-xs text-red-600">Add or activate a branch before assigning access.</p>}</div></div></div>}
+                          </article>;
+                        })}
+                        {visibleUsers.length === 0 && <div className="px-5 py-12 text-center text-sm text-slate-500 sm:px-6">{userAccessView === 'archived' ? 'No archived user accounts.' : 'No active user accounts.'}</div>}
+                      </div>
+                    </>;
+                  })()}
               </div>
           )}
         </div>

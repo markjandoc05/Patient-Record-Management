@@ -95,7 +95,7 @@ export default function VisitForm({
   useEffect(() => {
     if (!visit?.id || !canViewHistory || activeTab !== 'history') return;
     const auditQuery = query(collection(db, 'audit_logs'), where('resourceId', '==', visit.id), where('resource', '==', 'Visit'), orderBy('timestamp', 'desc'), limit(50));
-    void getDocs(auditQuery).then(snapshot => setLogs(snapshot.docs.map(document => ({ id: document.id, ...document.data() } as any)).filter(log => log.userRole !== 'support_developer')))
+    void getDocs(auditQuery).then(snapshot => setLogs(snapshot.docs.map(document => ({ id: document.id, ...document.data() } as any))))
       .catch(error => console.error('Failed to load visit audit logs:', error));
   }, [activeTab, canViewHistory, visit?.id]);
 

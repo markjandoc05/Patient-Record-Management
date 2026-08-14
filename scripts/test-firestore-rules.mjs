@@ -30,12 +30,18 @@ function profileMocks(role, patientBranch) {
   return mocks;
 }
 
-function test(name, role, method, path, expectation, resourceData, requestData, patientBranch) {
+function test(name, role, method, path, expectation, resourceData, requestData, patientBranch, signInProvider = 'google.com') {
   return {
     name,
     expectation,
     request: {
-      auth: { uid: 'test-user', token: { email: 'test@example.com' } },
+      auth: {
+        uid: 'test-user',
+        token: {
+          email: 'test@example.com',
+          firebase: { sign_in_provider: signInProvider },
+        },
+      },
       method,
       path: `${databasePath}/${path}`,
       ...(requestData ? { resource: { data: requestData } } : {}),
@@ -50,6 +56,7 @@ const tests = [
   test('admin lists all appointments without a branch filter', 'admin', 'list', 'appointments/appointment-list', 'ALLOW'),
   test('admin lists all visits without a branch filter', 'admin', 'list', 'visits/visit-list', 'ALLOW'),
   test('staff reads assigned-branch patient', 'staff', 'get', 'patients/patient-1', 'ALLOW', { homeBranchId: 'branch-a' }),
+  test('email/password account cannot access clinical records', 'staff', 'get', 'patients/patient-1', 'DENY', { homeBranchId: 'branch-a' }, null, 'branch-a', 'password'),
   test('staff reads shared patient from another branch', 'staff', 'get', 'patients/patient-1', 'ALLOW', { homeBranchId: 'branch-b' }),
   test('staff reads another branch appointment history', 'staff', 'get', 'appointments/appointment-2', 'ALLOW', { branchId: 'branch-b', patientId: 'patient-1' }),
   test('staff reads another branch visit history', 'staff', 'get', 'visits/visit-2', 'ALLOW', { branchId: 'branch-b', patientId: 'patient-1' }),
@@ -74,6 +81,9 @@ const tests = [
   test('support developer retains unrestricted private-note access', 'support_developer', 'get', 'patients/patient-1/privateNotes/note-1', 'ALLOW', { patientId: 'patient-1', authorId: 'doctor-user' }, null, 'branch-b'),
   test('support developer manages clinic branches', 'support_developer', 'update', 'branches/branch-a', 'ALLOW', { branchName: 'Vine Makati', status: 'Active' }, { branchName: 'Vine Makati', status: 'Inactive' }),
   test('support developer updates timezone settings', 'support_developer', 'update', 'settings/timezone', 'ALLOW', { timezone: 'Asia/Manila', format: '12h' }, { timezone: 'Asia/Manila', format: '24h' }),
+  test('support developer cannot change maintenance mode directly', 'support_developer', 'update', 'settings/branding', 'DENY', { appName: 'Vine', maintenanceMode: false }, { appName: 'Vine', maintenanceMode: true }),
+  test('admin cannot change maintenance mode directly', 'admin', 'update', 'settings/branding', 'DENY', { appName: 'Vine', maintenanceMode: false }, { appName: 'Vine', maintenanceMode: true }),
+  test('admin can update normal branding settings', 'admin', 'update', 'settings/branding', 'ALLOW', { appName: 'Vine', maintenanceMode: false }, { appName: 'Vine Management', maintenanceMode: false }),
   test('admin updates footer settings', 'admin', 'update', 'settings/footer', 'ALLOW', { footerText: 'Old' }, { footerText: 'Updated' }),
   test('staff cannot update attachment settings', 'staff', 'update', 'settings/media', 'DENY', { maxFileSizeMB: 1 }, { maxFileSizeMB: 10 }),
   test('manager cannot read global audit log', 'manager', 'get', 'audit_logs/log-1', 'DENY', { action: 'VIEW' }),

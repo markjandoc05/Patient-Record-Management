@@ -11,6 +11,7 @@ import firebaseConfig from "./firebase-applet-config.json";
 import { canEditPatient, hasPermission, RBAC, Role } from "./src/rbac";
 import { IMAGE_OPTIMIZATION, normalizeMediaSettings } from "./src/mediaSettings";
 import { AuditAction, AuditResource, shouldRecordAuditEvent } from "./src/auditPolicy";
+import { getDeveloperActivityDefinition } from "./src/developerToolsPolicy";
 
 // Initialize Firebase Admin
 if (!admin.apps.length) {
@@ -48,6 +49,9 @@ const uploadSingleFile: express.RequestHandler = (req, res, next) => {
 const db = getFirestore(admin.app(), firebaseConfig.firestoreDatabaseId);
 const applicationRoles = Object.keys(RBAC) as Role[];
 const globalBranchRoles = new Set(['admin', 'support_developer']);
+const developerRequestWindowMs = 60_000;
+const developerRequestLimit = 30;
+const developerRequestWindows = new Map<string, { startedAt: number; count: number }>();
 
 function getAssignedBranchIds(userProfile: Record<string, unknown>) {
     if (!Array.isArray(userProfile.assignedBranches)) return [];
@@ -588,8 +592,18 @@ function buildAuditLogData(options: {
     const eventDetails: Record<string, string> = {
         attachment_uploaded: `Uploaded attachment for ${options.resource.toLowerCase()} record`,
         attachment_deleted: `Deleted attachment from ${options.resource.toLowerCase()} record`,
+        appointment_completed_from_visit: 'Completed appointment when its linked visit was created',
+        developer_metrics_view: 'Viewed developer metrics',
+        developer_diagnostics_run: 'Ran trusted service diagnostics',
+        developer_maintenance_changed: 'Changed maintenance mode',
+        developer_cache_cleared: 'Cleared Vine browser storage',
+        developer_settings_refreshed: 'Refreshed application settings',
+        developer_fault_simulated: 'Ran browser error-capture test',
         record_archived: `Archived ${options.resource.toLowerCase()} record`,
-        record_restored: `Restored ${options.resource.toLowerCase()} record`
+        record_restored: `Restored ${options.resource.toLowerCase()} record`,
+        user_archived: 'Archived user account',
+        user_restored: 'Restored user account',
+        user_deleted: 'Deleted user account'
     };
     return {
         timestamp: new Date().toISOString(),
@@ -698,6 +712,10 @@ async function authorizeRequest(
 
     try {
         const decodedToken = await admin.auth().verifyIdToken(match[1]);
+        if ((decodedToken as any).firebase?.sign_in_provider !== 'google.com') {
+            res.status(403).json({ error: 'Google sign-in is required' });
+            return null;
+        }
         const userSnapshot = await db.collection("users").doc(decodedToken.uid).get();
         const userProfile = userSnapshot.data();
 
@@ -717,6 +735,27 @@ async function authorizeRequest(
         res.status(401).json({ error: "Unauthorized" });
         return null;
     }
+}
+
+function allowDeveloperRequest(userId: string) {
+    const now = Date.now();
+    const existing = developerRequestWindows.get(userId);
+    if (!existing || now - existing.startedAt >= developerRequestWindowMs) {
+        developerRequestWindows.set(userId, { startedAt: now, count: 1 });
+        return true;
+    }
+    if (existing.count >= developerRequestLimit) return false;
+    existing.count += 1;
+    return true;
+}
+
+function authorizeDeveloperRequest(
+    authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> },
+    res: express.Response
+) {
+    if (allowDeveloperRequest(authorization.decodedToken.uid)) return true;
+    res.status(429).json({ error: 'Diagnostic request limit reached. Please wait one minute before trying again.' });
+    return false;
 }
 
 // Clients may report that an event occurred, but all identity, role, time,
@@ -764,6 +803,241 @@ app.post("/api/audit-events", async (req, res) => {
     } catch (error) {
         console.error("Audit event creation failed", error);
         res.status(500).json({ error: "Audit event creation failed" });
+    }
+});
+
+function canManageUserTarget(
+    authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> },
+    userId: string,
+    targetProfile: Record<string, any>
+) {
+    if (authorization.decodedToken.uid === userId) {
+        throw new RequestError(403, 'You cannot manage your own account with this action');
+    }
+    if (authorization.userProfile.role === 'admin' && targetProfile.role === 'support_developer') {
+        throw new RequestError(403, 'Administrators cannot manage Support / Developer accounts');
+    }
+}
+
+async function getManagedUser(
+    authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> },
+    userId: string
+) {
+    if (!isValidDocumentId(userId)) throw new RequestError(400, 'Invalid user ID');
+    const userRef = db.collection('users').doc(userId);
+    const snapshot = await userRef.get();
+    if (!snapshot.exists) throw new RequestError(404, 'User account not found');
+    const targetProfile = snapshot.data() || {};
+    canManageUserTarget(authorization, userId, targetProfile);
+    return { userRef, targetProfile };
+}
+
+// User archive/delete operations intentionally never touch clinical records or
+// prior audit events. Archive retains the profile for later restoration; delete
+// removes only the authentication identity and current user profile.
+app.post('/api/users/:userId/archive', async (req, res) => {
+    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    if (!authorization) return;
+
+    try {
+        const { userRef, targetProfile } = await getManagedUser(authorization, req.params.userId);
+        if (targetProfile.isArchived === true) throw new RequestError(409, 'User account is already archived');
+        const now = new Date().toISOString();
+        await db.runTransaction(async transaction => {
+            transaction.update(userRef, {
+                active: false,
+                isArchived: true,
+                archivedAt: now,
+                archivedByUid: authorization.decodedToken.uid,
+                archivedByName: trustedUserName(authorization)
+            });
+            transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
+                authorization,
+                action: 'UPDATE',
+                resource: 'User',
+                resourceId: userRef.id,
+                eventType: 'user_archived',
+                changeFields: ['active', 'isArchived']
+            }));
+        });
+        await admin.auth().revokeRefreshTokens(userRef.id).catch(error => {
+            if (error?.code !== 'auth/user-not-found') throw error;
+        });
+        res.status(200).json({ id: userRef.id, archivedAt: now });
+    } catch (error) {
+        return sendRecordError(res, error, 'User archive');
+    }
+});
+
+app.post('/api/users/:userId/restore', async (req, res) => {
+    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    if (!authorization) return;
+
+    try {
+        const { userRef, targetProfile } = await getManagedUser(authorization, req.params.userId);
+        if (targetProfile.isArchived !== true) throw new RequestError(409, 'Only archived user accounts can be restored');
+        const now = new Date().toISOString();
+        await db.runTransaction(async transaction => {
+            transaction.update(userRef, {
+                active: true,
+                isArchived: false,
+                archivedAt: admin.firestore.FieldValue.delete(),
+                archivedByUid: admin.firestore.FieldValue.delete(),
+                archivedByName: admin.firestore.FieldValue.delete(),
+                restoredAt: now,
+                restoredByUid: authorization.decodedToken.uid,
+                restoredByName: trustedUserName(authorization)
+            });
+            transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
+                authorization,
+                action: 'UPDATE',
+                resource: 'User',
+                resourceId: userRef.id,
+                eventType: 'user_restored',
+                changeFields: ['active', 'isArchived']
+            }));
+        });
+        res.status(200).json({ id: userRef.id, restoredAt: now });
+    } catch (error) {
+        return sendRecordError(res, error, 'User restore');
+    }
+});
+
+app.delete('/api/users/:userId', async (req, res) => {
+    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    if (!authorization) return;
+
+    try {
+        const { userRef } = await getManagedUser(authorization, req.params.userId);
+        await db.runTransaction(async transaction => {
+            transaction.delete(userRef);
+            // This audit entry is intentionally written in the same transaction
+            // as the profile deletion and is retained after the account is gone.
+            transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
+                authorization,
+                action: 'DELETE',
+                resource: 'User',
+                resourceId: userRef.id,
+                eventType: 'user_deleted'
+            }));
+        });
+        await admin.auth().deleteUser(userRef.id).catch(error => {
+            if (error?.code !== 'auth/user-not-found') throw error;
+        });
+        res.status(204).send();
+    } catch (error) {
+        return sendRecordError(res, error, 'User deletion');
+    }
+});
+
+// Developer Tools use server-side aggregates and diagnostics so the browser
+// never downloads full clinical collections merely to display an operational
+// count. These routes are intentionally narrower than general admin access.
+app.get('/api/developer/metrics', async (req, res) => {
+    const authorization = await authorizeRequest(req, res, ['support_developer']);
+    if (!authorization) return;
+    if (!authorizeDeveloperRequest(authorization, res)) return;
+
+    try {
+        const [users, patients, appointments, visits] = await Promise.all([
+            db.collection('users').count().get(),
+            db.collection('patients').count().get(),
+            db.collection('appointments').count().get(),
+            db.collection('visits').count().get()
+        ]);
+        const metrics = {
+            users: users.data().count,
+            patients: patients.data().count,
+            appointments: appointments.data().count,
+            visits: visits.data().count
+        };
+        await db.collection('audit_logs').add(buildAuditLogData({
+            authorization,
+            action: 'VIEW',
+            resource: 'Settings',
+            resourceId: 'developer_metrics',
+            eventType: 'developer_metrics_view'
+        }));
+        res.json(metrics);
+    } catch (error) {
+        console.error('Developer metrics failed', error);
+        res.status(500).json({ error: 'Developer metrics failed' });
+    }
+});
+
+app.post('/api/developer/diagnostics', async (req, res) => {
+    const authorization = await authorizeRequest(req, res, ['support_developer']);
+    if (!authorization) return;
+    if (!authorizeDeveloperRequest(authorization, res)) return;
+
+    try {
+        const startedAt = Date.now();
+        await db.collection('settings').doc('branding').get();
+        const firestoreLatencyMs = Date.now() - startedAt;
+        await db.collection('audit_logs').add(buildAuditLogData({
+            authorization,
+            action: 'VIEW',
+            resource: 'Settings',
+            resourceId: 'developer_diagnostics',
+            eventType: 'developer_diagnostics_run'
+        }));
+        res.json({ firestoreLatencyMs, serverTime: new Date().toISOString() });
+    } catch (error) {
+        console.error('Developer diagnostics failed', error);
+        res.status(500).json({ error: 'Developer diagnostics failed' });
+    }
+});
+
+app.post('/api/developer/maintenance', async (req, res) => {
+    const authorization = await authorizeRequest(req, res, ['support_developer']);
+    if (!authorization) return;
+    if (!authorizeDeveloperRequest(authorization, res)) return;
+
+    try {
+        const payload = requestPayload(req);
+        if (typeof payload.maintenanceMode !== 'boolean') {
+            throw new RequestError(400, 'maintenanceMode must be true or false');
+        }
+        const brandingRef = db.collection('settings').doc('branding');
+        await db.runTransaction(async transaction => {
+            transaction.set(brandingRef, { maintenanceMode: payload.maintenanceMode }, { merge: true });
+            stageAuditLog(transaction, {
+                authorization,
+                action: 'UPDATE',
+                resource: 'Settings',
+                resourceId: 'maintenance_status',
+                eventType: 'developer_maintenance_changed',
+                changeFields: ['maintenanceMode']
+            });
+        });
+        res.json({ maintenanceMode: payload.maintenanceMode });
+    } catch (error) {
+        return sendRecordError(res, error, 'Maintenance mode update');
+    }
+});
+
+app.post('/api/developer/activity', async (req, res) => {
+    const authorization = await authorizeRequest(req, res, ['support_developer']);
+    if (!authorization) return;
+    if (!authorizeDeveloperRequest(authorization, res)) return;
+
+    const payload = requestPayload(req);
+    const event = typeof payload.event === 'string' ? payload.event : '';
+    const definition = getDeveloperActivityDefinition(event);
+    if (!definition) return res.status(400).json({ error: 'Unsupported Developer Tools activity' });
+
+    try {
+        await db.collection('audit_logs').add(buildAuditLogData({
+            authorization,
+            action: definition.action,
+            resource: definition.resource,
+            resourceId: definition.resourceId,
+            eventType: event
+        }));
+        res.status(201).json({ recorded: true });
+    } catch (error) {
+        console.error('Developer activity logging failed', error);
+        res.status(500).json({ error: 'Developer activity logging failed' });
     }
 });
 
@@ -1409,6 +1683,18 @@ app.post("/api/records/visits", async (req, res) => {
                 resourceName: typeof context.patientData.patientID === 'string' ? context.patientData.patientID : '',
                 branchId: visit.branchId
             });
+            if (linkedAppointmentRef) {
+                stageAuditLog(transaction, {
+                    authorization,
+                    action: 'UPDATE',
+                    resource: 'Appointment',
+                    resourceId: linkedAppointmentRef.id,
+                    resourceName: typeof context.patientData.patientID === 'string' ? context.patientData.patientID : '',
+                    branchId: visit.branchId,
+                    changeFields: ['visitHistoryId', 'visitHistoryCreated', 'status'],
+                    eventType: 'appointment_completed_from_visit'
+                });
+            }
         });
         res.status(201).json({ id: visitRef.id });
     } catch (error) {

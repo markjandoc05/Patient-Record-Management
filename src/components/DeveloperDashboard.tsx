@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, doc, updateDoc, writeBatch, query, limit, orderBy } from 'firebase/firestore';
-import { db, auth } from '../firebase';
-import { logActivity } from '../utils/auditLogger';
-import { formatDateTime, handleFirestoreError, OperationType } from '../utils';
+import { collection, getDocs, query, limit, orderBy } from 'firebase/firestore';
+import { db } from '../firebase';
+import { fetchDeveloperMetrics, recordDeveloperActivity, runDeveloperDiagnostics, setDeveloperMaintenanceMode } from '../utils/developerToolsApi';
+import { formatDateTime } from '../utils';
 import { 
   Cpu, HardDrive, RefreshCw, Trash2, ShieldAlert, CheckCircle, Database, 
   Users, Calendar, Clock, ClipboardList, Server,
@@ -29,15 +29,13 @@ interface DeveloperDashboardProps {
   onTabChange: (tab: DevTab) => void;
   branding: any;
   onRefreshBranding: () => Promise<void>;
-  userRole: string | null;
 }
 
 export default function DeveloperDashboard({ 
   currentTab, 
   onTabChange, 
-  branding, 
-  onRefreshBranding,
-  userRole
+  branding,
+  onRefreshBranding
 }: DeveloperDashboardProps) {
   // Collection counts states
   const [userCount, setUserCount] = useState<number | null>(null);
@@ -48,51 +46,42 @@ export default function DeveloperDashboard({
 
   // Firestore & Firebase logs / testing states
   const [latency, setLatency] = useState<number | null>(null);
+  const [serverTime, setServerTime] = useState<string | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
   const [recentAuditLogs, setRecentAuditLogs] = useState<any[]>([]);
   const [loadingAuditLogs, setLoadingAuditLogs] = useState(false);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
+  const [auditLogsError, setAuditLogsError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [sessionErrors, setSessionErrors] = useState<string[]>([]);
   const [isTogglingMaintenance, setIsTogglingMaintenance] = useState(false);
-  const [pendingAction, setPendingAction] = useState<(() => Promise<void> | void) | null>(null);
-  const [showConfirmation, setShowConfirmation] = useState(false);
+  const [pendingAction, setPendingAction] = useState<{ action: () => Promise<void> | void; title: string; message: string; confirmLabel: string } | null>(null);
 
-  const confirmAction = (action: () => Promise<void> | void) => {
-    setPendingAction(() => action);
-    setShowConfirmation(true);
+  const confirmAction = (action: () => Promise<void> | void, title: string, message: string, confirmLabel: string) => {
+    setPendingAction({ action, title, message, confirmLabel });
   };
 
   const handleConfirm = async () => {
     if (pendingAction) {
-      await pendingAction();
+      await pendingAction.action();
     }
     setPendingAction(null);
-    setShowConfirmation(false);
   };
 
-  // Fetch counts from Firestore
+  // Fetch trusted server-side collection counts without downloading records.
   const fetchCounts = async () => {
     setLoadingStats(true);
+    setMetricsError(null);
     try {
-      const usersSnap = await getDocs(collection(db, 'users'));
-      const patientsSnap = await getDocs(collection(db, 'patients'));
-      const appointmentsSnap = await getDocs(collection(db, 'appointments'));
-      const visitsSnap = await getDocs(collection(db, 'visits'));
-
-      setUserCount(usersSnap.size);
-      setPatientCount(patientsSnap.size);
-      setAppointmentCount(appointmentsSnap.size);
-      setVisitCount(visitsSnap.size);
-
-      // Log Support / Developer View Actions
-      await logActivity({
-        action: 'VIEW',
-        resource: 'Settings',
-        resourceId: 'developer_statistics',
-        details: 'Developer Read Access: Viewed System Overview / Counts',
-        userProfile: { role: userRole || 'staff' }
-      });
+      const metrics = await fetchDeveloperMetrics();
+      setUserCount(metrics.users);
+      setPatientCount(metrics.patients);
+      setAppointmentCount(metrics.appointments);
+      setVisitCount(metrics.visits);
     } catch (error) {
       console.error("Error fetching telemetry counts", error);
+      setMetricsError(error instanceof Error ? error.message : 'Unable to load collection metrics.');
     } finally {
       setLoadingStats(false);
     }
@@ -101,22 +90,16 @@ export default function DeveloperDashboard({
   // Test Firebase connection latency
   const testConnection = async () => {
     setTestingConnection(true);
-    const start = performance.now();
+    setDiagnosticError(null);
     try {
-      // Small read test
-      await getDocs(query(collection(db, 'settings'), limit(1)));
-      const end = performance.now();
-      setLatency(Math.round(end - start));
-      await logActivity({
-        action: 'VIEW',
-        resource: 'Settings',
-        resourceId: 'firebase_diagnostics',
-        details: `Developer Tools Access: Run Database Diagnostics (Latency: ${Math.round(end - start)}ms)`,
-        userProfile: { role: userRole || 'staff' }
-      });
+      const result = await runDeveloperDiagnostics();
+      setLatency(result.firestoreLatencyMs);
+      setServerTime(result.serverTime);
+      setNotice(`Firestore diagnostic completed in ${result.firestoreLatencyMs} ms.`);
     } catch (error) {
       console.error("Firebase Diagnostic Test failed", error);
       setLatency(-1);
+      setDiagnosticError(error instanceof Error ? error.message : 'The diagnostic request failed.');
     } finally {
       setTestingConnection(false);
     }
@@ -125,43 +108,36 @@ export default function DeveloperDashboard({
   // Fetch recent audit logs for Support view
   const fetchAuditLogs = async () => {
     setLoadingAuditLogs(true);
+    setAuditLogsError(null);
     try {
       const qLogs = query(collection(db, 'audit_logs'), orderBy('timestamp', 'desc'), limit(15));
       const snap = await getDocs(qLogs);
       setRecentAuditLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       
-      await logActivity({
-        action: 'VIEW',
-        resource: 'Settings',
-        resourceId: 'developer_audit_logs',
-        details: 'Developer Read Access: Viewed Audit Logs',
-        userProfile: { role: userRole || 'staff' }
-      });
     } catch (error) {
       console.error("Failed to load audit logs", error);
+      setAuditLogsError(error instanceof Error ? error.message : 'Unable to load recent audit entries.');
     } finally {
       setLoadingAuditLogs(false);
     }
   };
 
-  // Run on tab changes & session management
+  // Capture browser errors for this Developer Tools session. These are local
+  // diagnostics, not a replacement for production error monitoring.
   useEffect(() => {
-    logActivity({
-      action: 'VIEW',
-      resource: 'Settings',
-      resourceId: 'developer_tools_session',
-      details: 'Developer Tools Session Started',
-      userProfile: { role: userRole || 'staff', fullName: auth.currentUser?.displayName || 'Unknown' }
-    });
-
+    const recordError = (message: string) => setSessionErrors(previous => [
+      `${new Date().toISOString()} — ${message.slice(0, 500)}`,
+      ...previous,
+    ].slice(0, 50));
+    const onError = (event: ErrorEvent) => recordError(event.message || 'Unknown browser error');
+    const onRejection = (event: PromiseRejectionEvent) => recordError(
+      event.reason instanceof Error ? event.reason.message : 'Unhandled promise rejection'
+    );
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
     return () => {
-      logActivity({
-        action: 'VIEW',
-        resource: 'Settings',
-        resourceId: 'developer_tools_session',
-        details: 'Developer Tools Session Ended',
-        userProfile: { role: userRole || 'staff', fullName: auth.currentUser?.displayName || 'Unknown' }
-      });
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onRejection);
     };
   }, []);
 
@@ -170,20 +146,11 @@ export default function DeveloperDashboard({
     setIsTogglingMaintenance(true);
     const targetStatus = !branding.maintenanceMode;
     try {
-      await updateDoc(doc(db, 'settings', 'branding'), {
-        maintenanceMode: targetStatus
-      });
-      await logActivity({
-        action: 'UPDATE',
-        resource: 'Settings',
-        resourceId: 'maintenance_status',
-        details: `Developer Tools Access: ${targetStatus ? 'Enabled' : 'Disabled'} Maintenance Mode`,
-        userProfile: { role: userRole || 'staff' }
-      });
-      alert(`Systems maintenance mode for ${branding.appName || 'the app'} set to: ${targetStatus ? 'ACTIVE' : 'DEACTIVATED'}`);
+      await setDeveloperMaintenanceMode(targetStatus);
       await onRefreshBranding();
+      setNotice(`Maintenance mode is now ${targetStatus ? 'enabled' : 'disabled'}.`);
     } catch (error: any) {
-      alert("Failed to change Maintenance control. Error: " + error.message);
+      setNotice(`Maintenance mode was not changed: ${error.message}`);
     } finally {
       setIsTogglingMaintenance(false);
     }
@@ -193,66 +160,65 @@ export default function DeveloperDashboard({
   const triggerRefreshSettings = async () => {
     try {
       await onRefreshBranding();
-      await logActivity({
-        action: 'UPDATE',
-        resource: 'Settings',
-        resourceId: 'reload_white_label',
-        details: 'Developer Tools Access: Refreshed App Settings',
-        userProfile: { role: userRole || 'staff' }
-      });
-      alert("Application environment branding variables successfully synced from database.");
+      setNotice('Application settings were refreshed.');
     } catch (error: any) {
-      alert("Refresh unsuccessful. Error: " + error.message);
+      setNotice(`Settings refresh was unsuccessful: ${error.message}`);
+      return;
+    }
+    try {
+      await recordDeveloperActivity('developer_settings_refreshed');
+    } catch (error) {
+      console.error('Developer settings refresh audit failed', error);
+      setNotice('Application settings were refreshed, but the audit entry could not be saved.');
     }
   };
 
   // Clear Session & cache
   const triggerClearCache = async () => {
     try {
-      localStorage.clear();
-      sessionStorage.clear();
-      await logActivity({
-        action: 'DELETE',
-        resource: 'Settings',
-        resourceId: 'developer_cleanup_cache',
-        details: 'Developer Tools Access: Purged Browser Cache',
-        userProfile: { role: userRole || 'staff' }
-      });
-      alert("Client session directories, cached form values & system local variables cleared cleanly.");
+      const removableLocalKeys = Object.keys(localStorage).filter(key => key.startsWith('vine-'));
+      const removableSessionKeys = Object.keys(sessionStorage).filter(key => key.startsWith('vine-'));
+      removableLocalKeys.forEach(key => localStorage.removeItem(key));
+      removableSessionKeys.forEach(key => sessionStorage.removeItem(key));
+      setNotice(`Cleared ${removableLocalKeys.length + removableSessionKeys.length} Vine browser-storage entries. Authentication and unrelated browser data were left intact.`);
+      try {
+        await recordDeveloperActivity('developer_cache_cleared');
+      } catch (error) {
+        console.error('Developer cache clear audit failed', error);
+        setNotice(`Cleared ${removableLocalKeys.length + removableSessionKeys.length} Vine browser-storage entries, but the audit entry could not be saved.`);
+      }
     } catch (error: any) {
-      alert("Purge failed. Error: " + error.message);
+      setNotice(`Browser storage was not cleared: ${error.message}`);
     }
   };
 
   // Simulate exception for troubleshooting testing
   const triggerSimulateError = async () => {
-    const errorMsg = `Exception: Manual Diagnostic Trigger - Test instance at ${new Date().toISOString()}`;
+    const errorMsg = `Manual error-capture test at ${new Date().toISOString()}`;
     setSessionErrors(prev => [errorMsg, ...prev]);
-    await logActivity({
-      action: 'CREATE',
-      resource: 'Settings',
-      resourceId: 'simulate_error',
-      details: 'Developer Read Access: Triggered Fault Simulation',
-      userProfile: { role: userRole || 'staff' }
-    });
-    alert("Test exceptions populated in session ledger.");
+    try {
+      await recordDeveloperActivity('developer_fault_simulated');
+      setNotice('A local error-capture test was added to this browser session.');
+    } catch (error) {
+      setNotice(`The local test ran, but its audit entry could not be saved: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   };
 
   // Helper menu values
   const menuItems: { id: DevTab; label: string; icon: any; description: string }[] = [
-    { id: 'system_overview', label: 'System Overview', icon: Cpu, description: 'Diagnostic parameters & environment indicators' },
-    { id: 'app_version', label: 'App Version', icon: ClipboardList, description: 'Module versions and build identifiers' },
-    { id: 'firebase_status', label: 'Firebase Status', icon: Server, description: 'Firestore connectivity and real-time pings' },
-    { id: 'storage_monitor', label: 'Storage Monitor', icon: HardDrive, description: 'Browser local variable mapping & index sizes' },
-    { id: 'user_count', label: 'User Count', icon: Users, description: 'Active clinical team logs registered' },
-    { id: 'patient_count', label: 'Patient Count', icon: Users, description: 'Registered database patient items size' },
-    { id: 'appointment_count', label: 'Appointment Count', icon: Calendar, description: 'Clinic booking events registry sizes' },
-    { id: 'visit_count', label: 'Visit Count', icon: Clock, description: 'Logged clinical checkup session sums' },
-    { id: 'audit_logs', label: 'Audit Logs', icon: Database, description: 'Complete system HIPAA compliance telemetry ledger' },
-    { id: 'error_logs', label: 'Error Logs', icon: ShieldAlert, description: 'Active session diagnostics failure log catcher' },
-    { id: 'refresh_settings', label: 'Refresh Settings', icon: RefreshCw, description: 'Sync white-label branding details from Cloud' },
-    { id: 'clear_cache', label: 'Clear Cache', icon: Trash2, description: 'Purge browser states and temporal local variables' },
-    { id: 'maintenance_mode', label: 'Maintenance Mode', icon: ShieldAlert, description: 'Safe access restriction to stop client inputs' }
+    { id: 'system_overview', label: 'System Overview', icon: Cpu, description: 'Runtime and browser context' },
+    { id: 'app_version', label: 'App Version', icon: ClipboardList, description: 'Build and configuration metadata' },
+    { id: 'firebase_status', label: 'Firebase Status', icon: Server, description: 'Trusted Firestore diagnostics' },
+    { id: 'storage_monitor', label: 'Storage Monitor', icon: HardDrive, description: 'Vine-owned browser storage only' },
+    { id: 'user_count', label: 'User Count', icon: Users, description: 'All user-profile documents' },
+    { id: 'patient_count', label: 'Patient Count', icon: Users, description: 'All patient documents' },
+    { id: 'appointment_count', label: 'Appointment Count', icon: Calendar, description: 'All appointment documents' },
+    { id: 'visit_count', label: 'Visit Count', icon: Clock, description: 'All visit documents' },
+    { id: 'audit_logs', label: 'Audit Logs', icon: Database, description: 'Latest audit-entry preview' },
+    { id: 'error_logs', label: 'Error Logs', icon: ShieldAlert, description: 'Current browser-session errors' },
+    { id: 'refresh_settings', label: 'Refresh Settings', icon: RefreshCw, description: 'Reload current branding configuration' },
+    { id: 'clear_cache', label: 'Clear Cache', icon: Trash2, description: 'Remove Vine-owned browser storage' },
+    { id: 'maintenance_mode', label: 'Maintenance Mode', icon: ShieldAlert, description: 'Restrict access during service work' }
   ];
 
   return (
@@ -280,6 +246,12 @@ export default function DeveloperDashboard({
           </button>
         </div>
       </div>
+      {notice && (
+        <div role="status" className="flex items-start justify-between gap-3 rounded-xl border border-teal-100 bg-teal-50 px-4 py-3 text-xs text-teal-800">
+          <span>{notice}</span>
+          <button type="button" onClick={() => setNotice(null)} className="font-semibold text-teal-700 hover:text-teal-900" aria-label="Dismiss status message">Dismiss</button>
+        </div>
+      )}
 
       {/* Main Grid: Nav on side, Panel on right */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
@@ -293,14 +265,7 @@ export default function DeveloperDashboard({
               return (
                 <button
                   key={item.id}
-                  onClick={() => {
-                    const sensitiveTabs = ['refresh_settings', 'clear_cache', 'maintenance_mode'];
-                    if (sensitiveTabs.includes(item.id)) {
-                      confirmAction(() => onTabChange(item.id));
-                    } else {
-                      onTabChange(item.id);
-                    }
-                  }}
+                  onClick={() => onTabChange(item.id)}
                   className={`flex items-start gap-3 w-full text-left px-3 py-2.5 rounded-xl transition group ${
                     isActive 
                       ? 'bg-slate-850 text-white shadow-sm font-semibold' 
@@ -329,7 +294,7 @@ export default function DeveloperDashboard({
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="border border-slate-150 p-4 rounded-xl bg-slate-50/50">
                   <span className="text-[10px] font-bold text-slate-400 uppercase">Framework Runtime</span>
-                  <p className="font-mono text-xs text-slate-800 mt-2">Vite 6.2.3 • React 19.0.1 • Tailwind v4.1.14</p>
+                  <p className="font-mono text-xs text-slate-800 mt-2">React application • Vite build • Tailwind CSS</p>
                 </div>
                 <div className="border border-slate-150 p-4 rounded-xl bg-slate-50/50">
                   <span className="text-[10px] font-bold text-slate-400 uppercase">Local System Time</span>
@@ -337,7 +302,7 @@ export default function DeveloperDashboard({
                 </div>
                 <div className="border border-slate-150 p-4 rounded-xl bg-slate-50/50">
                   <span className="text-[10px] font-bold text-slate-400 uppercase">Platform Context</span>
-                  <p className="font-mono text-xs text-slate-800 mt-2 truncate">Chrome Webkit / Cloud Run Container</p>
+                  <p className="font-mono text-xs text-slate-800 mt-2 truncate">{typeof navigator !== 'undefined' ? navigator.platform : 'Unknown platform'}</p>
                 </div>
                 <div className="border border-slate-150 p-4 rounded-xl bg-slate-50/50">
                   <span className="text-[10px] font-bold text-slate-400 uppercase">User Language & Agent</span>
@@ -353,16 +318,16 @@ export default function DeveloperDashboard({
               <h3 className="text-md font-bold text-slate-800 border-b pb-2">App Version</h3>
               <div className="space-y-4">
                 <div className="flex items-center justify-between border-b border-slate-100 py-2">
-                  <span className="text-xs font-semibold text-slate-500">Major Core Version</span>
-                  <span className="font-mono text-xs text-slate-800">v1.2.4</span>
+                  <span className="text-xs font-semibold text-slate-500">Application Build</span>
+                  <span className="font-mono text-xs text-slate-800">Current deployment</span>
                 </div>
                 <div className="flex items-center justify-between border-b border-slate-100 py-2">
-                  <span className="text-xs font-semibold text-slate-500">Stability Tier</span>
-                  <span className="bg-teal-50 text-teal-700 text-[10px] font-extrabold tracking-wider px-2 py-0.5 rounded border border-teal-100">STABLE SUPPORT</span>
+                  <span className="text-xs font-semibold text-slate-500">Support Access</span>
+                  <span className="bg-teal-50 text-teal-700 text-[10px] font-extrabold tracking-wider px-2 py-0.5 rounded border border-teal-100">SUPPORT DEVELOPER</span>
                 </div>
                 <div className="flex items-center justify-between border-b border-slate-100 py-2">
-                  <span className="text-xs font-semibold text-slate-500">Build Channel</span>
-                  <span className="font-mono text-xs text-slate-800">Production Build CJS Bundled</span>
+                  <span className="text-xs font-semibold text-slate-500">Build Pipeline</span>
+                  <span className="font-mono text-xs text-slate-800">Vite-managed web build</span>
                 </div>
                 <div className="flex items-center justify-between border-b border-slate-100 py-2">
                   <span className="text-xs font-semibold text-slate-500">Branding Status</span>
@@ -379,8 +344,8 @@ export default function DeveloperDashboard({
               <div className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="border border-slate-150 p-4 rounded-xl bg-slate-50/50">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase">Database Instance</span>
-                    <p className="font-mono text-xs text-slate-800 mt-2 truncate">ai-studio-76c2b271-46ac-4092-87c1-929bb4ca2fa3</p>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase">Database Target</span>
+                    <p className="font-mono text-xs text-slate-800 mt-2 truncate">Configured Firestore database</p>
                   </div>
                   <div className="border border-slate-150 p-4 rounded-xl bg-slate-50/50">
                     <span className="text-[10px] font-bold text-slate-400 uppercase">Authentication Mode</span>
@@ -390,24 +355,30 @@ export default function DeveloperDashboard({
 
                 <div className="flex items-center justify-between bg-slate-50 p-4 rounded-xl">
                   <div>
-                    <p className="text-xs font-bold text-slate-700">Firestore Read Ping Latency</p>
-                    <p className="text-xs text-slate-500 mt-0.5">Calculated end-to-end communication response rate.</p>
+                    <p className="text-xs font-bold text-slate-700">Trusted Firestore Read Latency</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Measured from the application server to Firestore.</p>
                   </div>
                   <div className="flex items-center gap-2">
                     {testingConnection ? (
                       <span className="text-xs text-slate-400 font-semibold flex items-center gap-1"><SpinnerIcon size={12} className="animate-spin" /> Measuring...</span>
                     ) : latency === -1 ? (
                       <span className="text-red-500 font-bold text-xs">Failed</span>
-                    ) : latency ? (
-                      <span className="text-xs font-bold text-teal-700 bg-teal-50 px-2 py-1 rounded border border-teal-150">{latency} ms (Excellent)</span>
+                    ) : latency !== null ? (
+                      <span className="text-xs font-bold text-teal-700 bg-teal-50 px-2 py-1 rounded border border-teal-150">{latency} ms</span>
                     ) : (
-                      <span className="text-xs text-slate-40s0">Not Measured</span>
+                      <span className="text-xs text-slate-400">Not Measured</span>
                     )}
                   </div>
                 </div>
+                {serverTime && (
+                  <p className="text-[11px] text-slate-400">Last server response: {formatDateTime(serverTime)}</p>
+                )}
+                {diagnosticError && (
+                  <p role="alert" className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700">{diagnosticError}</p>
+                )}
 
                 <button 
-                  onClick={() => confirmAction(testConnection)}
+                  onClick={testConnection}
                   disabled={testingConnection}
                   className="px-4 py-2 bg-teal-650 hover:bg-teal-750 text-white rounded-lg text-xs font-semibold flex items-center gap-1 pb-2 pt-2"
                   style={{ backgroundColor: branding.primaryColor || '#0d9488' }}
@@ -421,19 +392,19 @@ export default function DeveloperDashboard({
           {/* Module 4: Storage Monitor */}
           {currentTab === 'storage_monitor' && (
             <div className="space-y-6">
-              <h3 className="text-md font-bold text-slate-800 border-b pb-2">Local Storage Monitor</h3>
+              <h3 className="text-md font-bold text-slate-800 border-b pb-2">Vine Browser Storage</h3>
               <div className="space-y-4">
-                <span className="text-[10px] font-bold text-slate-400 uppercase block">Cached Key Allocation</span>
+                <span className="text-[10px] font-bold text-slate-400 uppercase block">Vine-owned Cached Keys</span>
                 <div className="divide-y divide-slate-100">
-                  {typeof window !== 'undefined' && Object.keys(localStorage).length > 0 ? (
-                    Object.keys(localStorage).map(key => (
+                  {typeof window !== 'undefined' && Object.keys(localStorage).filter(key => key.startsWith('vine-')).length > 0 ? (
+                    Object.keys(localStorage).filter(key => key.startsWith('vine-')).map(key => (
                       <div key={key} className="flex justify-between items-center py-2 text-xs">
                         <span className="font-mono text-slate-600">{key}</span>
                         <span className="text-slate-400 font-mono">{(localStorage.getItem(key)?.length || 0)} chars</span>
                       </div>
                     ))
                   ) : (
-                    <p className="text-slate-400 text-xs py-2">No key allocations found in local storage cache.</p>
+                    <p className="text-slate-400 text-xs py-2">No Vine-owned keys found in browser storage.</p>
                   )}
                 </div>
               </div>
@@ -444,13 +415,13 @@ export default function DeveloperDashboard({
           {(['user_count', 'patient_count', 'appointment_count', 'visit_count'].includes(currentTab)) && (
             <div className="space-y-6">
               <h3 className="text-md font-bold text-slate-800 border-b pb-2 capitalize">{currentTab.replace('_', ' ')} Diagnostics</h3>
-              <p className="text-xs text-slate-500">Below is the registered collection telemetry count mapped in Firestore database.</p>
+              <p className="text-xs text-slate-500">Counts are aggregated server-side and include all documents in the selected collection.</p>
               
               <div className="bg-slate-50 p-6 rounded-2xl flex flex-col justify-center items-center py-10 border border-slate-150 select-none">
                 {loadingStats ? (
                   <div className="flex flex-col items-center gap-2">
                     <SpinnerIcon size={24} className="text-teal-600 animate-spin" style={{ color: branding.primaryColor || '#0d9488' }} />
-                    <p className="text-xs text-slate-400 font-bold uppercase">Fetching active ledger metrics...</p>
+                    <p className="text-xs text-slate-400 font-bold uppercase">Fetching aggregate metrics...</p>
                   </div>
                 ) : (
                   <div className="text-center">
@@ -460,10 +431,13 @@ export default function DeveloperDashboard({
                       {currentTab === 'appointment_count' && (appointmentCount ?? 'N/A')}
                       {currentTab === 'visit_count' && (visitCount ?? 'N/A')}
                     </p>
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-2">Active Documents Registered</p>
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-2">Documents Registered</p>
                   </div>
                 )}
               </div>
+              {metricsError && (
+                <p role="alert" className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700">{metricsError}</p>
+              )}
             </div>
           )}
 
@@ -471,7 +445,7 @@ export default function DeveloperDashboard({
           {currentTab === 'audit_logs' && (
             <div className="space-y-4">
               <div className="flex justify-between items-center border-b pb-2">
-                <h3 className="text-md font-bold text-slate-800">Administrative Logs Trail</h3>
+                <h3 className="text-md font-bold text-slate-800">Latest Audit Entries</h3>
                 <button 
                   onClick={fetchAuditLogs} 
                   disabled={loadingAuditLogs} 
@@ -513,7 +487,10 @@ export default function DeveloperDashboard({
                   </table>
                 </div>
               ) : (
-                <p className="text-slate-400 text-xs py-10 text-center select-none">No administrative audit entries mapped in local collection.</p>
+                <p className="text-slate-400 text-xs py-10 text-center select-none">No audit entries loaded. Use the main Audit Trail for full search and export.</p>
+              )}
+              {auditLogsError && (
+                <p role="alert" className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700">{auditLogsError}</p>
               )}
             </div>
           )}
@@ -531,7 +508,7 @@ export default function DeveloperDashboard({
                   Trigger Fault simulation
                 </button>
               </div>
-              <p className="text-xs text-slate-500">Catches unhandled errors or missing/insufficient permission exceptions recorded during the active logged session.</p>
+              <p className="text-xs text-slate-500">Captures browser errors and unhandled promise rejections during this open support session. It is not persistent production error monitoring.</p>
 
               {sessionErrors.length > 0 ? (
                 <div className="space-y-2">
@@ -547,7 +524,7 @@ export default function DeveloperDashboard({
                     <CheckCircle size={14} />
                   </div>
                   <p className="text-slate-500 font-bold text-xs uppercase tracking-wider">Session Stable</p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">0 faults or missing permissions registered recursively since application initialization.</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">No browser errors or unhandled promise rejections captured in this session.</p>
                 </div>
               )}
             </div>
@@ -559,7 +536,7 @@ export default function DeveloperDashboard({
               <h3 className="text-md font-bold text-slate-800 border-b pb-2">Sync App Branding</h3>
               <p className="text-xs text-slate-500 leading-relaxed">Loads the global whitelist configuration, design specifications, branding elements (App short names, logo urls, themes, footer legal blocks) from Firestore directly. Use this module to override temporary UI lags.</p>
               <button 
-                onClick={() => confirmAction(triggerRefreshSettings)} 
+                onClick={triggerRefreshSettings}
                 className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 select-none"
                 style={{ backgroundColor: branding.primaryColor || '#0d9488' }}
               >
@@ -572,12 +549,17 @@ export default function DeveloperDashboard({
           {currentTab === 'clear_cache' && (
             <div className="space-y-6">
               <h3 className="text-md font-bold text-slate-800 border-b pb-2">Purge Client Cache</h3>
-              <p className="text-xs text-slate-500 leading-relaxed">Flushes the entire storage mappings locally inside the browser. It resets current search indexes, browser states, draft record forms, and temporary diagnostic caches safely, keeping core Firestore collections persistent.</p>
+              <p className="text-xs text-slate-500 leading-relaxed">Removes only browser-storage entries whose key begins with <span className="font-mono">vine-</span>. Authentication and unrelated browser data are not changed; Firestore records are unaffected.</p>
               <button 
-                onClick={() => confirmAction(triggerClearCache)} 
+                onClick={() => confirmAction(
+                  triggerClearCache,
+                  'Clear Vine browser storage?',
+                  'Only browser-storage keys that belong to Vine will be removed. Authentication and server records are not affected.',
+                  'Clear storage'
+                )}
                 className="px-4 py-2 bg-red-650 hover:bg-red-750 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 select-none"
               >
-                <Trash2 size={14} /> Flush Browser Storage
+                <Trash2 size={14} /> Clear Vine Browser Storage
               </button>
             </div>
           )}
@@ -594,7 +576,14 @@ export default function DeveloperDashboard({
                   <p className="text-xs text-slate-500 mt-1">Status changes write instantly and trigger synchronous web state lockdown.</p>
                 </div>
                 <button 
-                  onClick={() => confirmAction(toggleMaintenanceMode)}
+                  onClick={() => confirmAction(
+                    toggleMaintenanceMode,
+                    branding.maintenanceMode ? 'Disable maintenance mode?' : 'Enable maintenance mode?',
+                    branding.maintenanceMode
+                      ? 'Normal access will be restored for clinic users.'
+                      : 'Clinic users other than administrators and support developers will be shown the maintenance notice.',
+                    branding.maintenanceMode ? 'Disable maintenance' : 'Enable maintenance'
+                  )}
                   disabled={isTogglingMaintenance}
                   className={`px-4 py-2.5 rounded-xl font-bold text-xs shadow-sm flex items-center gap-1.5 transition ${
                     branding.maintenanceMode 
@@ -621,16 +610,16 @@ export default function DeveloperDashboard({
         </div>
       </div>
       
-      {showConfirmation && (
+      {pendingAction && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 shadow-xl max-w-sm w-full space-y-4">
-            <h3 className="text-lg font-bold text-slate-800">Confirm Action</h3>
+            <h3 className="text-lg font-bold text-slate-800">{pendingAction.title}</h3>
             <p className="text-sm text-slate-600">
-              You are about to fetch system data. This action will be recorded in the Audit Trail. Do you want to continue?
+              {pendingAction.message}
             </p>
             <div className="flex gap-2 justify-end">
               <button 
-                onClick={() => { setPendingAction(null); setShowConfirmation(false); }}
+                onClick={() => setPendingAction(null)}
                 className="px-4 py-2 bg-slate-100 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-200"
               >
                 Cancel
@@ -640,7 +629,7 @@ export default function DeveloperDashboard({
                 className="px-4 py-2 bg-teal-650 rounded-lg text-xs font-semibold text-white hover:bg-teal-750"
                   style={{ backgroundColor: branding.primaryColor || '#0d9488' }}
               >
-                Continue
+                {pendingAction.confirmLabel}
               </button>
             </div>
           </div>

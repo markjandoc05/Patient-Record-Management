@@ -5,7 +5,7 @@
 
 import { useState, useEffect, type ComponentType } from 'react';
 import { auth, db } from './firebase';
-import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut, signInWithEmailAndPassword, sendPasswordResetEmail, createUserWithEmailAndPassword } from 'firebase/auth';
+import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from './utils';
 import Login from './components/Login';
@@ -49,7 +49,7 @@ const defaultBranding = {
   privacyPolicyUrl: '',
   termsConditionsUrl: '',
   showDeveloperCredit: true,
-  developerCreditText: 'Developed by AIPH Tech',
+  developerCreditText: 'Developed by AIPH.TECH',
   developerCreditUrl: 'https://aiph.tech'
 };
 
@@ -329,61 +329,18 @@ export default function App() {
     }
   };
 
-  const handleEmailSignIn = async (email: string, password: string) => {
-    setIsAuthenticating(true);
-    setAuthError(null);
-    setAccountMissingProfile(false);
-    try {
-        await signInWithEmailAndPassword(auth, email, password);
-    } catch (e: any) {
-        console.error("Email sign-in error:", e);
-        setAuthError(e.message || "Invalid email or password.");
-    } finally {
-        setIsAuthenticating(false);
-    }
-  };
-
-  const handleEmailSignUp = async (email: string, password: string, fullName: string) => {
-    setIsAuthenticating(true);
-    setAuthError(null);
-    setSuccessMessage(null);
-    setAccountMissingProfile(false);
-    try {
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        await setDoc(doc(db, 'users', userCredential.user.uid), {
-           email,
-           fullName,
-           role: 'staff',
-           active: false,
-           assignedBranches: [],
-           assignedBranchNames: [],
-           defaultBranchId: null,
-           defaultBranchName: null
-        });
-        setSuccessMessage("Account created successfully! Please wait for administrator approval.");
-    } catch (e: any) {
-        console.error("Email sign-up error:", e);
-        setAuthError(e.message || "Failed to sign up.");
-    } finally {
-        setIsAuthenticating(false);
-    }
-  };
-
-  const handleForgotPassword = async (email: string) => {
-    setAuthError(null);
-    try {
-        await sendPasswordResetEmail(auth, email);
-        alert("Password reset email sent. Please check your inbox.");
-    } catch (e: any) {
-        console.error("Password reset error:", e);
-        setAuthError(e.message || "Failed to send password reset email.");
-    }
-  };
-
   useEffect(() => {
     return onAuthStateChanged(auth, async (user) => {
       setUser(user);
       if (user) {
+        const signedInWithGoogle = user.providerData.some(provider => provider.providerId === 'google.com');
+        if (!signedInWithGoogle) {
+          setAuthError('Google sign-in is required to access this application.');
+          await signOut(auth);
+          setUser(null);
+          setLoading(false);
+          return;
+        }
         setActiveView('BranchDashboard');
         try {
           let retryCount = 0;
@@ -549,10 +506,8 @@ export default function App() {
   if (!user) return (
       <Login 
           branding={branding} 
+          footer={effectiveFooter}
           onGoogleSignIn={handleSignIn} 
-          onEmailSignIn={handleEmailSignIn}
-          onEmailSignUp={handleEmailSignUp}
-          onForgotPassword={handleForgotPassword}
           isAuthenticating={isAuthenticating}
           authError={authError}
           successMessage={successMessage}
@@ -798,8 +753,7 @@ export default function App() {
                     currentTab={devTab} 
                     onTabChange={setDevTab} 
                     branding={branding} 
-                    onRefreshBranding={refreshBranding} 
-                    userRole={userRole}
+                    onRefreshBranding={refreshBranding}
                   />
                 )}
                 {activeView === 'AuditTrail' && (userRole === 'admin' || userRole === 'support_developer') && <AuditTrailDashboard role={userRole} />}

@@ -5,12 +5,17 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isGoogleSignedIn() {
+      return isSignedIn()
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+
     function userPath(uid) {
       return /databases/$(database)/documents/users/$(uid);
     }
 
     function hasActiveProfile() {
-      return isSignedIn()
+      return isGoogleSignedIn()
         && exists(userPath(request.auth.uid))
         && get(userPath(request.auth.uid)).data.active == true;
     }
@@ -32,7 +37,7 @@ service cloud.firestore {
     }
 
     function isSafePendingProfile(userId) {
-      return isSignedIn()
+      return isGoogleSignedIn()
         && request.auth.uid == userId
         && request.resource.data.keys().hasAll([
           'email',
@@ -65,7 +70,7 @@ service cloud.firestore {
     }
 
     function isSafeSelfProfileUpdate(userId) {
-      return isSignedIn()
+      return isGoogleSignedIn()
         && request.auth.uid == userId
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'fullName',
@@ -156,7 +161,11 @@ service cloud.firestore {
 
     match /settings/branding {
       allow read: if true;
-      allow write: if hasAnyRole(['admin', 'support_developer']);
+      // Maintenance changes are accepted only through the trusted, audited
+      // Developer Tools endpoint. Other branding settings retain their normal
+      // administrator/support editing path.
+      allow write: if hasAnyRole(['admin', 'support_developer'])
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['maintenanceMode']);
     }
 
     match /settings/timezone {
