@@ -29,7 +29,7 @@ import {
 
 type SettingsTab = 'general' | 'branches' | 'access' | 'data';
 type GeneralSection = 'general' | 'time' | 'theme' | 'footer';
-type UserAccessView = 'active' | 'archived';
+type UserAccessView = 'active' | 'pending' | 'archived';
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; description: string; icon: React.ElementType }> = [
   { id: 'general', label: 'General', description: 'Brand, uploads, time and footer', icon: Settings2 },
@@ -141,7 +141,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const getAccountStatus = (account: any) => {
     if (account.isArchived === true || account.accountStatus === 'archived') return { label: 'Archived', className: 'bg-slate-100 text-slate-600' };
     if (account.active === true) return { label: 'Active', className: 'bg-emerald-50 text-emerald-700' };
-    if (account.accountStatus === 'pending_activation') return { label: 'Pending activation', className: 'bg-amber-50 text-amber-700' };
+    if (account.accountStatus === 'pending_activation') return { label: 'Pending Activation', className: 'bg-amber-50 text-amber-700' };
     return { label: 'Inactive', className: 'bg-slate-100 text-slate-600' };
   };
 
@@ -1538,21 +1538,27 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         <>
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left sm:px-6" onClick={() => setIsUserAccessOpen(!isUserAccessOpen)} aria-expanded={isUserAccessOpen}>
-              <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700"><Users className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">User access</span><span className="block text-xs font-normal text-slate-500">{users.filter(user => user.role !== 'support_developer' && user.active).length} active of {users.filter(user => user.role !== 'support_developer').length} accounts</span></span></span>
+              <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700"><Users className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">User access</span><span className="block text-xs font-normal text-slate-500">{users.filter(user => user.role !== 'support_developer' && user.active).length} active · {users.filter(user => user.role !== 'support_developer' && user.accountStatus === 'pending_activation').length} pending activation</span></span></span>
               <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${isUserAccessOpen ? 'rotate-180' : ''}`} />
           </button>
           {isUserAccessOpen && (
               <div className="border-t border-slate-100">
                   {(() => {
                     const manageableUsers = users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer');
-                    const visibleUsers = manageableUsers.filter(user => userAccessView === 'archived' ? user.isArchived === true : user.isArchived !== true);
+                    const visibleUsers = manageableUsers.filter(user => {
+                      if (userAccessView === 'archived') return user.isArchived === true;
+                      if (userAccessView === 'pending') return user.isArchived !== true && user.accountStatus === 'pending_activation';
+                      return user.isArchived !== true && user.active === true;
+                    });
                     const countedUsers = manageableUsers.filter(user => user.role !== 'support_developer');
-                    const activeCount = countedUsers.filter(user => user.isArchived !== true).length;
+                    const activeCount = countedUsers.filter(user => user.isArchived !== true && user.active === true).length;
+                    const pendingCount = countedUsers.filter(user => user.isArchived !== true && user.accountStatus === 'pending_activation').length;
                     const archivedCount = countedUsers.filter(user => user.isArchived === true).length;
                     return <>
                       <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3 sm:px-6">
                         <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1" role="tablist" aria-label="User account status">
                           <button type="button" role="tab" aria-selected={userAccessView === 'active'} onClick={() => { setUserAccessView('active'); setExpandedUserId(null); setOpenUserActionMenuId(null); }} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${userAccessView === 'active' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Active users <span className="ml-1 text-slate-400">{activeCount}</span></button>
+                          <button type="button" role="tab" aria-selected={userAccessView === 'pending'} onClick={() => { setUserAccessView('pending'); setExpandedUserId(null); setOpenUserActionMenuId(null); }} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${userAccessView === 'pending' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Pending activation <span className="ml-1 text-slate-400">{pendingCount}</span></button>
                           <button type="button" role="tab" aria-selected={userAccessView === 'archived'} onClick={() => { setUserAccessView('archived'); setExpandedUserId(null); setOpenUserActionMenuId(null); }} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${userAccessView === 'archived' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Archived users <span className="ml-1 text-slate-400">{archivedCount}</span></button>
                         </div>
                         <button type="button" onClick={() => setActionToConfirm({ onConfirm: cleanupBranchAssignments, title: 'Clean Invalid Assignments', message: 'Clean invalid branch assignments for all users?', confirmLabel: 'Clean assignments' })} className="text-xs font-semibold text-slate-500 transition hover:text-slate-900">Clean assignments</button>
@@ -1583,7 +1589,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                             {isExpanded && <div className="grid gap-4 bg-slate-50/70 px-5 py-4 sm:grid-cols-[180px_minmax(0,1fr)] sm:px-6"><div><label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Role</label><select onChange={(e) => { const nextRole = e.target.value; setActionToConfirm({ onConfirm: () => updateRole(user.id, nextRole), title: 'Change User Role', message: `Change ${user.fullName || user.email} to ${nextRole === 'support_developer' ? 'Support / Developer' : nextRole}? Their permissions will update immediately.`, confirmLabel: 'Change role' }); }} value={user.role || 'staff'} className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm" disabled={userAccessView === 'archived' || (userRole !== 'support_developer' && user.role === 'support_developer') || (userRole !== 'support_developer' && isOwnAccount)}><option value="admin">Admin</option><option value="manager">Manager</option><option value="staff">Staff</option><option value="doctor">Doctor</option>{userRole === 'support_developer' && <option value="support_developer">Support / Developer</option>}</select></div><div><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Clinic access</p><div className="grid gap-x-4 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">{branches.filter(branch => branch.status === 'Active').map(branch => { const isChecked = user.assignedBranches?.includes(branch.id); return <div key={branch.id} className="flex min-w-0 items-center gap-2 text-xs"><input id={`user-${user.id}-branch-${branch.id}`} type="checkbox" checked={!!isChecked} disabled={userAccessView === 'archived'} onChange={(event) => updateUserBranches(user, branch, event.target.checked)} /><label htmlFor={`user-${user.id}-branch-${branch.id}`} className="min-w-0 cursor-pointer truncate text-slate-700">{branch.branchName}</label>{isChecked && user.assignedBranches.length > 1 && <button type="button" disabled={userAccessView === 'archived'} className={`ml-auto text-[10px] font-semibold ${user.defaultBranchId === branch.id ? 'text-teal-700' : 'text-slate-400 hover:text-slate-700'}`} onClick={() => setUserDefaultBranch(user, branch)}>{user.defaultBranchId === branch.id ? 'Default' : 'Set default'}</button>}</div>; })}{branches.filter(branch => branch.status === 'Active').length === 0 && <p className="text-xs text-red-600">Add or activate a branch before assigning access.</p>}</div></div></div>}
                           </article>;
                         })}
-                        {visibleUsers.length === 0 && <div className="px-5 py-12 text-center text-sm text-slate-500 sm:px-6">{userAccessView === 'archived' ? 'No archived user accounts.' : 'No active user accounts.'}</div>}
+                        {visibleUsers.length === 0 && <div className="px-5 py-12 text-center text-sm text-slate-500 sm:px-6">{userAccessView === 'archived' ? 'No archived user accounts.' : userAccessView === 'pending' ? 'No user accounts are pending activation.' : 'No active user accounts.'}</div>}
                       </div>
                     </>;
                   })()}

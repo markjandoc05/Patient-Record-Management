@@ -945,6 +945,23 @@ async function getManagedUser(
     return { userRef, targetProfile };
 }
 
+async function validateUserActivationTarget(targetProfile: Record<string, any>) {
+    const role = targetProfile.role;
+    if (typeof role !== 'string' || !applicationRoles.includes(role as Role)) {
+        throw new RequestError(400, 'Assign a valid role before activating this user');
+    }
+    if (globalBranchRoles.has(role)) return;
+
+    const branchIds = getAssignedBranchIds(targetProfile);
+    if (branchIds.length === 0) {
+        throw new RequestError(400, 'Assign at least one active clinic before activating this user');
+    }
+    const branches = await Promise.all(branchIds.map(branchId => db.collection('branches').doc(branchId).get()));
+    if (branches.some(branch => !branch.exists || branch.data()?.status !== 'Active')) {
+        throw new RequestError(400, 'All assigned clinics must be active before activating this user');
+    }
+}
+
 // User archive/delete operations intentionally never touch clinical records or
 // prior audit events. Archive retains the profile for later restoration; delete
 // removes only the authentication identity and current user profile.
@@ -990,6 +1007,7 @@ app.post('/api/users/:userId/restore', async (req, res) => {
     try {
         const { userRef, targetProfile } = await getManagedUser(authorization, req.params.userId);
         if (targetProfile.isArchived !== true) throw new RequestError(409, 'Only archived user accounts can be restored');
+        await validateUserActivationTarget(targetProfile);
         const now = new Date().toISOString();
         await db.runTransaction(async transaction => {
             transaction.update(userRef, {
@@ -1026,6 +1044,7 @@ app.post('/api/users/:userId/activate', async (req, res) => {
         const { userRef, targetProfile } = await getManagedUser(authorization, req.params.userId);
         if (targetProfile.isArchived === true) throw new RequestError(409, 'Archived users must be restored before activation');
         if (targetProfile.active === true) throw new RequestError(409, 'User account is already active');
+        await validateUserActivationTarget(targetProfile);
         const now = new Date().toISOString();
         await db.runTransaction(async transaction => {
             transaction.update(userRef, {

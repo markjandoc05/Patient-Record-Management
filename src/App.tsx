@@ -388,9 +388,7 @@ export default function App() {
           if (userDoc && userDoc.exists()) {
              const data = userDoc.data();
              if (!data.active) {
-                setAuthError(data.accountStatus === 'pending_activation'
-                  ? 'Your account is pending activation. An administrator will assign your access before you can sign in.'
-                  : 'Your account is inactive. Please contact an administrator.');
+                setAuthError('Your account is inactive. Please contact an administrator.');
                 await signOut(auth);
                 setUser(null);
              } else if (!approvedRoles.has(data.role)) {
