@@ -199,6 +199,12 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // IP addresses and device information are sensitive operational data.
+    // Login activity is recorded and read through trusted server endpoints only.
+    match /login_activity/{activityId} {
+      allow read, write: if false;
+    }
+
     match /inventory_items/{itemId} {
       allow read, write: if hasAnyRole(['admin', 'support_developer']);
     }

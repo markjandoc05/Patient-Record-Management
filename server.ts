@@ -12,6 +12,7 @@ import { canEditPatient, hasPermission, RBAC, Role } from "./src/rbac";
 import { IMAGE_OPTIMIZATION, normalizeMediaSettings } from "./src/mediaSettings";
 import { AuditAction, AuditResource, shouldRecordAuditEvent } from "./src/auditPolicy";
 import { getDeveloperActivityDefinition } from "./src/developerToolsPolicy";
+import { describeLoginUserAgent, shouldRecordLoginActivity } from "./src/loginActivityPolicy";
 
 // Initialize Firebase Admin
 if (!admin.apps.length) {
@@ -52,12 +53,55 @@ const globalBranchRoles = new Set(['admin', 'support_developer']);
 const developerRequestWindowMs = 60_000;
 const developerRequestLimit = 30;
 const developerRequestWindows = new Map<string, { startedAt: number; count: number }>();
+const loginActivityLocationCache = new Map<string, { location: string; expiresAt: number }>();
+const loginActivityLocationCacheTtlMs = 24 * 60 * 60 * 1000;
+const recentLoginActivityWrites = new Map<string, number>();
 
 function getAssignedBranchIds(userProfile: Record<string, unknown>) {
     if (!Array.isArray(userProfile.assignedBranches)) return [];
     return [...new Set(userProfile.assignedBranches.filter(
         (branchId): branchId is string => typeof branchId === 'string' && branchId.length > 0
     ))];
+}
+
+function getClientIpAddress(req: express.Request) {
+    const forwarded = req.headers['x-forwarded-for'];
+    const candidate = typeof forwarded === 'string'
+        ? forwarded.split(',')[0]?.trim()
+        : Array.isArray(forwarded) ? forwarded[0]?.split(',')[0]?.trim() : '';
+    const rawIp = candidate || req.socket.remoteAddress || '';
+    return rawIp.replace(/^::ffff:/, '').slice(0, 64) || 'Unavailable';
+}
+
+function isPublicIpAddress(ipAddress: string) {
+    if (!ipAddress || ipAddress === 'Unavailable' || ipAddress === '::1') return false;
+    if (/^(10\.|127\.|192\.168\.|169\.254\.|0\.)/.test(ipAddress)) return false;
+    const private172 = /^172\.(\d{1,3})\./.exec(ipAddress);
+    return !private172 || Number(private172[1]) < 16 || Number(private172[1]) > 31;
+}
+
+async function getApproximateIpLocation(ipAddress: string) {
+    if (!isPublicIpAddress(ipAddress)) return 'Unavailable';
+    const cached = loginActivityLocationCache.get(ipAddress);
+    if (cached && cached.expiresAt > Date.now()) return cached.location;
+
+    try {
+        const response = await fetch(`https://ipwho.is/${encodeURIComponent(ipAddress)}?fields=success,country,region,city`, {
+            signal: AbortSignal.timeout(1500),
+            headers: { Accept: 'application/json' }
+        });
+        const data = await response.json() as { success?: boolean; city?: unknown; region?: unknown; country?: unknown };
+        const parts = [data.city, data.region, data.country]
+            .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+            .map(value => value.trim().slice(0, 100));
+        const location = data.success === true && parts.length > 0 ? parts.join(', ') : 'Unavailable';
+        if (loginActivityLocationCache.size >= 500) loginActivityLocationCache.delete(loginActivityLocationCache.keys().next().value!);
+        loginActivityLocationCache.set(ipAddress, { location, expiresAt: Date.now() + loginActivityLocationCacheTtlMs });
+        return location;
+    } catch (error) {
+        console.warn('IP location lookup unavailable', error instanceof Error ? error.message : error);
+        return 'Unavailable';
+    }
 }
 
 type ResourceType = 'patient' | 'appointment' | 'visit';
@@ -803,6 +847,73 @@ app.post("/api/audit-events", async (req, res) => {
     } catch (error) {
         console.error("Audit event creation failed", error);
         res.status(500).json({ error: "Audit event creation failed" });
+    }
+});
+
+// Login activity is written only after an active Google-authenticated account
+// reaches the application. The browser never submits IP, location, or device
+// fields; those are derived on the trusted server.
+app.post('/api/login-activity/record', async (req, res) => {
+    const authorization = await authorizeRequest(req, res, applicationRoles);
+    if (!authorization) return;
+
+    const role = authorization.userProfile.role;
+    if (!shouldRecordLoginActivity(role)) return res.status(200).json({ recorded: false });
+    const now = Date.now();
+    const previousWrite = recentLoginActivityWrites.get(authorization.decodedToken.uid) || 0;
+    if (now - previousWrite < 10_000) return res.status(200).json({ recorded: false });
+    recentLoginActivityWrites.set(authorization.decodedToken.uid, now);
+
+    const ipAddress = getClientIpAddress(req);
+    const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : '';
+    try {
+        const location = await getApproximateIpLocation(ipAddress);
+        const device = describeLoginUserAgent(userAgent);
+        await db.collection('login_activity').add({
+            userId: authorization.decodedToken.uid,
+            userName: trustedUserName(authorization),
+            userEmail: authorization.decodedToken.email || '',
+            userRole: role,
+            timestamp: new Date().toISOString(),
+            recordedAt: admin.firestore.FieldValue.serverTimestamp(),
+            ipAddress,
+            location,
+            ...device,
+            source: 'trusted_server'
+        });
+        res.status(201).json({ recorded: true });
+    } catch (error) {
+        recentLoginActivityWrites.delete(authorization.decodedToken.uid);
+        console.error('Login activity recording failed', error);
+        res.status(500).json({ error: 'Login activity recording failed' });
+    }
+});
+
+app.get('/api/login-activity', async (req, res) => {
+    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    if (!authorization) return;
+
+    try {
+        const snapshot = await db.collection('login_activity').orderBy('timestamp', 'desc').limit(100).get();
+        const rawRecords: Array<Record<string, unknown> & { id: string }> = snapshot.docs
+            .map(document => ({ id: document.id, ...(document.data() as Record<string, unknown>) }));
+        const records = rawRecords
+            .filter(record => record.userRole !== 'support_developer')
+            .map(record => ({
+                id: record.id,
+                userName: typeof record.userName === 'string' ? record.userName : 'Unknown user',
+                userEmail: typeof record.userEmail === 'string' ? record.userEmail : '',
+                timestamp: typeof record.timestamp === 'string' ? record.timestamp : '',
+                ipAddress: typeof record.ipAddress === 'string' ? record.ipAddress : 'Unavailable',
+                location: typeof record.location === 'string' ? record.location : 'Unavailable',
+                browser: typeof record.browser === 'string' ? record.browser : 'Other browser',
+                operatingSystem: typeof record.operatingSystem === 'string' ? record.operatingSystem : 'Other OS',
+                deviceType: typeof record.deviceType === 'string' ? record.deviceType : 'Desktop',
+            }));
+        res.json({ records });
+    } catch (error) {
+        console.error('Login activity retrieval failed', error);
+        res.status(500).json({ error: 'Login activity retrieval failed' });
     }
 });
 

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, type ComponentType } from 'react';
+import { useState, useEffect, useRef, type ComponentType } from 'react';
 import { auth, db } from './firebase';
 import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
@@ -20,6 +20,7 @@ import AppointmentsDashboard from './components/AppointmentsDashboard';
 import InventoryDashboard from './components/InventoryDashboard';
 import AuditTrailDashboard from './components/AuditTrailDashboard';
 import DeveloperDashboard, { DevTab } from './components/DeveloperDashboard';
+import { recordLoginActivity } from './utils/loginActivityApi';
 import { Users, Settings, UserCircle, Calendar, Clock, Menu, X, Shield, PanelLeftClose, PanelLeftOpen, Cpu, Zap, Package, LayoutDashboard, MapPin, LogOut } from 'lucide-react';
 import { TimezoneProvider } from './contexts/TimezoneContext';
 import { setActiveTimezoneSettings } from './utils/timezone';
@@ -145,6 +146,7 @@ export default function App() {
   const [timezone, setTimezone] = useState<any>(defaultTimezone);
   const [branches, setBranches] = useState<any[]>([]);
   const [activeBranchId, setActiveBranchId] = useState('');
+  const recordedLoginActivityRef = useRef<string | null>(null);
 
   useEffect(() => {
     try {
@@ -329,6 +331,29 @@ export default function App() {
     }
   };
 
+  const registerSuccessfulLogin = async (userId: string) => {
+    const sessionKey = `vine-login-activity:${userId}`;
+    let alreadyRecorded = false;
+    try {
+      alreadyRecorded = window.sessionStorage.getItem(sessionKey) === 'recorded';
+    } catch {
+      // Activity recording remains available when browser storage is disabled.
+    }
+    if (recordedLoginActivityRef.current === userId || alreadyRecorded) return;
+    recordedLoginActivityRef.current = userId;
+    try {
+      await recordLoginActivity();
+      try {
+        window.sessionStorage.setItem(sessionKey, 'recorded');
+      } catch {
+        // The in-memory guard still prevents duplicate records in this page.
+      }
+    } catch (error) {
+      recordedLoginActivityRef.current = null;
+      console.warn('Login activity could not be recorded', error);
+    }
+  };
+
   useEffect(() => {
     return onAuthStateChanged(auth, async (user) => {
       setUser(user);
@@ -373,6 +398,7 @@ export default function App() {
              } else {
                 setUserRole(data.role);
                 setUserProfile(data);
+                void registerSuccessfulLogin(user.uid);
              }
           } else {
              // Every new account starts as a disabled Staff profile. Privileged
@@ -398,6 +424,7 @@ export default function App() {
           console.error("Error fetching user role", e);
         }
       } else {
+        recordedLoginActivityRef.current = null;
         setUserRole(null);
         setUserProfile(null);
       }

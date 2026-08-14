@@ -89,6 +89,8 @@ const tests = [
   test('manager cannot read global audit log', 'manager', 'get', 'audit_logs/log-1', 'DENY', { action: 'VIEW' }),
   test('admin reads global audit log', 'admin', 'get', 'audit_logs/log-1', 'ALLOW', { action: 'VIEW' }),
   test('support developer can review audit log without client write access', 'support_developer', 'get', 'audit_logs/log-1', 'ALLOW', { action: 'UPDATE' }),
+  test('admin cannot read login activity directly', 'admin', 'get', 'login_activity/activity-1', 'DENY', { userRole: 'staff', ipAddress: '203.0.113.10' }),
+  test('support developer cannot write login activity directly', 'support_developer', 'create', 'login_activity/activity-2', 'DENY', null, { userRole: 'staff', ipAddress: '203.0.113.10' }),
   test('active client cannot forge an audit log', 'staff', 'create', 'audit_logs/log-2', 'DENY', null, { action: 'UPDATE', resource: 'Patient', resourceId: 'patient-1', userId: 'test-user' }),
   test('support developer cannot forge an audit log', 'support_developer', 'create', 'audit_logs/log-3', 'DENY', null, { action: 'UPDATE', resource: 'Settings', resourceId: 'branding', userId: 'test-user' }),
 ];

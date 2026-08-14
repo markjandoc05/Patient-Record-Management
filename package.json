@@ -11,7 +11,8 @@
     "test:rules": "node scripts/test-firestore-rules.mjs",
     "test:rbac": "node --import tsx scripts/test-rbac.ts",
     "test:audit": "node --import tsx scripts/test-audit-policy.ts",
-    "test:developer-tools": "node --import tsx scripts/test-developer-tools.ts"
+    "test:developer-tools": "node --import tsx scripts/test-developer-tools.ts",
+    "test:login-activity": "node --import tsx scripts/test-login-activity.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

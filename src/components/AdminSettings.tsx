@@ -7,6 +7,7 @@ import { handleFirestoreError, OperationType } from '../utils';
 import { RBAC } from '../rbac';
 import { logActivity } from '../utils/auditLogger';
 import { archiveUserAccount, deleteUserAccount, restoreUserAccount } from '../utils/userAccountApi';
+import { fetchLoginActivity, type LoginActivityRecord } from '../utils/loginActivityApi';
 import { DEFAULT_MEDIA_SETTINGS, IMAGE_OPTIMIZATION, normalizeMediaSettings } from '../mediaSettings';
 import ConfirmationModal from './ConfirmationModal';
 import {
@@ -23,6 +24,7 @@ import {
   RotateCcw,
   Trash2,
   Users,
+  MonitorSmartphone,
 } from 'lucide-react';
 
 type SettingsTab = 'general' | 'branches' | 'access' | 'data';
@@ -86,6 +88,10 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
   const [openUserActionMenuId, setOpenUserActionMenuId] = useState<string | null>(null);
   const [isRoleAccessOpen, setIsRoleAccessOpen] = useState(false);
+  const [isLoginActivityOpen, setIsLoginActivityOpen] = useState(false);
+  const [loginActivity, setLoginActivity] = useState<LoginActivityRecord[]>([]);
+  const [loadingLoginActivity, setLoadingLoginActivity] = useState(false);
+  const [loginActivityError, setLoginActivityError] = useState('');
   const [isDataManagementOpen, setIsDataManagementOpen] = useState(false);
   const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
   const [editBranchData, setEditBranchData] = useState({ branchName: '', address: '', contactNumber: '', email: '' });
@@ -132,6 +138,27 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const normalizedUserRole = userRole?.toLowerCase();
   const canManageSettings = normalizedUserRole === 'admin' || normalizedUserRole === 'support_developer';
   const canManageFooter = normalizedUserRole === 'support_developer';
+
+  const loadLoginActivity = async () => {
+    if (!canManageSettings) return;
+    setLoadingLoginActivity(true);
+    setLoginActivityError('');
+    try {
+      const result = await fetchLoginActivity();
+      setLoginActivity(result.records);
+    } catch (loadError) {
+      console.error('Failed to load login activity', loadError);
+      setLoginActivityError(loadError instanceof Error ? loadError.message : 'Unable to load login activity.');
+    } finally {
+      setLoadingLoginActivity(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeSettingsTab === 'access' && isLoginActivityOpen && loginActivity.length === 0 && !loadingLoginActivity) {
+      void loadLoginActivity();
+    }
+  }, [activeSettingsTab, isLoginActivityOpen]);
 
   const renderGeneralSectionToggle = (id: GeneralSection) => {
     const section = GENERAL_SECTIONS.find(item => item.id === id)!;
@@ -1552,6 +1579,36 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                     </>;
                   })()}
               </div>
+          )}
+        </div>
+
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left sm:px-6" onClick={() => setIsLoginActivityOpen(!isLoginActivityOpen)} aria-expanded={isLoginActivityOpen}>
+            <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 text-sky-700"><MonitorSmartphone className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">Login activity</span><span className="block text-xs font-normal text-slate-500">Recent approved-account sign-ins, IP, approximate location, and device details</span></span></span>
+            <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${isLoginActivityOpen ? 'rotate-180' : ''}`} />
+          </button>
+          {isLoginActivityOpen && (
+            <div className="border-t border-slate-100 p-4 sm:p-6">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs text-slate-500">Support / Developer sign-in activity is intentionally not recorded or displayed.</p>
+                <button type="button" onClick={() => void loadLoginActivity()} disabled={loadingLoginActivity} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60">{loadingLoginActivity ? 'Refreshing…' : 'Refresh'}</button>
+              </div>
+              {loginActivityError && <p role="alert" className="mb-4 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700">{loginActivityError}</p>}
+              {loadingLoginActivity && loginActivity.length === 0 ? (
+                <p className="py-8 text-center text-sm text-slate-500">Loading login activity…</p>
+              ) : loginActivity.length === 0 ? (
+                <p className="py-8 text-center text-sm text-slate-500">No login activity has been recorded yet.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[820px] text-left text-xs">
+                    <thead className="border-y border-slate-100 bg-slate-50 text-[10px] font-semibold uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2.5">User</th><th className="px-3 py-2.5">Date & time</th><th className="px-3 py-2.5">IP address</th><th className="px-3 py-2.5">Approximate location</th><th className="px-3 py-2.5">Browser</th><th className="px-3 py-2.5">Operating system</th><th className="px-3 py-2.5">Device</th></tr></thead>
+                    <tbody className="divide-y divide-slate-100 text-slate-600">
+                      {loginActivity.map(record => <tr key={record.id} className="hover:bg-slate-50/70"><td className="px-3 py-3"><span className="block font-semibold text-slate-800">{record.userName}</span><span className="block text-[11px] text-slate-400">{record.userEmail}</span></td><td className="px-3 py-3 whitespace-nowrap">{record.timestamp ? new Date(record.timestamp).toLocaleString() : 'Unavailable'}</td><td className="px-3 py-3 font-mono text-[11px]">{record.ipAddress}</td><td className="px-3 py-3">{record.location}</td><td className="px-3 py-3">{record.browser}</td><td className="px-3 py-3">{record.operatingSystem}</td><td className="px-3 py-3">{record.deviceType}</td></tr>)}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           )}
         </div>
 
