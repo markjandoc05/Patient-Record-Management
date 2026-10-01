@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { auth, db } from '../firebase';
+import { collection, onSnapshot } from '../dataClient';
+import { auth, db } from '../platform';
 import AppointmentForm from './AppointmentForm';
 import VisitForm from './VisitForm';
 import CalendarView from './CalendarView';

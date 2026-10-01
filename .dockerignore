@@ -5,3 +5,6 @@ dist
 .env.*
 *.log
 coverage
+data
+migration-export
+firebase-debug.log

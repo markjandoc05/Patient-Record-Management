@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { doc, getDoc } from 'firebase/firestore';
-import { auth } from '../firebase';
+import { doc, getDoc } from '../dataClient';
+import { auth } from '../platform';
 import { formatDateTime } from '../utils';
 
 export default function ProfileView({ db }: { db: any }) {

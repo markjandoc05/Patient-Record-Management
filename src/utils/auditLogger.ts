@@ -1,4 +1,4 @@
-import { auth } from '../firebase';
+import { auth } from '../platform';
 import { ChangeDetail } from './diffUtils';
 import { AuditAction, AuditResource, shouldRecordAuditEvent } from '../auditPolicy';
 
@@ -35,7 +35,7 @@ export async function logActivity({
       return;
     }
 
-    const token = await currentUser.getIdToken();
+    const token = await currentUser.getRequestToken();
     const response = await fetch('/api/audit-events', {
       method: 'POST',
       headers: {

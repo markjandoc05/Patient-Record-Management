@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { db, auth } from '../firebase';
-import { collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, limit } from 'firebase/firestore';
+import { db, auth } from '../platform';
+import { collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, limit } from '../dataClient';
 import { formatDateTime } from '../utils';
 import { logActivity } from '../utils/auditLogger';
 

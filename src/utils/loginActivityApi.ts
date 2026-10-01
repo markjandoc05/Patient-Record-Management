@@ -1,4 +1,4 @@
-import { auth } from '../firebase';
+import { auth } from '../platform';
 
 export type LoginActivityRecord = {
   id: string;
@@ -15,7 +15,7 @@ export type LoginActivityRecord = {
 async function loginActivityRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Please sign in again before accessing login activity.');
-  const token = await currentUser.getIdToken();
+  const token = await currentUser.getRequestToken();
   const response = await fetch(path, {
     ...init,
     credentials: 'same-origin',

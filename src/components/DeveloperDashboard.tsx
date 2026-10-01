@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, query, limit, orderBy } from 'firebase/firestore';
-import { db } from '../firebase';
+import { collection, getDocs, query, limit, orderBy } from '../dataClient';
+import { db } from '../platform';
 import { fetchDeveloperMetrics, recordDeveloperActivity, runDeveloperDiagnostics, setDeveloperMaintenanceMode } from '../utils/developerToolsApi';
 import { formatDateTime } from '../utils';
 import { 
@@ -12,7 +12,7 @@ import {
 export type DevTab = 
   | 'system_overview'
   | 'app_version'
-  | 'firebase_status'
+  | 'database_status'
   | 'storage_monitor'
   | 'user_count'
   | 'patient_count'
@@ -44,7 +44,7 @@ export default function DeveloperDashboard({
   const [visitCount, setVisitCount] = useState<number | null>(null);
   const [loadingStats, setLoadingStats] = useState(false);
 
-  // Firestore & Firebase logs / testing states
+  // PostgreSQL & Database logs / testing states
   const [latency, setLatency] = useState<number | null>(null);
   const [serverTime, setServerTime] = useState<string | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
@@ -87,17 +87,17 @@ export default function DeveloperDashboard({
     }
   };
 
-  // Test Firebase connection latency
+  // Test Database connection latency
   const testConnection = async () => {
     setTestingConnection(true);
     setDiagnosticError(null);
     try {
       const result = await runDeveloperDiagnostics();
-      setLatency(result.firestoreLatencyMs);
+      setLatency(result.databaseLatencyMs);
       setServerTime(result.serverTime);
-      setNotice(`Firestore diagnostic completed in ${result.firestoreLatencyMs} ms.`);
+      setNotice(`PostgreSQL diagnostic completed in ${result.databaseLatencyMs} ms.`);
     } catch (error) {
-      console.error("Firebase Diagnostic Test failed", error);
+      console.error("Database Diagnostic Test failed", error);
       setLatency(-1);
       setDiagnosticError(error instanceof Error ? error.message : 'The diagnostic request failed.');
     } finally {
@@ -208,7 +208,7 @@ export default function DeveloperDashboard({
   const menuItems: { id: DevTab; label: string; icon: any; description: string }[] = [
     { id: 'system_overview', label: 'System Overview', icon: Cpu, description: 'Runtime and browser context' },
     { id: 'app_version', label: 'App Version', icon: ClipboardList, description: 'Build and configuration metadata' },
-    { id: 'firebase_status', label: 'Firebase Status', icon: Server, description: 'Trusted Firestore diagnostics' },
+    { id: 'database_status', label: 'Database Status', icon: Server, description: 'Trusted PostgreSQL diagnostics' },
     { id: 'storage_monitor', label: 'Storage Monitor', icon: HardDrive, description: 'Vine-owned browser storage only' },
     { id: 'user_count', label: 'User Count', icon: Users, description: 'All user-profile documents' },
     { id: 'patient_count', label: 'Patient Count', icon: Users, description: 'All patient documents' },
@@ -337,15 +337,15 @@ export default function DeveloperDashboard({
             </div>
           )}
 
-          {/* Module 3: Firebase Status */}
-          {currentTab === 'firebase_status' && (
+          {/* Module 3: Database Status */}
+          {currentTab === 'database_status' && (
             <div className="space-y-6">
-              <h3 className="text-md font-bold text-slate-800 border-b pb-2">Firebase Connection Diagnostics</h3>
+              <h3 className="text-md font-bold text-slate-800 border-b pb-2">PostgreSQL Connection Diagnostics</h3>
               <div className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="border border-slate-150 p-4 rounded-xl bg-slate-50/50">
                     <span className="text-[10px] font-bold text-slate-400 uppercase">Database Target</span>
-                    <p className="font-mono text-xs text-slate-800 mt-2 truncate">Configured Firestore database</p>
+                    <p className="font-mono text-xs text-slate-800 mt-2 truncate">Configured PostgreSQL database</p>
                   </div>
                   <div className="border border-slate-150 p-4 rounded-xl bg-slate-50/50">
                     <span className="text-[10px] font-bold text-slate-400 uppercase">Authentication Mode</span>
@@ -355,8 +355,8 @@ export default function DeveloperDashboard({
 
                 <div className="flex items-center justify-between bg-slate-50 p-4 rounded-xl">
                   <div>
-                    <p className="text-xs font-bold text-slate-700">Trusted Firestore Read Latency</p>
-                    <p className="text-xs text-slate-500 mt-0.5">Measured from the application server to Firestore.</p>
+                    <p className="text-xs font-bold text-slate-700">Trusted PostgreSQL Read Latency</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Measured from the application server to PostgreSQL.</p>
                   </div>
                   <div className="flex items-center gap-2">
                     {testingConnection ? (
@@ -534,7 +534,7 @@ export default function DeveloperDashboard({
           {currentTab === 'refresh_settings' && (
             <div className="space-y-6">
               <h3 className="text-md font-bold text-slate-800 border-b pb-2">Sync App Branding</h3>
-              <p className="text-xs text-slate-500 leading-relaxed">Loads the global whitelist configuration, design specifications, branding elements (App short names, logo urls, themes, footer legal blocks) from Firestore directly. Use this module to override temporary UI lags.</p>
+              <p className="text-xs text-slate-500 leading-relaxed">Loads the global whitelist configuration, design specifications, branding elements (App short names, logo urls, themes, footer legal blocks) from PostgreSQL directly. Use this module to override temporary UI lags.</p>
               <button 
                 onClick={triggerRefreshSettings}
                 className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 select-none"
@@ -549,7 +549,7 @@ export default function DeveloperDashboard({
           {currentTab === 'clear_cache' && (
             <div className="space-y-6">
               <h3 className="text-md font-bold text-slate-800 border-b pb-2">Purge Client Cache</h3>
-              <p className="text-xs text-slate-500 leading-relaxed">Removes only browser-storage entries whose key begins with <span className="font-mono">vine-</span>. Authentication and unrelated browser data are not changed; Firestore records are unaffected.</p>
+              <p className="text-xs text-slate-500 leading-relaxed">Removes only browser-storage entries whose key begins with <span className="font-mono">vine-</span>. Authentication and unrelated browser data are not changed; PostgreSQL records are unaffected.</p>
               <button 
                 onClick={() => confirmAction(
                   triggerClearCache,

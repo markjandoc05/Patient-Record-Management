@@ -1,30 +1,26 @@
 import express from "express";
+import { mountHttpSecurity } from "./backend/httpSecurity";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import admin from "firebase-admin";
-import { getFirestore } from "firebase-admin/firestore";
+import { db, pool, FieldValue, RecordTransaction, DocumentReference } from "./backend/database";
+import { mountAuth, sessionIdentity, revokeSessions, SessionIdentity } from "./backend/auth";
+import { storageBucket } from "./backend/storage";
+import { mountMaintenanceGate } from "./backend/maintenance";
+import { mountInventory } from "./backend/inventory";
+import { mountDataApi } from "./backend/dataApi";
 import multer from "multer";
 import { createHash, randomUUID } from "crypto";
 import { readFile } from "fs/promises";
 
-import firebaseConfig from "./firebase-applet-config.json";
 import { canEditPatient, hasPermission, RBAC, Role } from "./src/rbac";
 import { IMAGE_OPTIMIZATION, normalizeMediaSettings } from "./src/mediaSettings";
 import { AuditAction, AuditResource, shouldRecordAuditEvent } from "./src/auditPolicy";
 import { getDeveloperActivityDefinition } from "./src/developerToolsPolicy";
 import { describeLoginUserAgent, shouldRecordLoginActivity } from "./src/loginActivityPolicy";
 
-// Initialize Firebase Admin
-if (!admin.apps.length) {
-    admin.initializeApp({
-         credential: admin.credential.applicationDefault(),
-         projectId: firebaseConfig.projectId,
-         storageBucket: firebaseConfig.storageBucket
-    });
-}
-
-const app = express();
-app.use(express.json());
+export const app = express();
+mountHttpSecurity(app);
+app.use(express.json({ limit: "1mb" }));
 app.use((_req, res, next) => {
     res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet, noimageindex');
     next();
@@ -34,7 +30,9 @@ const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 20 * 1024 * 1024, files: 1 }
 });
-const uploadSingleFile: express.RequestHandler = (req, res, next) => {
+const uploadSingleFile: express.RequestHandler = async (req, res, next) => {
+    const authorization = await authorizeRequest(req, res, req.path === "/api/branding/upload" ? ["admin", "support_developer"] : applicationRoles);
+    if (!authorization) return;
     upload.single('file')(req, res, error => {
         if (error instanceof multer.MulterError) {
             const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
@@ -47,7 +45,23 @@ const uploadSingleFile: express.RequestHandler = (req, res, next) => {
         next();
     });
 };
-const db = getFirestore(admin.app(), firebaseConfig.firestoreDatabaseId);
+mountAuth(app);
+mountMaintenanceGate(app);
+mountDataApi(app);
+mountInventory(app);
+app.get("/api/health", async (_req, res) => {
+  try { await pool.query("SELECT 1"); res.json({ status: "ok", database: "postgresql" }); }
+  catch { res.status(503).json({ status: "unavailable" }); }
+});
+app.get("/api/branding/content", async (req, res) => {
+  try {
+    const name = String(req.query.path || "");
+    if (!/^branding\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(name)) return res.sendStatus(400);
+    const file = storageBucket.file(name); const [metadata] = await file.getMetadata();
+    res.setHeader("Content-Type", metadata.contentType); res.setHeader("X-Content-Type-Options", "nosniff");
+    file.createReadStream().on("error", () => res.destroy()).pipe(res);
+  } catch { res.sendStatus(404); }
+});
 const applicationRoles = Object.keys(RBAC) as Role[];
 const globalBranchRoles = new Set(['admin', 'support_developer']);
 const developerRequestWindowMs = 60_000;
@@ -65,11 +79,7 @@ function getAssignedBranchIds(userProfile: Record<string, unknown>) {
 }
 
 function getClientIpAddress(req: express.Request) {
-    const forwarded = req.headers['x-forwarded-for'];
-    const candidate = typeof forwarded === 'string'
-        ? forwarded.split(',')[0]?.trim()
-        : Array.isArray(forwarded) ? forwarded[0]?.split(',')[0]?.trim() : '';
-    const rawIp = candidate || req.socket.remoteAddress || '';
+    const rawIp = req.ip || req.socket.remoteAddress || '';
     return rawIp.replace(/^::ffff:/, '').slice(0, 64) || 'Unavailable';
 }
 
@@ -254,7 +264,7 @@ async function getMediaSettings() {
 }
 
 function publicStorageUrl(storagePath: string) {
-    return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(firebaseConfig.storageBucket)}/o/${encodeURIComponent(storagePath)}?alt=media`;
+    return `/api/branding/content?path=${encodeURIComponent(storagePath)}`;
 }
 
 class RequestError extends Error {
@@ -365,7 +375,7 @@ function getChangedFieldNames(before: Record<string, any>, updates: Record<strin
     return Object.keys(updates).filter(field => JSON.stringify(before[field]) !== JSON.stringify(updates[field]));
 }
 
-function trustedUserName(authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> }) {
+function trustedUserName(authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> }) {
     return typeof authorization.userProfile.fullName === 'string'
         ? authorization.userProfile.fullName.slice(0, 120)
         : authorization.decodedToken.email || 'Unknown User';
@@ -378,7 +388,7 @@ function requireRole(userProfile: Record<string, any>, allowedRoles: readonly st
 }
 
 async function assertDoctorAvailability(
-    transaction: admin.firestore.Transaction,
+    transaction: RecordTransaction,
     doctorId: string,
     dateTime: string,
     exclusions: { appointmentId?: string | null, visitId?: string | null } = {}
@@ -492,7 +502,7 @@ function isRecordKind(value: unknown): value is RecordKind {
 }
 
 async function patientVisitSummary(
-    transaction: admin.firestore.Transaction,
+    transaction: RecordTransaction,
     patientId: string,
     archivedOverride?: { visitId: string, isArchived: boolean }
 ) {
@@ -576,8 +586,8 @@ function parseVisitPayload(payload: Record<string, unknown>): Record<string, any
 }
 
 async function transactionRecordContext(
-    transaction: admin.firestore.Transaction,
-    authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> },
+    transaction: RecordTransaction,
+    authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> },
     patientId: string,
     branchId: string,
     doctorId: string
@@ -614,7 +624,7 @@ function getSafeChangeFields(value: unknown) {
 }
 
 function buildAuditLogData(options: {
-    authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> };
+    authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> };
     action: AuditAction;
     resource: AuditResource;
     resourceId: string;
@@ -653,7 +663,7 @@ function buildAuditLogData(options: {
     };
     return {
         timestamp: new Date().toISOString(),
-        recordedAt: admin.firestore.FieldValue.serverTimestamp(),
+        recordedAt: FieldValue.serverTimestamp(),
         userId: options.authorization.decodedToken.uid,
         userEmail: options.authorization.decodedToken.email || 'unknown',
         userName: typeof options.authorization.userProfile.fullName === 'string'
@@ -677,7 +687,7 @@ function buildAuditLogData(options: {
 }
 
 function stageAuditLog(
-    transaction: admin.firestore.Transaction,
+    transaction: RecordTransaction,
     options: Parameters<typeof buildAuditLogData>[0]
 ) {
     if (!shouldRecordAuditEvent({
@@ -691,7 +701,7 @@ function stageAuditLog(
 }
 
 async function authorizeAuditResource(
-    authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> },
+    authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> },
     action: AuditAction,
     resource: AuditResource,
     resourceId: string
@@ -757,8 +767,8 @@ async function authorizeRequest(
     }
 
     try {
-        const decodedToken = await admin.auth().verifyIdToken(match[1]);
-        if ((decodedToken as any).firebase?.sign_in_provider !== 'google.com') {
+        const decodedToken = await sessionIdentity(req);
+        if (decodedToken.provider !== 'google') {
             res.status(403).json({ error: 'Google sign-in is required' });
             return null;
         }
@@ -783,19 +793,16 @@ async function authorizeRequest(
     }
 }
 
-// A Firebase Authentication identity is created before the browser can write a
-// Firestore profile. Create the initial profile through the trusted server so a
-// transient client-side Firestore failure cannot leave a Google user invisible
-// to administrators. This endpoint is deliberately limited to the caller's
-// own Google identity and never grants access or assigns a privileged role.
+// Google OAuth creates a pending profile; this endpoint preserves the existing
+// activation workflow and never grants privileged access.
 app.post('/api/auth/register-pending-profile', async (req, res) => {
     const authorization = req.headers.authorization;
     const match = authorization?.match(/^Bearer\s+(.+)$/i);
     if (!match) return res.status(401).json({ error: 'Unauthorized' });
 
     try {
-        const decodedToken = await admin.auth().verifyIdToken(match[1]);
-        if ((decodedToken as any).firebase?.sign_in_provider !== 'google.com') {
+        const decodedToken = await sessionIdentity(req);
+        if (decodedToken.provider !== 'google') {
             return res.status(403).json({ error: 'Google sign-in is required' });
         }
 
@@ -851,7 +858,7 @@ function allowDeveloperRequest(userId: string) {
 }
 
 function authorizeDeveloperRequest(
-    authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> },
+    authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> },
     res: express.Response
 ) {
     if (allowDeveloperRequest(authorization.decodedToken.uid)) return true;
@@ -932,7 +939,7 @@ app.post('/api/login-activity/record', async (req, res) => {
             userEmail: authorization.decodedToken.email || '',
             userRole: role,
             timestamp: new Date().toISOString(),
-            recordedAt: admin.firestore.FieldValue.serverTimestamp(),
+            recordedAt: FieldValue.serverTimestamp(),
             ipAddress,
             location,
             ...device,
@@ -975,7 +982,7 @@ app.get('/api/login-activity', async (req, res) => {
 });
 
 function canManageUserTarget(
-    authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> },
+    authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> },
     userId: string,
     targetProfile: Record<string, any>
 ) {
@@ -988,7 +995,7 @@ function canManageUserTarget(
 }
 
 async function getManagedUser(
-    authorization: { decodedToken: admin.auth.DecodedIdToken, userProfile: Record<string, any> },
+    authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> },
     userId: string
 ) {
     if (!isValidDocumentId(userId)) throw new RequestError(400, 'Invalid user ID');
@@ -1046,7 +1053,7 @@ app.post('/api/users/:userId/archive', async (req, res) => {
                 changeFields: ['active', 'isArchived', 'accountStatus']
             }));
         });
-        await admin.auth().revokeRefreshTokens(userRef.id).catch(error => {
+        await revokeSessions(userRef.id).catch(error => {
             if (error?.code !== 'auth/user-not-found') throw error;
         });
         res.status(200).json({ id: userRef.id, archivedAt: now });
@@ -1069,9 +1076,9 @@ app.post('/api/users/:userId/restore', async (req, res) => {
                 active: true,
                 isArchived: false,
                 accountStatus: 'active',
-                archivedAt: admin.firestore.FieldValue.delete(),
-                archivedByUid: admin.firestore.FieldValue.delete(),
-                archivedByName: admin.firestore.FieldValue.delete(),
+                archivedAt: FieldValue.delete(),
+                archivedByUid: FieldValue.delete(),
+                archivedByName: FieldValue.delete(),
                 restoredAt: now,
                 restoredByUid: authorization.decodedToken.uid,
                 restoredByName: trustedUserName(authorization)
@@ -1150,7 +1157,7 @@ app.post('/api/users/:userId/deactivate', async (req, res) => {
                 changeFields: ['active', 'accountStatus']
             }));
         });
-        await admin.auth().revokeRefreshTokens(userRef.id).catch(error => {
+        await revokeSessions(userRef.id).catch(error => {
             if (error?.code !== 'auth/user-not-found') throw error;
         });
         res.status(200).json({ id: userRef.id, deactivatedAt: now });
@@ -1166,6 +1173,8 @@ app.delete('/api/users/:userId', async (req, res) => {
     try {
         const { userRef } = await getManagedUser(authorization, req.params.userId);
         await db.runTransaction(async transaction => {
+            await transaction.sql("DELETE FROM auth_sessions WHERE user_id = $1", [userRef.id]);
+            await transaction.sql("DELETE FROM auth_identities WHERE user_id = $1", [userRef.id]);
             transaction.delete(userRef);
             // This audit entry is intentionally written in the same transaction
             // as the profile deletion and is retained after the account is gone.
@@ -1177,7 +1186,7 @@ app.delete('/api/users/:userId', async (req, res) => {
                 eventType: 'user_deleted'
             }));
         });
-        await admin.auth().deleteUser(userRef.id).catch(error => {
+        await revokeSessions(userRef.id).catch(error => {
             if (error?.code !== 'auth/user-not-found') throw error;
         });
         res.status(204).send();
@@ -1229,7 +1238,7 @@ app.post('/api/developer/diagnostics', async (req, res) => {
     try {
         const startedAt = Date.now();
         await db.collection('settings').doc('branding').get();
-        const firestoreLatencyMs = Date.now() - startedAt;
+        const databaseLatencyMs = Date.now() - startedAt;
         await db.collection('audit_logs').add(buildAuditLogData({
             authorization,
             action: 'VIEW',
@@ -1237,7 +1246,7 @@ app.post('/api/developer/diagnostics', async (req, res) => {
             resourceId: 'developer_diagnostics',
             eventType: 'developer_diagnostics_run'
         }));
-        res.json({ firestoreLatencyMs, serverTime: new Date().toISOString() });
+        res.json({ databaseLatencyMs, serverTime: new Date().toISOString() });
     } catch (error) {
         console.error('Developer diagnostics failed', error);
         res.status(500).json({ error: 'Developer diagnostics failed' });
@@ -1319,7 +1328,7 @@ app.post("/api/branding/upload", uploadSingleFile, async (req, res) => {
         }
 
         const storagePath = `branding/${folder}/${Date.now()}_${randomUUID()}${extension}`;
-        const bucket = admin.storage().bucket(firebaseConfig.storageBucket);
+        const bucket = storageBucket;
         const file = bucket.file(storagePath);
         await file.save(req.file.buffer, {
             resumable: false,
@@ -1393,7 +1402,7 @@ app.post("/api/attachments/upload", uploadSingleFile, async (req, res) => {
             uploadedByUid: authorization.decodedToken.uid
         };
 
-        const bucket = admin.storage().bucket(firebaseConfig.storageBucket);
+        const bucket = storageBucket;
         storedFile = bucket.file(storagePath);
         await storedFile.save(req.file.buffer, {
             resumable: false,
@@ -1468,7 +1477,7 @@ app.get("/api/attachments/content", async (req, res) => {
         return res.status(404).json({ error: "Attachment is not registered on this record" });
     }
 
-    const file = admin.storage().bucket(firebaseConfig.storageBucket).file(storagePath as string);
+    const file = storageBucket.file(storagePath as string);
     try {
         const [metadata] = await file.getMetadata();
         if (metadata.metadata?.patientId && metadata.metadata.patientId !== parsed.patientId) {
@@ -1539,7 +1548,7 @@ app.delete("/api/attachments", async (req, res) => {
                 eventType: 'attachment_deleted'
             });
         });
-        await admin.storage().bucket(firebaseConfig.storageBucket).file(storagePath).delete({ ignoreNotFound: true });
+        await storageBucket.file(storagePath).delete({ ignoreNotFound: true });
         res.status(204).send();
     } catch (error) {
         console.error("Attachment deletion failed", error);
@@ -1599,10 +1608,10 @@ app.post("/api/records/patients", async (req, res) => {
             const lastNumber = Math.max(Number(counterSnapshot.data()?.lastNumber) || 0, existingMax);
             const nextNumber = lastNumber + 1;
             patientID = `${patientPrefix}${String(nextNumber).padStart(4, '0')}`;
-            transaction.set(counterRef, { lastNumber: nextNumber, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+            transaction.set(counterRef, { lastNumber: nextNumber, updatedAt: FieldValue.serverTimestamp() });
             transaction.create(identityRef, {
                 patientId: patientRef.id,
-                createdAt: admin.firestore.FieldValue.serverTimestamp()
+                createdAt: FieldValue.serverTimestamp()
             });
             transaction.create(patientRef, {
                 ...patient,
@@ -1712,7 +1721,7 @@ app.patch("/api/records/patients/:patientId", async (req, res) => {
             }
             transaction.set(newIdentityRef, {
                 patientId: patientRef.id,
-                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                updatedAt: FieldValue.serverTimestamp()
             }, { merge: true });
             transaction.update(patientRef, trustedUpdates);
             stageAuditLog(transaction, {
@@ -1873,7 +1882,7 @@ app.post("/api/records/visits", async (req, res) => {
             );
             if (context.branchData.status !== 'Active') throw new RequestError(400, 'Branch is not active');
 
-            let linkedAppointmentRef: admin.firestore.DocumentReference | null = null;
+            let linkedAppointmentRef: DocumentReference | null = null;
             if (visit.appointmentId) {
                 linkedAppointmentRef = db.collection('appointments').doc(visit.appointmentId);
                 const appointmentSnapshot = await transaction.get(linkedAppointmentRef);
@@ -2200,10 +2209,10 @@ app.post("/api/records/:kind/:recordId/restore", async (req, res) => {
 
             transaction.update(recordRef, {
                 isArchived: false,
-                archivedAt: admin.firestore.FieldValue.delete(),
-                archivedByUid: admin.firestore.FieldValue.delete(),
-                archivedByName: admin.firestore.FieldValue.delete(),
-                archiveReason: admin.firestore.FieldValue.delete(),
+                archivedAt: FieldValue.delete(),
+                archivedByUid: FieldValue.delete(),
+                archivedByName: FieldValue.delete(),
+                archiveReason: FieldValue.delete(),
                 restoredAt: now,
                 restoredByUid: authorization.decodedToken.uid,
                 restoredByName: actorName,
@@ -2248,9 +2257,18 @@ app.get("/api/patients", async (req, res) => {
     }
 });
 
+app.use('/api', (_req, res) => { res.status(404).json({ error: 'API endpoint not found' }); });
+app.use((error: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const status = error?.type === 'entity.too.large' ? 413 : error?.type === 'entity.parse.failed' ? 400 : 500;
+  res.status(status).json({ error: status === 413 ? 'Request is too large' : status === 400 ? 'Invalid JSON request' : 'Request failed' });
+});
+
 // Vite middleware development/production
 async function startServer() {
-  console.log("Starting server...");
+  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required');
+  if (process.env.NODE_ENV === 'production' && (!process.env.APP_URL?.startsWith('https://') || !process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET)) throw new Error('Production HTTPS APP_URL and Google OAuth credentials are required');
+  await pool.query('SELECT 1 FROM app_records LIMIT 1');
+  console.log("Starting PostgreSQL-backed server...");
   if (process.env.NODE_ENV !== "production") {
     console.log("Running in development mode...");
     const vite = await createViteServer({
@@ -2295,9 +2313,20 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+  server.requestTimeout = 60_000;
+  server.headersTimeout = 65_000;
+  let stopping = false;
+  const stop = () => {
+    if (stopping) return; stopping = true;
+    const deadline = setTimeout(() => process.exit(1), 30_000); deadline.unref();
+    server.close(() => { void pool.end().then(() => process.exit(0)); });
+  };
+  process.once('SIGTERM', stop); process.once('SIGINT', stop);
 }
 
-startServer();
+if (process.argv[1]?.endsWith('server.ts') || process.argv[1]?.endsWith('server.cjs')) {
+  startServer().catch(error => { console.error('Server startup failed:', error.message); process.exit(1); });
+}

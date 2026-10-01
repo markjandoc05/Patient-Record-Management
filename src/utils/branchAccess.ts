@@ -1,11 +1,11 @@
 import {
   collection,
-  Firestore,
+  Database,
   onSnapshot,
   query,
   QueryConstraint,
   where,
-} from 'firebase/firestore';
+} from '../dataClient';
 
 export interface BranchAccessProfile {
   role?: string | null;
@@ -13,7 +13,7 @@ export interface BranchAccessProfile {
 }
 
 const GLOBAL_BRANCH_ROLES = new Set(['admin', 'support_developer']);
-const FIRESTORE_IN_LIMIT = 30;
+const BRANCH_QUERY_CHUNK_SIZE = 30;
 
 export function hasGlobalBranchAccess(profile: BranchAccessProfile | null | undefined) {
   return GLOBAL_BRANCH_ROLES.has(profile?.role || '');
@@ -44,7 +44,7 @@ export function getAccessibleBranches<T extends { id: string }>(
  * workspace filter, not a second copy of the data.
  */
 export function subscribeToSharedCollection(
-  db: Firestore,
+  db: Database,
   collectionName: string,
   onData: (documents: any[]) => void,
   onError?: (error: Error) => void,
@@ -70,12 +70,12 @@ function chunk<T>(values: T[], size: number): T[][] {
 }
 
 /**
- * Subscribes to a collection while making the Firestore query match branch rules.
+ * Subscribes to a collection while making the PostgreSQL query match branch rules.
  * Admin and support users read the full collection. Other roles receive only
  * records whose branch field is in their assignedBranches profile field.
  */
 export function subscribeToBranchScopedCollection(
-  db: Firestore,
+  db: Database,
   collectionName: string,
   branchField: 'homeBranchId' | 'branchId',
   profile: BranchAccessProfile | null | undefined,
@@ -101,7 +101,7 @@ export function subscribeToBranchScopedCollection(
     return () => undefined;
   }
 
-  const branchChunks = chunk(assignedBranchIds, FIRESTORE_IN_LIMIT);
+  const branchChunks = chunk(assignedBranchIds, BRANCH_QUERY_CHUNK_SIZE);
   const snapshotsByChunk = branchChunks.map(() => new Map<string, any>());
 
   const emitMergedDocuments = () => {

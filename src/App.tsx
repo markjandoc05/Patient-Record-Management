@@ -4,10 +4,10 @@
  */
 
 import { useState, useEffect, useRef, type ComponentType } from 'react';
-import { auth, db } from './firebase';
-import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, doc, getDoc, onSnapshot } from 'firebase/firestore';
-import { handleFirestoreError, OperationType } from './utils';
+import { auth, db } from './platform';
+import { signInWithGoogle, onAuthStateChanged, signOut } from './session';
+import { collection, doc, getDoc, onSnapshot } from './dataClient';
+import { handleDataError, OperationType } from './utils';
 import Login from './components/Login';
 import PatientDashboard from './components/PatientDashboard';
 import BranchDashboard from './components/BranchDashboard';
@@ -182,7 +182,7 @@ export default function App() {
       setBranding(normalizeBranding(defaultBranding));
       setBrandingLoaded(true);
       try {
-        handleFirestoreError(err, OperationType.GET, 'settings/branding', auth);
+        handleDataError(err, OperationType.GET, 'settings/branding', auth);
       } catch (e) {
         // Log custom error structure to support AI Studio platform detection
       }
@@ -310,7 +310,7 @@ export default function App() {
     
   }, [branding]);
 
-  const [authError, setAuthError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(() => new URLSearchParams(window.location.search).has('auth_error') ? 'Google sign-in failed. Please try again or contact an administrator.' : null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [accountMissingProfile, setAccountMissingProfile] = useState(false);
 
@@ -319,7 +319,7 @@ export default function App() {
     setAuthError(null);
     setAccountMissingProfile(false);
     try {
-        await signInWithPopup(auth, new GoogleAuthProvider());
+        await signInWithGoogle();
     } catch (e: any) {
         if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') {
            console.log("Sign-in popup was closed or cancelled by the user.");
@@ -389,7 +389,7 @@ export default function App() {
           if (userDoc && userDoc.exists()) {
              const data = userDoc.data();
              if (!data.active) {
-                setAuthError('Your account is inactive. Please contact an administrator.');
+                setAuthError(data.accountStatus === 'pending_activation' ? 'Your account is pending activation. An administrator must approve your access.' : 'Your account is inactive. Please contact an administrator.');
                 await signOut(auth);
                 setUser(null);
              } else if (!approvedRoles.has(data.role)) {
@@ -635,7 +635,7 @@ export default function App() {
                   {[
                     { id: 'system_overview', label: 'System overview' },
                     { id: 'app_version', label: 'App version' },
-                    { id: 'firebase_status', label: 'Firebase status' },
+                    { id: 'database_status', label: 'Database status' },
                     { id: 'storage_monitor', label: 'Storage monitor' },
                     { id: 'user_count', label: 'User count' },
                     { id: 'patient_count', label: 'Patient count' },

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Calendar, CheckCircle, Clock, MapPin, UserPlus, Users } from 'lucide-react';
-import { db } from '../firebase';
+import { db } from '../platform';
 import { formatDateTime } from '../utils';
 import { subscribeToSharedCollection } from '../utils/branchAccess';
 import { getActiveDatePrefix } from '../utils/timezone';

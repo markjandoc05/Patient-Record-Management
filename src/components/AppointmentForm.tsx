@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { collection, getDocs, limit, orderBy, query, where } from 'firebase/firestore';
+import { collection, getDocs, limit, orderBy, query, where } from '../dataClient';
 import { CheckCircle2, Clock3, Search } from 'lucide-react';
-import { db, auth } from '../firebase';
+import { db, auth } from '../platform';
 import { CustomDatePicker } from './CustomDatePicker';
 import { createAppointmentRecord, updateAppointmentRecord } from '../utils/recordApi';
 import { formatDateTime } from '../utils';

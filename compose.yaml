@@ -1,0 +1,50 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      APP_URL: ${APP_URL:-https://app.vineaesthetics.com}
+      DATABASE_URL: postgresql://vine:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/vine
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?Set GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?Set GOOGLE_CLIENT_SECRET}
+      STORAGE_DIR: /app/data/files
+    volumes:
+      - clinic-files:/app/data/files
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - clinic
+      - dokploy-network
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vine
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: vine
+    volumes:
+      - clinic-database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vine -d vine"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - clinic
+volumes:
+  clinic-database:
+  clinic-files:
+networks:
+  clinic:
+  dokploy-network:
+    external: true

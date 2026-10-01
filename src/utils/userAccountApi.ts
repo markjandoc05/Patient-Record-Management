@@ -1,4 +1,4 @@
-import { auth } from '../firebase';
+import { auth } from '../platform';
 
 type UserAccountAction = 'archive' | 'restore' | 'activate' | 'deactivate' | 'delete';
 
@@ -6,7 +6,7 @@ async function userAccountRequest(userId: string, action: UserAccountAction) {
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Please sign in again before managing user accounts.');
 
-  const token = await currentUser.getIdToken();
+  const token = await currentUser.getRequestToken();
   const response = await fetch(`/api/users/${encodeURIComponent(userId)}${action === 'delete' ? '' : `/${action}`}`, {
     method: action === 'delete' ? 'DELETE' : 'POST',
     headers: { Authorization: `Bearer ${token}` },

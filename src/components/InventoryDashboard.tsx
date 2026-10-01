@@ -1,3 +1,4 @@
+import { transferRequest } from '../utils/inventoryApi';
 import React, { useState, useEffect } from 'react';
 import { 
   collection, 
@@ -9,9 +10,10 @@ import {
   where, 
   serverTimestamp,
   increment,
-  writeBatch
-} from 'firebase/firestore';
+  getDocs
+} from '../dataClient';
 import { 
+  X,
   Package, 
   Truck, 
   Users, 
@@ -25,7 +27,7 @@ import {
   Clock,
   ChevronRight
 } from 'lucide-react';
-import { db } from '../firebase';
+import { db } from '../platform';
 import { formatDateTime } from '../utils';
 
 interface InventoryItem {
@@ -94,7 +96,7 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
       setTransfers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as StockTransfer)));
     });
     const unsubBranches = onSnapshot(collection(db, 'branches'), (snapshot) => {
-      setBranches(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Branch)));
+      setBranches(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), name: doc.data().branchName || doc.data().name } as Branch)));
     });
 
     return () => {
@@ -126,48 +128,14 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
       return;
     }
 
-    await addDoc(collection(db, 'stock_transfers'), transferData);
+    try { await transferRequest('create', transferData); }
+    catch (error) { alert(error instanceof Error ? error.message : 'Transfer failed'); return; }
     setIsTransferring(false);
   };
 
   const handleCompleteTransfer = async (transfer: StockTransfer) => {
-    const batch = writeBatch(db);
-    
-    // Update source stock
-    const sourceStockQuery = query(collection(db, 'inventory_stocks'), 
-      where('itemId', '==', transfer.itemId), 
-      where('branchId', '==', transfer.fromBranchId)
-    );
-    const sourceSnap = await getDocs(sourceStockQuery);
-    if (!sourceSnap.empty) {
-      batch.update(doc(db, 'inventory_stocks', sourceSnap.docs[0].id), {
-        quantity: increment(-transfer.quantity)
-      });
-    }
-
-    // Update destination stock
-    const destStockQuery = query(collection(db, 'inventory_stocks'), 
-      where('itemId', '==', transfer.itemId), 
-      where('branchId', '==', transfer.toBranchId)
-    );
-    const destSnap = await getDocs(destStockQuery);
-    if (!destSnap.empty) {
-      batch.update(doc(db, 'inventory_stocks', destSnap.docs[0].id), {
-        quantity: increment(transfer.quantity)
-      });
-    } else {
-      const newStockRef = doc(collection(db, 'inventory_stocks'));
-      batch.set(newStockRef, {
-        itemId: transfer.itemId,
-        branchId: transfer.toBranchId,
-        quantity: transfer.quantity
-      });
-    }
-
-    // Mark transfer as completed
-    batch.update(doc(db, 'stock_transfers', transfer.id), { status: 'completed' });
-    
-    await batch.commit();
+    try { await transferRequest('complete', { id: transfer.id }); }
+    catch (error) { alert(error instanceof Error ? error.message : 'Transfer failed'); }
   };
 
   return (
@@ -541,15 +509,3 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
     </div>
   );
 }
-
-// Internal helper for batch operations
-async function getDocs(q: any) {
-  const { getDocs: firestoreGetDocs } = await import('firebase/firestore');
-  return firestoreGetDocs(q);
-}
-
-const X = ({ className }: { className?: string }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-  </svg>
-);

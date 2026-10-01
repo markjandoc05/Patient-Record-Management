@@ -1,4 +1,4 @@
-import { auth } from '../firebase';
+import { auth } from '../platform';
 import imageCompression from 'browser-image-compression';
 import { DEFAULT_MEDIA_SETTINGS, IMAGE_OPTIMIZATION } from '../mediaSettings';
 
@@ -58,7 +58,7 @@ export async function optimizeAttachmentImage(file: File | Blob, originalName: s
 async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Please sign in again to access attachments.');
-  const token = await currentUser.getIdToken();
+  const token = await currentUser.getRequestToken();
   const headers = new Headers(init.headers);
   headers.set('Authorization', `Bearer ${token}`);
   return fetch(input, { ...init, headers });

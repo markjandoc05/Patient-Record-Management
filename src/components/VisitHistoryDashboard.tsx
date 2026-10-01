@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot } from '../dataClient';
 import { formatDateTime } from '../utils';
 import VisitForm from './VisitForm';
 import { hasPermission, Role } from '../rbac';
 import { Activity, Archive, Calendar, CalendarCheck2, ChevronLeft, ChevronRight, CircleAlert, Eye, Inbox, MapPin, Pencil, Plus, RotateCcw, Search, Stethoscope, UserRound, X } from 'lucide-react';
 import { getAccessibleBranches, subscribeToBranchScopedCollection, subscribeToSharedCollection } from '../utils/branchAccess';
 import { archiveRecord, restoreRecord } from '../utils/recordApi';
-import { auth } from '../firebase';
+import { auth } from '../platform';
 import { getActiveDatePrefix } from '../utils/timezone';
 
 function visitInitials(name?: string) {

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot } from '../dataClient';
 import PatientForm from './PatientForm';
 import PatientProfile from './PatientProfile';
 import { canEditPatient, hasPermission, Role } from '../rbac';

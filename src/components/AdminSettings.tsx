@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, doc, updateDoc, setDoc, getDoc, getDocs, addDoc, writeBatch, limit, query, where } from 'firebase/firestore';
-import { auth } from '../firebase';
+import { collection, onSnapshot, doc, updateDoc, setDoc, getDoc, getDocs, addDoc, writeBatch, limit, query, where } from '../dataClient';
+import { auth } from '../platform';
 import imageCompression from 'browser-image-compression';
 import { getChangedFields } from '../utils/diffUtils';
-import { handleFirestoreError, OperationType } from '../utils';
+import { handleDataError, OperationType } from '../utils';
 import { RBAC } from '../rbac';
 import { logActivity } from '../utils/auditLogger';
 import { activateUserAccount, archiveUserAccount, deactivateUserAccount, deleteUserAccount, restoreUserAccount } from '../utils/userAccountApi';
@@ -280,7 +280,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
             }
         }
 
-        const token = await auth.currentUser!.getIdToken();
+        const token = await auth.currentUser!.getRequestToken();
         const formData = new FormData();
         formData.append('file', fileToUpload, file.name);
         formData.append('folder', folder);
@@ -303,13 +303,13 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         };
         
         // Update branding document
-        console.log("AdminSettings: About to update branding document in Firestore");
+        console.log("AdminSettings: About to update branding document in PostgreSQL");
         await setDoc(doc(db, 'settings', 'branding'), {
             [fieldName]: downloadUrl,
             [`${fieldName}_metadata`]: assetMetadata,
             updatedAt: newTimestamp
         }, { merge: true });
-        console.log("AdminSettings: Firestore update successful");
+        console.log("AdminSettings: PostgreSQL update successful");
         
         // Update local state
         setBrandingForm((prev: any) => ({
@@ -357,7 +357,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       showActionSuccess('Branding asset removed. The app has switched to its fallback immediately.');
     } catch (removeError: any) {
       showActionError(`Unable to remove the branding asset: ${removeError?.message || 'Unknown error'}`);
-      handleFirestoreError(removeError, OperationType.UPDATE, 'settings/branding', auth);
+      handleDataError(removeError, OperationType.UPDATE, 'settings/branding', auth);
     }
   };
 
@@ -368,10 +368,9 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     // Verify role directly from DB
     const userDoc = await getDoc(doc(db, 'users', auth.currentUser!.uid));
     const dbRole = userDoc.exists() ? userDoc.data()?.role : null;
-    const isOwner = auth.currentUser?.email === 'markjandoc@gmail.com';
-    console.log("AdminSettings: DB role verification (save):", dbRole, "IsOwner:", isOwner);
+    console.log("AdminSettings: DB role verification (save):", dbRole);
     
-    const isAdminOrSupport = dbRole === 'admin' || dbRole === 'support_developer' || isOwner;
+    const isAdminOrSupport = dbRole === 'admin' || dbRole === 'support_developer';
     if (!isAdminOrSupport) {
         console.error("AdminSettings: Branding save failed: unauthorized access by role:", dbRole);
         setError("Permission Denied: Only Admin and Support / Developer can update branding.");
@@ -397,7 +396,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         updatedAt: newTimestamp
       };
       
-      console.log("AdminSettings: Writing branding to Firestore path settings/branding");
+      console.log("AdminSettings: Writing branding to PostgreSQL path settings/branding");
       await setDoc(doc(db, 'settings', 'branding'), updatedBranding, { merge: true });
       
       await logActivity({
@@ -413,7 +412,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     } catch (err: any) {
       console.error("AdminSettings: Branding save error:", err);
       setError('Failed to save settings: ' + (err.message || String(err)));
-      handleFirestoreError(err, OperationType.UPDATE, 'settings/branding', auth);
+      handleDataError(err, OperationType.UPDATE, 'settings/branding', auth);
     } finally {
       setSavingBranding(false);
     }
@@ -453,7 +452,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       setTimeout(() => setTimezoneSuccess(''), 4000);
     } catch (err: any) {
       setError('Failed to save timezone settings: ' + (err.message || String(err)));
-      handleFirestoreError(err, OperationType.UPDATE, 'settings/timezone', auth);
+      handleDataError(err, OperationType.UPDATE, 'settings/timezone', auth);
     } finally {
       setSavingTimezone(false);
     }
@@ -491,7 +490,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       setTimeout(() => setFooterSuccess(''), 4000);
     } catch (err: any) {
       setError('Failed to save footer settings: ' + (err.message || String(err)));
-      handleFirestoreError(err, OperationType.UPDATE, 'settings/footer', auth);
+      handleDataError(err, OperationType.UPDATE, 'settings/footer', auth);
     } finally {
       setSavingFooter(false);
     }
@@ -500,18 +499,18 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   useEffect(() => {
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
       setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'users', auth));
+    }, (error) => handleDataError(error, OperationType.LIST, 'users', auth));
     
     const unsubBranches = onSnapshot(collection(db, 'branches'), (snapshot) => {
       setBranches(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'branches', auth));
+    }, (error) => handleDataError(error, OperationType.LIST, 'branches', auth));
     
     // Fetch media settings
     const unsubMedia = onSnapshot(doc(db, 'settings', 'media'), (doc) => {
       if (doc.exists()) {
           setMediaSettings(normalizeMediaSettings(doc.data()));
       }
-    }, (snapshotError) => handleFirestoreError(snapshotError, OperationType.GET, 'settings/media', auth));
+    }, (snapshotError) => handleDataError(snapshotError, OperationType.GET, 'settings/media', auth));
     
     return () => { unsubUsers(); unsubBranches(); unsubMedia(); };
   }, [db]);
@@ -561,7 +560,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
           setTimeout(() => setMediaSuccess(''), 4000);
       } catch (err: any) {
           setError('Failed to save media settings: ' + (err.message || String(err)));
-          handleFirestoreError(err, OperationType.UPDATE, 'settings/media', auth);
+          handleDataError(err, OperationType.UPDATE, 'settings/media', auth);
       } finally {
           setSavingMedia(false);
       }
@@ -581,7 +580,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         showActionSuccess('User role updated.');
     } catch (error) {
         showActionError('Unable to update the user role.');
-        handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`, auth);
+        handleDataError(error, OperationType.UPDATE, `users/${userId}`, auth);
     }
   };
 
@@ -613,7 +612,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       showActionSuccess(`Branch access ${isAssigning ? 'assigned' : 'removed'} for ${user.fullName || user.email}.`);
     } catch (updateError) {
       showActionError('Unable to update this user’s clinic access.');
-      handleFirestoreError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
+      handleDataError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
     }
   };
 
@@ -629,7 +628,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       showActionSuccess(`Default clinic updated for ${user.fullName || user.email}.`);
     } catch (updateError) {
       showActionError('Unable to set the default clinic.');
-      handleFirestoreError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
+      handleDataError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
     }
   };
 
@@ -647,7 +646,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       }
     } catch (updateError) {
       showActionError('Unable to update the user account status.');
-      handleFirestoreError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
+      handleDataError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
     }
   };
 
@@ -715,7 +714,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         showActionSuccess('Clinic branch added.');
     } catch (error) {
         showActionError('Unable to add the clinic branch.');
-        handleFirestoreError(error, OperationType.CREATE, 'branches', auth);
+        handleDataError(error, OperationType.CREATE, 'branches', auth);
     }
   };
 
@@ -737,7 +736,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
           showActionSuccess(`Clinic branch ${newStatus === 'Active' ? 'activated' : 'deactivated'}.`);
       } catch (error) {
           showActionError('Unable to change the clinic branch status.');
-          handleFirestoreError(error, OperationType.UPDATE, `branches/${branchId}`, auth);
+          handleDataError(error, OperationType.UPDATE, `branches/${branchId}`, auth);
       }
   };
 
@@ -783,7 +782,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         showActionSuccess('Clinic branch deleted.');
     } catch (error) {
         showActionError('Unable to delete the clinic branch.');
-        handleFirestoreError(error, OperationType.DELETE, `branches/${id}`, auth);
+        handleDataError(error, OperationType.DELETE, `branches/${id}`, auth);
     }
   };
    
@@ -837,7 +836,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         showActionSuccess('Clinic branch updated.');
     } catch (error) {
         showActionError('Unable to update the clinic branch.');
-        handleFirestoreError(error, OperationType.UPDATE, `branches/${editingBranchId}`, auth);
+        handleDataError(error, OperationType.UPDATE, `branches/${editingBranchId}`, auth);
     }
   }
 
@@ -920,7 +919,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
 
     } catch (error) {
         showActionError('Unable to clean invalid branch assignments.');
-        handleFirestoreError(error, OperationType.UPDATE, 'users', auth);
+        handleDataError(error, OperationType.UPDATE, 'users', auth);
     }
   };
 

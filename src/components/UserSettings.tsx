@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { updateProfile } from 'firebase/auth';
-import { auth } from '../firebase';
+import { doc, getDoc, setDoc } from '../dataClient';
+import { updateProfile } from '../session';
+import { auth } from '../platform';
 import { CustomDatePicker } from './CustomDatePicker';
 import { RBAC, Role } from '../rbac';
 import { getChangedFields } from '../utils/diffUtils';

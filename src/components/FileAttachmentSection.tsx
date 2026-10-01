@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot } from '../dataClient';
 import { LayoutGrid, List, X } from 'lucide-react';
-import { db } from '../firebase';
+import { db } from '../platform';
 import Lightbox from './Lightbox';
 import ConfirmationModal from './ConfirmationModal';
 import { deleteAttachment, downloadAttachment, fetchAttachmentBlob, isImageAttachment, isOptimizableImageUpload, openAttachment, uploadAttachment } from '../utils/attachmentApi';

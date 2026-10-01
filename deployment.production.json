@@ -1,0 +1,32 @@
+{
+  "provider": "dokploy",
+  "panelUrl": "https://cloud.aiph.tech",
+  "projectName": "Vine System",
+  "projectId": "uv4h0gGoxpGgi4D1hiIXB",
+  "environmentId": "RTv2jrLuIPYimdyVhih-t",
+  "postgresId": "7WR6SANe3HfNoxMWo6Sxu",
+  "postgresService": "vine-system-postgres-bq7rry",
+  "database": "vine",
+  "databaseImage": "postgres:17-alpine",
+  "publicDatabasePort": null,
+  "databaseDeployment": "running_verified",
+  "domain": "app.vineaesthetics.com",
+  "dnsChanged": false,
+  "backupDestinationId": "LzvLpPyj57hLBRInjHlvS",
+  "backupConfigured": true,
+  "schemaMigrations": [
+    "001_platform.sql",
+    "002_session_integrity.sql"
+  ],
+  "schemaVerificationRecordCount": 0,
+  "schemaInitializerComposeId": "OpxVi_Wf1pDGor-ggm0Uc",
+  "backupId": "kSvmf-mMBDjxP9Layu0Wm",
+  "backupScheduleUtc": "0 19 * * *",
+  "backupRetentionCount": 14,
+  "backupRestoreTested": false,
+  "applicationDeployed": false,
+  "applicationId": "bAdvGfBU7-tJYcp8utfVO",
+  "applicationService": "vine-system-app-osbgzr",
+  "gitBranch": "deploy/dokploy-postgres",
+  "applicationConfigured": true
+}

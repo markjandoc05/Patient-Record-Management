@@ -1,4 +1,4 @@
-import { auth } from '../firebase';
+import { auth } from '../platform';
 
 type RecordKind = 'patients' | 'appointments' | 'visits';
 
@@ -11,7 +11,7 @@ async function recordRequest(
 ) {
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Please sign in again before saving this record.');
-  const token = await currentUser.getIdToken();
+  const token = await currentUser.getRequestToken();
   const path = `/api/records/${kind}${recordId ? `/${encodeURIComponent(recordId)}` : ''}${action ? `/${action}` : ''}`;
   const response = await fetch(path, {
     method,

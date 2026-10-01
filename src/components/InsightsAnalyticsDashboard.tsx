@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { db } from '../firebase';
+import { collection, onSnapshot } from '../dataClient';
+import { db } from '../platform';
 import {
   Bar,
   BarChart,

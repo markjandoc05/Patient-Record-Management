@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { collection, getDocs, limit, orderBy, query } from 'firebase/firestore';
+import { collection, getDocs, limit, orderBy, query } from '../dataClient';
 import { formatInTimeZone } from 'date-fns-tz';
 import {
   Activity,
@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { AUDIT_QUERY_LIMIT } from '../auditPolicy';
 import { useTimezone } from '../contexts/TimezoneContext';
-import { db } from '../firebase';
+import { db } from '../platform';
 import { getActiveDatePrefix } from '../utils/timezone';
 import { formatTimezone } from '../utils/timezone';
 import ConfirmationModal from './ConfirmationModal';
