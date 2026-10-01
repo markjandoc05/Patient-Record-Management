@@ -171,3 +171,10 @@ application container is running in production mode with Google OAuth values
 configured. Public DNS has not been switched. The user selected migration of
 existing Firebase records; read-only export and staging validation precede final
 import and cutover.
+
+Read-only Firebase export and isolated local PostgreSQL staging import succeeded:
+496 records across top-level collections and subcollections, including 15 patient
+profiles, 8 Google identities, and 22 private/branding files. Per-collection counts,
+identity count and all imported file checksums match the export. Production import
+is still pending a final write freeze and fresh export. Exported data and migration
+credentials are private and are excluded from Git and deployment images.

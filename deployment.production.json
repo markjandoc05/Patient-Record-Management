@@ -32,5 +32,13 @@
   "applicationDeploymentId": "JnW4Ce3rjiF-IW9_VVq6e",
   "applicationRuntime": "running",
   "migrationDecision": "import_existing_firebase",
-  "firebaseImportCompleted": false
+  "firebaseImportCompleted": false,
+  "stagingMigrationVerification": {
+    "records": 496,
+    "patientProfiles": 15,
+    "identities": 8,
+    "files": 22,
+    "collectionCountsMatched": true,
+    "fileChecksumsMatched": true
+  }
 }
