@@ -165,3 +165,9 @@ uses the internal PostgreSQL service. The named volume `vine-system-private-file
 is mounted at `/app/data/files`. Google OAuth variables must be completed in the
 Dokploy Environment editor before deployment. Automatic deployment is disabled
 until the first successful launch and migration decision.
+
+The initial GitHub deployment completed successfully on October 1, 2026. The
+application container is running in production mode with Google OAuth values
+configured. Public DNS has not been switched. The user selected migration of
+existing Firebase records; read-only export and staging validation precede final
+import and cutover.

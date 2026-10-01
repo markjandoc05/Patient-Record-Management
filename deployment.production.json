@@ -24,9 +24,13 @@
   "backupScheduleUtc": "0 19 * * *",
   "backupRetentionCount": 14,
   "backupRestoreTested": false,
-  "applicationDeployed": false,
+  "applicationDeployed": true,
   "applicationId": "bAdvGfBU7-tJYcp8utfVO",
   "applicationService": "vine-system-app-osbgzr",
   "gitBranch": "deploy/dokploy-postgres",
-  "applicationConfigured": true
+  "applicationConfigured": true,
+  "applicationDeploymentId": "JnW4Ce3rjiF-IW9_VVq6e",
+  "applicationRuntime": "running",
+  "migrationDecision": "import_existing_firebase",
+  "firebaseImportCompleted": false
 }

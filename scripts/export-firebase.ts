@@ -1,7 +1,7 @@
 // One-time read-only exporter. Firebase SDK is a development dependency only.
 import 'dotenv/config';
 import admin from 'firebase-admin';
-import { getFirestore } from 'firebase-admin/firestore';
+import { initializeFirestore } from 'firebase-admin/firestore';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -9,7 +9,7 @@ import config from '../firebase-applet-config.json';
 const output = process.argv[2];
 if (!output) throw new Error('Usage: npm run migration:export -- /absolute/private/export-directory');
 admin.initializeApp({ credential: admin.credential.applicationDefault(), projectId: config.projectId, storageBucket: config.storageBucket });
-const source = getFirestore(admin.app(), config.firestoreDatabaseId);
+const source = initializeFirestore(admin.app(), { preferRest: true }, config.firestoreDatabaseId);
 function encode(value: any): any {
   if (value && typeof value.toDate === 'function') return { __timestamp: value.toDate().toISOString() };
   if (value instanceof Date) return { __timestamp: value.toISOString() };
@@ -19,14 +19,20 @@ function encode(value: any): any {
 }
 const records: any[] = [];
 async function exportCollection(collection: admin.firestore.CollectionReference) {
-  for (const reference of await collection.listDocuments()) {
-    const document = await reference.get();
-    if (document.exists) records.push({ collectionPath: collection.path, id: document.id, data: encode(document.data()) });
-    for (const child of await reference.listCollections()) await exportCollection(child);
+  const references = await collection.listDocuments();
+  for (let offset = 0; offset < references.length; offset += 8) {
+    await Promise.all(references.slice(offset, offset + 8).map(async reference => {
+      const document = await reference.get();
+      if (document.exists) records.push({ collectionPath: collection.path, id: document.id, data: encode(document.data()) });
+      for (const child of await reference.listCollections()) await exportCollection(child);
+    }));
   }
 }
 await mkdir(output, { recursive: true, mode: 0o700 });
-for (const collection of await source.listCollections()) await exportCollection(collection);
+for (const collection of await source.listCollections()) {
+  await exportCollection(collection);
+  console.log(`Exported collection ${collection.id}; ${records.length} records so far.`);
+}
 const profileIds = new Set(records.filter(record => record.collectionPath === 'users').map(record => record.id));
 const identities: any[] = []; let pageToken: string | undefined;
 do {
