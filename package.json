@@ -25,7 +25,11 @@
     "test:appointment-read-auth": "node --import tsx scripts/test-appointment-read-auth.ts",
     "test:parity-regression": "node --import tsx scripts/test-parity-regression.ts",
     "test:protected-invalidation": "tsx scripts/test-protected-invalidation.ts",
-    "test:support-role-selector": "tsx scripts/test-support-role-selector.ts"
+    "test:support-role-selector": "tsx scripts/test-support-role-selector.ts",
+    "test:services": "node --import tsx scripts/test-services-policy.ts",
+    "test:services-api": "node --import tsx scripts/test-services-api.ts",
+    "test:services-migration": "node --import tsx scripts/test-services-migration.ts",
+    "test:services-ui": "node --import tsx scripts/test-services-ui.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

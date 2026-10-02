@@ -1,3 +1,4 @@
+import ServicesDashboard from './components/ServicesDashboard';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -85,6 +86,7 @@ const pageTitles: Record<string, string> = {
   Appointments: 'Appointments',
   VisitHistory: 'Visits',
   Inventory: 'Inventory',
+  Services: 'Services',
   Insights: 'Insights',
   Settings: 'Settings',
   AuditTrail: 'Audit log',
@@ -647,6 +649,7 @@ export default function App() {
             <SidebarNavButton label="Patients" icon={Users} active={activeView === 'Records'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Records')} />
             <SidebarNavButton label="Appointments" icon={Clock} active={activeView === 'Appointments'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Appointments')} />
             {canAccessView(userRole, 'VisitHistory') && (<SidebarNavButton label="Visits" icon={Calendar} active={activeView === 'VisitHistory'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('VisitHistory')} />)}
+            <SidebarNavButton label="Services" icon={Package} active={activeView === 'Services'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Services')} />
 
             {(hasAdministrativeAccess(userRole)) && (
               <SidebarNavButton label="Inventory" icon={Package} active={activeView === 'Inventory'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Inventory')} />
@@ -791,6 +794,7 @@ export default function App() {
                 {activeView === 'Appointments' && <AppointmentsDashboard role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
                 {activeView === 'VisitHistory' && <VisitHistoryDashboard db={db} role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
                 {activeView === 'Insights' && <InsightsAnalyticsDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
+                {activeView === 'Services' && <ServicesDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
                 {activeView === 'Inventory' && (hasAdministrativeAccess(userRole)) && <InventoryDashboard userProfile={userProfile} />}
                 {activeView === 'Inventory' && !hasAdministrativeAccess(userRole) && (
                   <div className="p-8 text-center"><p className="text-slate-500 font-medium">Access Denied: Inventory controls are restricted to administrators.</p></div>

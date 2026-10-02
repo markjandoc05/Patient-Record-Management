@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { pool } from '../backend/database';
 import { migrateDatabase } from './migrate-database';
 if (!new URL(process.env.DATABASE_URL || 'postgresql://localhost/missing').pathname.endsWith('/vine_import_test') || process.env.ALLOW_TEST_DATABASE !== 'yes') throw new Error('Use isolated vine_import_test and ALLOW_TEST_DATABASE=yes');
-await migrateDatabase(); await pool.query('TRUNCATE app_records, auth_identities, auth_sessions, oauth_attempts');
+await migrateDatabase(); await pool.query('TRUNCATE service_branch_settings, services, service_categories, app_records, auth_identities, auth_sessions, oauth_attempts');
 const temporary = await mkdtemp(path.join(tmpdir(), 'vine-import-fixture-'));
 const source = path.join(temporary, 'source'); const target = path.join(temporary, 'target');
 const filePath = 'uploads/patient-one/general/patient-one/test.pdf'; const contents = Buffer.from('%PDF-1.4\nSynthetic fixture');

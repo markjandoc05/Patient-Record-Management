@@ -119,6 +119,7 @@ export function mountDataApi(app: express.Express) {
           } else if (collection === 'branches') {
             if (!globalRoles.has(profile.role)) forbidden(); resource = 'Branch'; branchId = id;
             if (operation.mode === 'delete') {
+              if ((await tx.sql('SELECT 1 FROM service_branch_settings WHERE branch_id=$1 LIMIT 1', [id])).rows.length) forbidden('Branch has service configuration; deactivate it instead');
               for (const [name, field] of [['patients', 'homeBranchId'], ['appointments', 'branchId'], ['visits', 'branchId'], ['inventory_stocks', 'branchId'], ['stock_transfers', 'fromBranchId'], ['stock_transfers', 'toBranchId']]) {
                 if (!(await tx.get(db.collection(name).where(field, '==', id).limit(1))).empty) forbidden('Branch has linked records; deactivate it instead');
               }

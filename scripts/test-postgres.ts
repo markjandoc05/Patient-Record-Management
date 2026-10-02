@@ -10,7 +10,7 @@ import { migrateDatabase } from './migrate-database';
 const url = new URL(process.env.DATABASE_URL || 'postgresql://localhost/missing');
 if (!url.pathname.endsWith('/vine_test') || process.env.ALLOW_TEST_DATABASE !== 'yes') throw new Error('Use an isolated vine_test database and ALLOW_TEST_DATABASE=yes');
 await migrateDatabase();
-await pool.query('TRUNCATE app_records, auth_sessions, auth_identities, oauth_attempts');
+await pool.query('TRUNCATE service_branch_settings, services, service_categories, app_records, auth_sessions, auth_identities, oauth_attempts');
 let assertions = 0;
 function check(condition: any, message: string) { assert.ok(condition, message); assertions++; }
 const counter = db.collection('counters').doc('test');

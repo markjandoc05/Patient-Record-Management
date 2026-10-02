@@ -18,6 +18,7 @@ import {
   UserCog,
 } from 'lucide-react';
 import { AUDIT_QUERY_LIMIT } from '../auditPolicy';
+import { priceLabel } from '../servicesPolicy';
 import { useTimezone } from '../contexts/TimezoneContext';
 import { db } from '../platform';
 import { getActiveDatePrefix } from '../utils/timezone';
@@ -41,6 +42,13 @@ interface AuditLog {
   resourceName?: string;
   details?: string;
   eventType?: string;
+  changes?: { field: string; before?: unknown; after?: unknown }[];
+}
+
+function ServiceChanges({ log }: { log: AuditLog }) {
+  if (!['Service', 'Service Category'].includes(log.resource || '')) return null;
+  const value = (field: string, v: unknown) => v === null ? field === 'price_override' ? 'Use standard price' : field === 'standard_price' ? 'Not configured' : 'Not set' : v === undefined ? 'Not recorded' : ['standard_price', 'price_override'].includes(field) && typeof v === 'string' ? priceLabel(v) : typeof v === 'boolean' ? v ? 'Yes' : 'No' : String(v);
+  return <ul className="mt-2 space-y-1 text-xs text-slate-700">{log.changes?.map((c, index) => <li key={index} className="break-words"><span className="font-semibold">{c.field.replaceAll('_', ' ')}:</span> {value(c.field, c.before)} → {value(c.field, c.after)}</li>)}</ul>;
 }
 
 const itemsPerPage = 12;
@@ -201,7 +209,7 @@ export default function AuditTrailDashboard({ role }: AuditTrailDashboardProps) 
 
   const destructiveCount = filteredLogs.filter(log => log.action === 'DELETE' || log.eventType === 'attachment_deleted').length;
   const clinicalCount = filteredLogs.filter(log => ['Patient', 'Appointment', 'Visit'].includes(log.resource || '')).length;
-  const accessAndConfigCount = filteredLogs.filter(log => ['User', 'Settings', 'Branch'].includes(log.resource || '')).length;
+  const accessAndConfigCount = filteredLogs.filter(log => ['User', 'Settings', 'Branch', 'Service', 'Service Category'].includes(log.resource || '')).length;
 
   return (
     <div className="space-y-5">
@@ -220,7 +228,7 @@ export default function AuditTrailDashboard({ role }: AuditTrailDashboardProps) 
             <div>
               <h2 className="text-base font-bold text-slate-900">Selective audit policy</h2>
               <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">
-                Records important clinical, access, archive/delete, and configuration changes. Routine views and attachment uploads are excluded, and Support / Developer activity is never recorded.
+                Records durable clinical, access, configuration, and attachment changes, including authorized Support / Developer activity. Services and category changes include server-attributed actors and before/after values. Routine views are excluded.
               </p>
             </div>
           </div>
@@ -266,7 +274,7 @@ export default function AuditTrailDashboard({ role }: AuditTrailDashboardProps) 
             <option value="ALL">All actions</option><option value="CREATE">Create</option><option value="UPDATE">Update</option><option value="DELETE">Delete</option><option value="AUTH">Authentication</option>
           </select>
           <select aria-label="Filter by resource" value={resourceFilter} onChange={event => { setResourceFilter(event.target.value); setCurrentPage(1); }} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-700 outline-none focus:border-teal-500 lg:col-span-2">
-            <option value="ALL">All resources</option><option value="Patient">Patients</option><option value="Appointment">Appointments</option><option value="Visit">Visits</option><option value="User">Users</option><option value="Settings">Settings</option><option value="Branch">Branches</option>
+            <option value="ALL">All resources</option><option value="Patient">Patients</option><option value="Appointment">Appointments</option><option value="Visit">Visits</option><option value="User">Users</option><option value="Settings">Settings</option><option value="Branch">Branches</option><option value="Service">Services</option><option value="Service Category">Service categories</option>
           </select>
           <label className="relative lg:col-span-2"><CalendarDays className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input aria-label="Start date" type="date" value={startDate} onChange={event => { setStartDate(event.target.value); setCurrentPage(1); }} className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-2 text-sm text-slate-700 outline-none focus:border-teal-500" /></label>
           <label className="relative lg:col-span-2"><CalendarDays className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input aria-label="End date" type="date" value={endDate} onChange={event => { setEndDate(event.target.value); setCurrentPage(1); }} className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-2 text-sm text-slate-700 outline-none focus:border-teal-500" /></label>
@@ -289,7 +297,7 @@ export default function AuditTrailDashboard({ role }: AuditTrailDashboardProps) 
               {currentLogs.map(log => (
                 <article key={log.id} className="space-y-3 p-4">
                   <div className="flex items-start justify-between gap-3"><div><p className="font-bold text-slate-900">{log.resource || 'System'} {log.resourceName && <span className="font-medium text-slate-500">· {log.resourceName}</span>}</p><p className="mt-1 text-xs text-slate-500">{formatTimezone(asDate(log.timestamp), timezone)}</p></div>{actionBadge(log.action)}</div>
-                  <p className="text-sm leading-6 text-slate-600">{log.details || 'No additional details.'}</p>
+                  <p className="text-sm leading-6 text-slate-600">{log.details || 'No additional details.'}</p><ServiceChanges log={log} />
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500"><span className="font-semibold text-slate-700">{log.userName || log.userEmail || 'Unknown actor'}</span><span>{titleCase(log.userRole)}</span><span className="font-mono">{log.resourceId || '—'}</span></div>
                 </article>
               ))}
@@ -304,7 +312,7 @@ export default function AuditTrailDashboard({ role }: AuditTrailDashboardProps) 
                       <td className="px-5 py-4"><p className="font-semibold text-slate-900">{log.userName || log.userEmail || 'Unknown actor'}</p><p className="mt-1 text-xs text-slate-500">{titleCase(log.userRole)}{log.userEmail && log.userName ? ` · ${log.userEmail}` : ''}</p></td>
                       <td className="px-5 py-4">{actionBadge(log.action)}</td>
                       <td className="px-5 py-4"><div className="flex items-center gap-2"><span className="rounded-md bg-teal-50 px-2 py-1 text-[11px] font-bold text-teal-700">{log.resource || 'System'}</span><span className="font-semibold text-slate-700">{log.resourceName || '—'}</span></div><p className="mt-1.5 max-w-56 truncate font-mono text-[10px] text-slate-400" title={log.resourceId}>{log.resourceId || '—'}</p></td>
-                      <td className="max-w-md px-5 py-4 text-sm leading-6 text-slate-600">{log.details || 'No additional details.'}</td>
+                      <td className="max-w-md px-5 py-4 text-sm leading-6 text-slate-600">{log.details || 'No additional details.'}<ServiceChanges log={log} /></td>
                     </tr>
                   ))}
                 </tbody>

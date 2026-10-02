@@ -36,7 +36,7 @@ async function upload(name: string, bytes: Uint8Array, mime: string, role = 'sup
 const policy = { allowedExtensions: ['.png', '.jpg', '.pdf'], maxFileSizeMB: 1, maxFilesPerRecord: 5 };
 try {
   await migrateDatabase(); // Initialize only the guarded disposable test schema.
-  await pool.query('TRUNCATE app_records, auth_sessions, auth_identities, oauth_attempts');
+  await pool.query('TRUNCATE service_branch_settings, services, service_categories, app_records, auth_sessions, auth_identities, oauth_attempts');
   for (const branch of ['A', 'B']) await db.collection('branches').doc(branch).set({ branchName: `Synthetic ${branch}`, status: 'Active' });
   for (const role of ['admin', 'doctor', 'staff', 'manager', 'support_developer']) {
     const token = randomBytes(32).toString('base64url'), csrf = randomBytes(32).toString('base64url');

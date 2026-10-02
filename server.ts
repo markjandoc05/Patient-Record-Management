@@ -1,3 +1,4 @@
+import { mountServices } from './backend/services';
 import express from "express";
 import { mountHttpSecurity } from "./backend/httpSecurity";
 import path from "path";
@@ -51,6 +52,7 @@ mountAuth(app);
 mountMaintenanceGate(app);
 mountDataApi(app);
 mountInventory(app);
+mountServices(app);
 app.get("/api/health", async (_req, res) => {
   try { await pool.query("SELECT 1"); res.json({ status: "ok", database: "postgresql" }); }
   catch { res.status(503).json({ status: "unavailable" }); }

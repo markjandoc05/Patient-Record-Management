@@ -50,7 +50,7 @@ const branchFilter = (operator: string, value: any) => [{ type: 'where', field: 
 
 try {
   await migrateDatabase();
-  await pool.query('TRUNCATE app_records, auth_sessions, auth_identities, oauth_attempts');
+  await pool.query('TRUNCATE service_branch_settings, services, service_categories, app_records, auth_sessions, auth_identities, oauth_attempts');
   for (const [id, name] of [['A', 'Synthetic Branch A'], ['B', 'Synthetic Branch B']]) {
     await db.collection('branches').doc(id).set({ branchName: name, status: 'Active' });
   }

@@ -73,6 +73,7 @@ db.runTransaction = (async (callback: any) => {
   beforeTransaction?.(); beforeTransaction = null;
   const staged: (() => void)[] = [];
   const tx: any = { get: (ref: any) => ref.get(), sql: async (sql: string, values: any[]) => {
+    if (sql === 'SELECT 1 FROM service_branch_settings WHERE branch_id=$1 LIMIT 1') return { rows: [] }; // No service fixtures in this in-memory suite.
     if (sql.includes('SELECT 1 FROM auth_identities')) return pool.query(sql, values);
     if (!sql.startsWith('DELETE FROM auth_')) throw new Error('Unexpected mutation SQL');
     if (sql.startsWith('DELETE FROM auth_sessions')) staged.push(() => {

@@ -1,5 +1,5 @@
 export type AuditAction = 'CREATE' | 'UPDATE' | 'DELETE' | 'VIEW' | 'AUTH';
-export type AuditResource = 'Patient' | 'Appointment' | 'Visit' | 'User' | 'Settings' | 'Branch';
+export type AuditResource = 'Patient' | 'Appointment' | 'Visit' | 'User' | 'Settings' | 'Branch' | 'Service' | 'Service Category';
 
 export const AUDIT_QUERY_LIMIT = 250;
 
