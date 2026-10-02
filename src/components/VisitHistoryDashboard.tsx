@@ -1,3 +1,4 @@
+import { performedServiceLabel, isVisitClinicallySealed } from '../utils/visitServicePolicy';
 import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot } from '../dataClient';
 import { formatDateTime } from '../utils';
@@ -99,7 +100,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
 
   const filteredVisits = visits.filter(v =>
     (showArchived ? v.isArchived === true : v.isArchived !== true) &&
-    ([v.patientName, doctorName(v), v.treatmentService, v.diagnosis, v.visitSource, v.id].filter(Boolean).join(' ').toLowerCase().includes(normalizedSearch)) &&
+    ([v.patientName, doctorName(v), performedServiceLabel(v, ''), v.diagnosis, v.visitSource, v.id].filter(Boolean).join(' ').toLowerCase().includes(normalizedSearch)) &&
     (filterVisitType === 'All' || v.visitType === filterVisitType) &&
     (filterStatus === 'All' || v.status === filterStatus) &&
     (filterOutcome === 'All' || v.visitOutcome === filterOutcome) &&
@@ -246,7 +247,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
 
                   <div className="grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
                     <div className="flex min-w-0 items-center gap-2"><Stethoscope className="h-3.5 w-3.5 shrink-0 text-slate-400" /><span className="truncate">{doctorName(v)}</span></div>
-                    <div className="flex min-w-0 items-center gap-2"><Activity className="h-3.5 w-3.5 shrink-0 text-slate-400" /><span className="truncate">{v.treatmentService || v.diagnosis || 'Service not recorded'}</span></div>
+                    <div className="flex min-w-0 items-center gap-2"><Activity className="h-3.5 w-3.5 shrink-0 text-slate-400" /><span className="truncate">{performedServiceLabel(v, v.diagnosis || 'Service not recorded')}</span></div>
                   </div>
 
                   {(v.visitOutcome || v.followUpRequired) && (
@@ -257,7 +258,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
 
                   <div className="flex items-center gap-2 border-t border-slate-100 pt-3">
                     <button onClick={() => setSelectedVisit(v)} className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-xs font-semibold text-white transition hover:bg-slate-800"><Eye className="h-4 w-4" /> View details</button>
-                    {canUpdate && !v.isArchived && (role !== 'doctor' || v.doctorId === auth.currentUser?.uid) && (
+                    {canUpdate && !v.isArchived && !isVisitClinicallySealed(v) && (role !== 'doctor' || v.doctorId === auth.currentUser?.uid) && (
                       <button onClick={() => { setSelectedVisit(v); setShowAddForm(true); }} aria-label={`Edit visit for ${v.patientName}`} title="Edit visit" className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-slate-600 transition hover:bg-slate-50 hover:text-slate-900"><Pencil className="h-4 w-4" /></button>
                     )}
                     {canArchive && (v.isArchived ? (
@@ -291,7 +292,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
                 paginatedVisits.map(v => (
                   <tr key={v.id} className="transition-colors hover:bg-slate-50/70">
                     <td className="px-5 py-4"><p className="font-medium text-slate-800">{formatDateTime(v.visitDate)}</p><p className="mt-0.5 text-xs text-slate-400">Newest visits first</p></td>
-                    <td className="px-5 py-4"><div className="flex items-center gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700">{visitInitials(v.patientName)}</div><div className="min-w-0"><p className="max-w-48 truncate font-semibold text-slate-950">{v.patientName || 'Unnamed patient'}</p><p className="mt-0.5 max-w-48 truncate text-xs text-slate-400">{v.treatmentService || v.visitType || 'Clinic visit'}</p></div></div></td>
+                    <td className="px-5 py-4"><div className="flex items-center gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700">{visitInitials(v.patientName)}</div><div className="min-w-0"><p className="max-w-48 truncate font-semibold text-slate-950">{v.patientName || 'Unnamed patient'}</p><p className="mt-0.5 max-w-48 truncate text-xs text-slate-400">{performedServiceLabel(v, v.visitType || 'Clinic visit')}</p></div></div></td>
                     <td className="px-5 py-4"><p className="max-w-40 truncate font-medium text-slate-700">{doctorName(v)}</p><p className="mt-0.5 max-w-40 truncate text-xs text-slate-400">{v.visitSource || 'Source not recorded'}</p></td>
                     <td className="px-5 py-4"><p className="max-w-40 truncate font-medium text-slate-700">{v.visitOutcome || 'Not recorded'}</p><p className="mt-0.5 max-w-40 truncate text-xs text-slate-400">{v.diagnosis || 'No diagnosis recorded'}</p></td>
                     <td className="px-5 py-4">
@@ -301,7 +302,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
                     <td className="px-5 py-4 text-right">
                       <div className="inline-flex items-center gap-1.5">
                         <button onClick={() => setSelectedVisit(v)} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-slate-900 px-3 text-xs font-semibold text-white transition hover:bg-slate-800"><Eye className="h-3.5 w-3.5" /> View</button>
-                        {canUpdate && !v.isArchived && (role !== 'doctor' || v.doctorId === auth.currentUser?.uid) && <button onClick={() => { setSelectedVisit(v); setShowAddForm(true); }} aria-label={`Edit visit for ${v.patientName}`} title="Edit visit" className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-50 hover:text-slate-900"><Pencil className="h-3.5 w-3.5" /></button>}
+                        {canUpdate && !v.isArchived && !isVisitClinicallySealed(v) && (role !== 'doctor' || v.doctorId === auth.currentUser?.uid) && <button onClick={() => { setSelectedVisit(v); setShowAddForm(true); }} aria-label={`Edit visit for ${v.patientName}`} title="Edit visit" className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-50 hover:text-slate-900"><Pencil className="h-3.5 w-3.5" /></button>}
                         {canArchive && (v.isArchived ? <button onClick={() => handleRestore(v)} aria-label={`Restore visit for ${v.patientName}`} title="Restore visit" className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-emerald-200 text-emerald-700 transition hover:bg-emerald-50"><RotateCcw className="h-3.5 w-3.5" /></button> : <button onClick={() => handleArchive(v)} aria-label={`Archive visit for ${v.patientName}`} title="Archive visit" className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700"><Archive className="h-3.5 w-3.5" /></button>)}
                       </div>
                     </td>
@@ -357,7 +358,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
                     ['Provider', doctorName(selectedVisit)],
                     ['Clinic', branchName(selectedVisit)],
                     ['Source', selectedVisit.visitSource || 'Not recorded'],
-                    ['Service', selectedVisit.treatmentService || 'Not recorded'],
+                    ['Service', performedServiceLabel(selectedVisit, 'Not recorded')],
                     ['Outcome', selectedVisit.visitOutcome || 'Not recorded'],
                     ['Visit ID', String(selectedVisit.id || '').slice(0, 12).toUpperCase() || 'Not available'],
                   ].map(([label, value]) => (
@@ -398,7 +399,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
               ) : (
                 <button className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-600 hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700" onClick={() => handleArchive(selectedVisit)}><Archive className="h-4 w-4" /> Archive</button>
               ))}
-              {canUpdate && !selectedVisit.isArchived && (role !== 'doctor' || selectedVisit.doctorId === auth.currentUser?.uid) && (
+              {canUpdate && !selectedVisit.isArchived && !isVisitClinicallySealed(selectedVisit) && (role !== 'doctor' || selectedVisit.doctorId === auth.currentUser?.uid) && (
                 <button className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-700 hover:bg-slate-100" onClick={() => setShowAddForm(true)}><Pencil className="h-4 w-4" /> Edit visit</button>
               )}
               <button className="inline-flex h-10 items-center justify-center rounded-xl bg-slate-900 px-5 text-xs font-semibold text-white hover:bg-slate-800" onClick={() => setSelectedVisit(null)}>Close</button>

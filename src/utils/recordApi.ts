@@ -18,7 +18,7 @@ async function recordRequest(
   const assertCurrent = () => {
     if (!scope) return;
     scope.signal.throwIfAborted();
-    if (!scope.current() || auth.currentUser?.uid !== currentUser.uid) throw new DOMException('Appointment request is no longer current.', 'AbortError');
+    if (!scope.current() || auth.currentUser?.uid !== currentUser.uid) throw new DOMException('Protected record request is no longer current.', 'AbortError');
   };
   const token = await currentUser.getRequestToken();
   assertCurrent();
@@ -54,11 +54,11 @@ export const createAppointmentRecord = (payload: Record<string, unknown>, scope?
 export const updateAppointmentRecord = (appointmentId: string, payload: Record<string, unknown>, scope?: RecordRequestScope) =>
   recordRequest('appointments', 'PATCH', payload, appointmentId, undefined, scope);
 
-export const createVisitRecord = (payload: Record<string, unknown>) =>
-  recordRequest('visits', 'POST', payload);
+export const createVisitRecord = (payload: Record<string, unknown>, scope?: RecordRequestScope) =>
+  recordRequest('visits', 'POST', payload, undefined, undefined, scope);
 
-export const updateVisitRecord = (visitId: string, payload: Record<string, unknown>) =>
-  recordRequest('visits', 'PATCH', payload, visitId);
+export const updateVisitRecord = (visitId: string, payload: Record<string, unknown>, scope?: RecordRequestScope) =>
+  recordRequest('visits', 'PATCH', payload, visitId, undefined, scope);
 
 export const archiveRecord = (kind: RecordKind, recordId: string, reason: string) =>
   recordRequest(kind, 'DELETE', { reason }, recordId);

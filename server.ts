@@ -1,3 +1,5 @@
+import { applyVisitServiceSelection } from './backend/visitServices';
+import { isVisitClinicallySealed } from './src/utils/visitServicePolicy';
 import { AppointmentServiceError, parseAppointmentServiceSelection, appointmentServiceSnapshot } from './backend/appointmentServices';
 import { mountServices } from './backend/services';
 import express from "express";
@@ -570,8 +572,12 @@ function parseAppointmentPayload(payload: Record<string, unknown>): Record<strin
     };
 }
 
-function parseVisitPayload(payload: Record<string, unknown>): Record<string, any> {
-    const data = cleanRecordText(payload, visitTextLimits);
+function parseVisitPayload(payload: Record<string, unknown>, previous?: Record<string, any>): Record<string, any> {
+    // Retained historical text is not a new write: do not trim or reject an
+    // imported value against today's limit. Selection mirroring happens later.
+    const retainText = previous && (previous.serviceId
+        || !Object.hasOwn(payload, 'treatmentService') || payload.treatmentService === previous.treatmentService);
+    const data = cleanRecordText(retainText ? { ...payload, treatmentService: undefined } : payload, visitTextLimits);
     if (!isValidDocumentId(payload.patientId)) throw new RequestError(400, 'patientId is required');
     if (!isValidDocumentId(payload.branchId)) throw new RequestError(400, 'branchId is required');
     if (!isValidDocumentId(payload.doctorId)) throw new RequestError(400, 'doctorId is required');
@@ -608,6 +614,15 @@ async function refreshAppointmentAuthorization(transaction: RecordTransaction, a
     assertDevelopmentRole(profile?.role);
     if (profile?.active !== true) throw new RequestError(403, 'Account scope changed');
     requireRole(profile, auditActionRoles.Appointment[permission]);
+    authorization.userProfile = profile;
+}
+
+async function refreshVisitAuthorization(transaction: RecordTransaction, authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> }, permission: 'CREATE' | 'UPDATE', doctorId: string) {
+    const profile = (await transaction.get(db.collection('users').doc(authorization.decodedToken.uid))).data();
+    assertDevelopmentRole(profile?.role);
+    if (profile?.active !== true) throw new RequestError(403, 'Account scope changed');
+    requireRole(profile, auditActionRoles.Visit[permission]);
+    if (profile.role === 'doctor' && doctorId !== authorization.decodedToken.uid) throw new RequestError(403, 'Doctors can only write their own visit records');
     authorization.userProfile = profile;
 }
 
@@ -1897,7 +1912,9 @@ app.post("/api/records/visits", async (req, res) => {
 
     try {
         requireRole(authorization.userProfile, auditActionRoles.Visit.CREATE);
-        const visit = parseVisitPayload(requestPayload(req));
+        const payload = requestPayload(req);
+        const visit = parseVisitPayload(payload);
+        const selection = parseAppointmentServiceSelection(payload);
         if (authorization.userProfile.role === 'doctor'
             && visit.doctorId !== authorization.decodedToken.uid) {
             throw new RequestError(403, 'Doctors can only create their own visit records');
@@ -1907,6 +1924,7 @@ app.post("/api/records/visits", async (req, res) => {
         const actorName = trustedUserName(authorization);
 
         await db.runTransaction(async transaction => {
+            await refreshVisitAuthorization(transaction, authorization, 'CREATE', visit.doctorId);
             const context = await transactionRecordContext(
                 transaction,
                 authorization,
@@ -1938,6 +1956,7 @@ app.post("/api/records/visits", async (req, res) => {
             await assertDoctorAvailability(transaction, visit.doctorId, visit.visitDate, {
                 appointmentId: visit.appointmentId
             });
+            await applyVisitServiceSelection(transaction, selection, payload, visit);
             const visitSource = linkedAppointmentRef ? 'Appointment' : 'Walk-In';
             transaction.create(visitRef, {
                 ...visit,
@@ -2008,9 +2027,10 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
     try {
         requireRole(authorization.userProfile, auditActionRoles.Visit.UPDATE);
         if (!isValidDocumentId(req.params.visitId)) throw new RequestError(400, 'Invalid visit ID');
-        const updates = parseVisitPayload(requestPayload(req));
+        const payload = requestPayload(req);
+        const selection = parseAppointmentServiceSelection(payload);
         if (authorization.userProfile.role === 'doctor'
-            && updates.doctorId !== authorization.decodedToken.uid) {
+            && payload.doctorId !== authorization.decodedToken.uid) {
             throw new RequestError(403, 'Doctors can only update their own visit records');
         }
         const visitRef = db.collection('visits').doc(req.params.visitId);
@@ -2018,10 +2038,13 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
         const actorName = trustedUserName(authorization);
 
         await db.runTransaction(async transaction => {
+            await refreshVisitAuthorization(transaction, authorization, 'UPDATE', String(payload.doctorId || ''));
             const visitSnapshot = await transaction.get(visitRef);
             if (!visitSnapshot.exists) throw new RequestError(404, 'Visit not found');
             const visitData = visitSnapshot.data() || {};
             if (visitData.isArchived === true) throw new RequestError(409, 'Archived visits must be restored before editing');
+            if (isVisitClinicallySealed(visitData)) throw new RequestError(409, 'Signed or finalized visits are read-only; no amendment workflow is configured.');
+            const updates = parseVisitPayload(payload, visitData);
             if (authorization.userProfile.role === 'doctor'
                 && visitData.doctorId !== authorization.decodedToken.uid) {
                 throw new RequestError(403, 'Doctors can only update their own visit records');
@@ -2062,6 +2085,7 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
                 visitId: visitRef.id
             });
 
+            await applyVisitServiceSelection(transaction, selection, payload, updates, visitData);
             const visitsSnapshot = await transaction.get(
                 db.collection('visits').where('patientId', '==', updates.patientId)
             );

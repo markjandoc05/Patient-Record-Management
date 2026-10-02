@@ -21,10 +21,10 @@ const choiceLabel = (choice: SelectedAppointmentService) => `${choice.name} · $
 // A historical snapshot is never resolved through the live catalogue. Editable
 // selection and an explicitly requested review are separate transitions; only
 // confirmation copies a reviewed version into the parent's submission state.
-export default function AppointmentServicePicker({ branchId, readOnly, recorded, choice, onChange, onReviewRequired, unresolved, error }: {
+export default function AppointmentServicePicker({ branchId, readOnly, recorded, choice, onChange, onReviewRequired, unresolved, error, fieldId = 'appointment-service', label = 'Service (optional)' }: {
   branchId: string; readOnly: boolean; recorded?: any; choice: AppointmentServiceChoice;
   onChange: (choice: AppointmentServiceChoice) => void; onReviewRequired: () => void;
-  unresolved: boolean; error?: string;
+  unresolved: boolean; error?: string; fieldId?: string; label?: string;
 }) {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
@@ -88,12 +88,12 @@ export default function AppointmentServicePicker({ branchId, readOnly, recorded,
   const retained = choice.kind === 'unchanged' && canKeepRecorded;
   const value = retained ? '__recorded' : selected?.serviceId || (unresolved ? '__review' : '__none');
   return <div className="space-y-2 rounded-xl border border-slate-200 p-3">
-    <label htmlFor="appointment-service" className="text-xs font-semibold text-slate-600">Service (optional)</label>
+    <label htmlFor={fieldId} className="text-xs font-semibold text-slate-600">{label}</label>
     {recorded?.serviceId && <p className="text-xs text-slate-600">Recorded: {recorded.serviceNameSnapshot || 'Historical Service'} · {recorded.serviceDurationMinutesSnapshot ?? 'Unknown'} min</p>}
     {readOnly ? <p className="text-sm text-slate-700">{recorded?.serviceId ? 'Saved Service snapshot retained.' : 'No canonical Service selected.'}</p> : <>
       {unresolved && <p role="alert" className="text-xs text-amber-700">{selected?.reviewRequired ? 'This selection needs review. Reload and confirm the current Service, choose another Service, or explicitly remove it before saving.' : 'Review the Service for the selected clinic. Choose an eligible Service or explicitly remove it before saving.'}</p>}
-      {branchId && <input aria-label="Search appointment Services" type="search" maxLength={120} value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} placeholder="Search Services" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />}
-      <select id="appointment-service" data-appointment-field="serviceSelection" aria-invalid={Boolean(error)} value={value} disabled={!branchId} onChange={event => {
+      {branchId && <input aria-label={fieldId === 'visit-service' ? 'Search performed Services' : 'Search appointment Services'} type="search" maxLength={120} value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} placeholder="Search Services" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />}
+      <select id={fieldId} data-appointment-field="serviceSelection" data-visit-field={fieldId === 'visit-service' ? 'serviceSelection' : undefined} aria-invalid={Boolean(error)} value={value} disabled={!branchId} onChange={event => {
         if (event.target.value === '__none') { onChange({ kind: 'removed' }); return; }
         if (event.target.value === '__recorded') { onChange({ kind: 'unchanged' }); return; }
         const row = visible.rows.find(service => service.id === event.target.value);

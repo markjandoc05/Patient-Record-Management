@@ -1,3 +1,4 @@
+import { performedServiceLabel } from '../utils/visitServicePolicy';
 import React, { useState } from 'react';
 import { formatDateTime } from '../utils';
 
@@ -83,7 +84,7 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
                     <div>
                       <span className="text-slate-400 block font-semibold uppercase tracking-wider text-[9px]">Service / Treatment</span>
                       <span className="block break-words text-sm font-semibold text-slate-800">
-                        {c.treatmentService || c.servicePerformed || 'Consultation'}
+                        {performedServiceLabel(c)}
                       </span>
                     </div>
                     <div>
@@ -167,7 +168,7 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
               <div className="grid grid-cols-1 gap-4 pt-2 sm:grid-cols-2">
                 <div>
                   <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Service Performed</span>
-                  <span className="font-semibold text-slate-800">{selectedVisit.treatmentService || selectedVisit.servicePerformed || 'Consultation'}</span>
+                  <span className="font-semibold text-slate-800">{performedServiceLabel(selectedVisit)}</span>
                 </div>
                 <div>
                   <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Visit Source</span>
