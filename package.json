@@ -36,6 +36,8 @@
     "test:services": "node --import tsx scripts/test-services-policy.ts",
     "test:services-api": "node --import tsx scripts/test-services-api.ts",
     "test:services-migration": "node --import tsx scripts/test-services-migration.ts",
+    "test:appointment-services-api": "node --import tsx scripts/test-appointment-services-api.ts",
+    "test:appointment-services-ui": "node --import tsx scripts/test-appointment-services-ui.ts",
     "test:services-ui": "node --import tsx scripts/test-services-ui.ts"
   },
   "dependencies": {

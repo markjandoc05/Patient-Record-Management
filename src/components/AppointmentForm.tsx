@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { collection, getDocs, limit, orderBy, query, where } from '../dataClient';
+import AppointmentServicePicker, { type AppointmentServiceChoice } from './AppointmentServicePicker';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { collection, getDocs, limit, orderBy, query, subscribeProtectedDataInvalidation, where } from '../dataClient';
 import { CheckCircle2, Clock3, Search } from 'lucide-react';
 import { developerRoles, hasAdministrativeAccess } from '../rbac';
 import { db, auth } from '../platform';
@@ -31,7 +32,7 @@ type AppointmentFormProps = {
   appointments?: any[];
 };
 
-export default function AppointmentForm({
+function AppointmentFormWorkspace({
   patients,
   branches,
   users,
@@ -60,6 +61,14 @@ export default function AppointmentForm({
   const [saveError, setSaveError] = useState('');
   const [activeTab, setActiveTab] = useState<'details' | 'history'>('details');
   const [logs, setLogs] = useState<any[]>([]);
+  const [serviceChoice, setServiceChoice] = useState<AppointmentServiceChoice>({ kind: 'unchanged' });
+  const [serviceBranchNotice, setServiceBranchNotice] = useState(false);
+  const saveLifetime = useRef({ active: false, generation: 0, request: null as AbortController | null });
+  useLayoutEffect(() => {
+    saveLifetime.current.active = true; saveLifetime.current.generation++;
+    setIsSaving(false);
+    return () => { saveLifetime.current.active = false; saveLifetime.current.generation++; saveLifetime.current.request?.abort(); };
+  }, [branchId]);
 
   const currentUser = auth.currentUser;
   const currentUserRole = users.find(user => user.email === currentUser?.email)?.role?.toLowerCase();
@@ -146,6 +155,12 @@ export default function AppointmentForm({
   };
 
   const handleBranchChange = (nextBranchId: string) => {
+    if (nextBranchId !== branchId) {
+      if (!appointment?.serviceId && serviceChoice.kind === 'selected') {
+        setServiceChoice({ kind: 'unchanged' });
+        setServiceBranchNotice(true);
+      }
+    }
     setBranchId(nextBranchId);
     clearError('branchId');
     const doctorStillAvailable = doctors.some(doctor => doctor.id === doctorId && doctor.assignedBranches?.includes(nextBranchId));
@@ -158,11 +173,21 @@ export default function AppointmentForm({
     if (!appointment && date === today && selectedTime && selectedTime <= nowTime) setSelectedTime('');
   };
 
+  const serviceUnresolved = (serviceChoice.kind === 'unchanged' && Boolean(appointment?.serviceId) && branchId !== appointment.branchId)
+    || (serviceChoice.kind === 'selected' && (serviceChoice.branchId !== branchId || serviceChoice.reviewRequired));
+  const changeService = (next: AppointmentServiceChoice) => {
+    setServiceChoice(next);
+    clearError('serviceSelection');
+    setSaveError('');
+  };
+  const requireServiceReview = () => setServiceChoice(current => current.kind === 'selected' ? { ...current, reviewRequired: true } : current);
+
   const saveAppointment = async () => {
     if (isSaving || isReadOnly) return;
     const finalStatus = status;
     const appointmentDate = selectedDate && selectedTime ? `${selectedDate}T${selectedTime}` : '';
     const validationErrors: Record<string, string> = {};
+    if (serviceUnresolved) validationErrors.serviceSelection = 'Choose an eligible Service, confirm the reviewed Service, or explicitly remove it before saving.';
     if (!patientId || !selectedPatient) validationErrors.patientId = 'Select a patient from the results.';
     if (!branchId) validationErrors.branchId = 'Select the clinic for this appointment.';
     if (!doctorId) validationErrors.doctorId = 'Select an available doctor.';
@@ -185,6 +210,7 @@ export default function AppointmentForm({
     setErrors({});
     setIsSaving(true);
     const payload = {
+      ...(serviceChoice.kind === 'unchanged' ? {} : { serviceSelection: serviceChoice.kind === 'removed' ? null : { serviceId: serviceChoice.serviceId, expectedVersion: serviceChoice.expectedVersion } }),
       patientId,
       appointmentDate,
       branchId,
@@ -195,18 +221,26 @@ export default function AppointmentForm({
       status: finalStatus,
     };
 
+    const controller = new AbortController(), generation = saveLifetime.current.generation;
+    saveLifetime.current.request = controller;
+    const current = () => saveLifetime.current.active && saveLifetime.current.generation === generation
+      && saveLifetime.current.request === controller && !controller.signal.aborted;
+    const requestScope = { signal: controller.signal, current };
     try {
       const saved = appointment
-        ? await updateAppointmentRecord(appointment.id, payload)
-        : await createAppointmentRecord(payload);
+        ? await updateAppointmentRecord(appointment.id, payload, requestScope)
+        : await createAppointmentRecord(payload, requestScope);
+      if (!current()) return;
       if (!saved.id) throw new Error('The server did not confirm the appointment record. Please try again.');
       onSave();
       onClose();
     } catch (error: any) {
+      if (!current() || error.name === 'AbortError') return;
+      if (error.code === 'SERVICE_VERSION_CHANGED') requireServiceReview();
       console.error('Error saving appointment:', error);
       setSaveError(error?.message || 'The appointment could not be saved. Please try again.');
     } finally {
-      setIsSaving(false);
+      if (current()) setIsSaving(false);
     }
   };
 
@@ -254,6 +288,9 @@ export default function AppointmentForm({
 
               <div className="space-y-1.5"><label htmlFor="appointment-branch" className="text-xs font-semibold text-slate-600">Clinic <span className="text-rose-500">*</span></label><select id="appointment-branch" data-appointment-field="branchId" value={branchId} onChange={event => handleBranchChange(event.target.value)} disabled={isReadOnly} className={fieldClass('branchId', `h-[42px] ${isReadOnly ? 'cursor-not-allowed bg-slate-50 text-slate-500' : ''}`)}><option value="">Select clinic</option>{branches.filter(branch => branch.status === 'Active' || branch.id === appointment?.branchId).map(branch => <option key={branch.id} value={branch.id}>{branch.branchName}</option>)}</select>{errors.branchId && <p className="text-xs font-medium text-rose-600">{errors.branchId}</p>}</div>
 
+              {serviceBranchNotice && <p role="status" className="text-xs text-amber-700">Clinic changed. Choose a Service for this clinic, or continue without a Service.</p>}
+              <AppointmentServicePicker key={branchId} branchId={branchId} readOnly={isReadOnly} recorded={appointment} choice={serviceChoice} onChange={changeService} onReviewRequired={requireServiceReview} unresolved={serviceUnresolved} error={errors.serviceSelection} />
+
               <div className="space-y-1.5"><label htmlFor="appointment-doctor" className="text-xs font-semibold text-slate-600">Doctor <span className="text-rose-500">*</span></label><select id="appointment-doctor" data-appointment-field="doctorId" value={doctorId} onChange={event => { setDoctorId(event.target.value); clearError('doctorId'); }} disabled={isReadOnly || !branchId} className={fieldClass('doctorId', `h-[42px] ${(isReadOnly || !branchId) ? 'cursor-not-allowed bg-slate-50 text-slate-500' : ''}`)}><option value="">{branchId ? 'Select doctor' : 'Select a clinic first'}</option>{availableDoctors.map(doctor => <option key={doctor.id} value={doctor.id}>{doctor.fullName || doctor.name}</option>)}</select>{errors.doctorId && <p className="text-xs font-medium text-rose-600">{errors.doctorId}</p>}</div>
 
               <div className="space-y-1.5"><label className="text-xs font-semibold text-slate-600">Appointment date <span className="text-rose-500">*</span></label><div data-appointment-field="appointmentDate" tabIndex={-1}><CustomDatePicker min={appointment ? '' : today} value={selectedDate} onChange={selectDate} disabled={isReadOnly || !doctorId} className={errors.appointmentDate ? 'border-rose-300 bg-rose-50/30' : ''} /></div>{errors.appointmentDate && <p className="text-xs font-medium text-rose-600">{errors.appointmentDate}</p>}</div>
@@ -275,9 +312,27 @@ export default function AppointmentForm({
         <footer className="-mx-5 -mb-5 flex flex-col-reverse gap-3 border-t border-slate-200 bg-white px-5 py-4 sm:-mx-7 sm:-mb-7 sm:flex-row sm:justify-end sm:px-7">
           {isView && !isLocked && <button type="button" onClick={() => setCurrentMode('edit')} className="rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-teal-700">Edit appointment</button>}
           <button type="button" onClick={closeForm} disabled={isSaving} className="rounded-xl bg-slate-100 px-5 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40">{isView ? 'Close' : 'Cancel'}</button>
-          {!isReadOnly && activeTab === 'details' && <button type="submit" disabled={isSaving} className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500">{isSaving ? <><Clock3 className="h-4 w-4 animate-spin" /> Saving…</> : <><CheckCircle2 className="h-4 w-4" /> {appointment ? 'Save changes' : 'Save appointment'}</>}</button>}
+          {!isReadOnly && activeTab === 'details' && <button type="submit" disabled={isSaving || serviceUnresolved} className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500">{isSaving ? <><Clock3 className="h-4 w-4 animate-spin" /> Saving…</> : <><CheckCircle2 className="h-4 w-4" /> {appointment ? 'Save changes' : 'Save appointment'}</>}</button>}
         </footer>
       </form>
     </div>
   );
+}
+
+// A keyed workspace prevents old access-scope drafts/options from flashing during
+// a render. Layout cleanup guards in-flight loads and saves before passive effects.
+export default function AppointmentForm(props: AppointmentFormProps) {
+  const currentUser = auth.currentUser;
+  const profile = currentUser ? props.users.find(user => user.id === currentUser.uid || user.email === currentUser.email) : undefined;
+  const branches = props.branches.filter(branch => hasAdministrativeAccess(profile?.role) || profile?.assignedBranches?.includes(branch.id));
+  const scope = JSON.stringify([currentUser?.uid ?? null, profile?.role ?? null, profile?.active === true,
+    [...(profile?.assignedBranches || [])].sort(), branches.map(branch => [branch.id, branch.status]).sort()]);
+  const [invalidatedScope, setInvalidatedScope] = useState<string | null>(null);
+  useLayoutEffect(() => subscribeProtectedDataInvalidation(() => setInvalidatedScope(scope)), [scope]);
+  // A current denial clears the form and requires reopening/recovered scope,
+  // rather than remounting a request that could create an authorization loop.
+  if (!profile?.active || invalidatedScope === scope || (props.appointment && !branches.some(branch => branch.id === props.appointment.branchId))) {
+    return <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 p-4"><div role="alert" className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6 shadow-xl"><p className="text-sm text-slate-700">Appointment access changed. Close this form and reopen it after your access is refreshed.</p><button type="button" onClick={props.onClose} className="rounded-xl bg-teal-700 px-4 py-2 text-sm font-semibold text-white">Close</button></div></div>;
+  }
+  return <AppointmentFormWorkspace key={scope} {...props} branches={branches} defaultBranchId={branches.some(branch => branch.id === props.defaultBranchId) ? props.defaultBranchId : undefined} />;
 }

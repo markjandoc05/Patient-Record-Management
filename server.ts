@@ -1,3 +1,4 @@
+import { AppointmentServiceError, parseAppointmentServiceSelection, appointmentServiceSnapshot } from './backend/appointmentServices';
 import { mountServices } from './backend/services';
 import express from "express";
 import { mountHttpSecurity } from "./backend/httpSecurity";
@@ -433,6 +434,7 @@ async function assertDoctorAvailability(
 }
 
 function sendRecordError(res: express.Response, error: unknown, operation: string) {
+    if (error instanceof AppointmentServiceError) return res.status(error.status).json({ error: error.message, code: error.code });
     if (error instanceof RequestError) return res.status(error.status).json({ error: error.message });
     console.error(`${operation} failed`, error);
     return res.status(500).json({ error: `${operation} failed` });
@@ -598,6 +600,14 @@ async function refreshSupportAuthorization(transaction: RecordTransaction, autho
     const profile = (await transaction.get(db.collection('users').doc(authorization.decodedToken.uid))).data();
     assertDevelopmentRole(profile?.role);
     if (profile?.active !== true || profile.role !== SUPPORT_DEVELOPER) throw new RequestError(403, 'Account scope changed');
+    authorization.userProfile = profile;
+}
+
+async function refreshAppointmentAuthorization(transaction: RecordTransaction, authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> }, permission: 'CREATE' | 'UPDATE') {
+    const profile = (await transaction.get(db.collection('users').doc(authorization.decodedToken.uid))).data();
+    assertDevelopmentRole(profile?.role);
+    if (profile?.active !== true) throw new RequestError(403, 'Account scope changed');
+    requireRole(profile, auditActionRoles.Appointment[permission]);
     authorization.userProfile = profile;
 }
 
@@ -1760,12 +1770,15 @@ app.post("/api/records/appointments", async (req, res) => {
 
     try {
         requireRole(authorization.userProfile, auditActionRoles.Appointment.CREATE);
-        const appointment = parseAppointmentPayload(requestPayload(req));
+        const payload = requestPayload(req);
+        const appointment = parseAppointmentPayload(payload);
+        const selection = parseAppointmentServiceSelection(payload);
         const appointmentRef = db.collection('appointments').doc();
         const now = new Date().toISOString();
         const actorName = trustedUserName(authorization);
 
         await db.runTransaction(async transaction => {
+            await refreshAppointmentAuthorization(transaction, authorization, 'CREATE');
             const context = await transactionRecordContext(
                 transaction,
                 authorization,
@@ -1775,8 +1788,10 @@ app.post("/api/records/appointments", async (req, res) => {
             );
             if (context.branchData.status !== 'Active') throw new RequestError(400, 'Branch is not active');
             await assertDoctorAvailability(transaction, appointment.doctorId, appointment.appointmentDate);
+            const serviceSnapshot = await appointmentServiceSnapshot(transaction, selection, appointment.branchId);
             transaction.create(appointmentRef, {
                 ...appointment,
+                ...serviceSnapshot,
                 patientName: typeof context.patientData.name === 'string' ? context.patientData.name : '',
                 attachments: [],
                 createdAt: now,
@@ -1805,13 +1820,15 @@ app.patch("/api/records/appointments/:appointmentId", async (req, res) => {
     try {
         requireRole(authorization.userProfile, auditActionRoles.Appointment.UPDATE);
         if (!isValidDocumentId(req.params.appointmentId)) throw new RequestError(400, 'Invalid appointment ID');
-        const updates = parseAppointmentPayload(requestPayload(req));
+        const payload = requestPayload(req);
+        const updates = parseAppointmentPayload(payload);
+        const selection = parseAppointmentServiceSelection(payload);
         const appointmentRef = db.collection('appointments').doc(req.params.appointmentId);
         const now = new Date().toISOString();
         const actorName = trustedUserName(authorization);
 
         await db.runTransaction(async transaction => {
-            await refreshSupportAuthorization(transaction, authorization);
+            await refreshAppointmentAuthorization(transaction, authorization, 'UPDATE');
             const appointmentSnapshot = await transaction.get(appointmentRef);
             if (!appointmentSnapshot.exists) throw new RequestError(404, 'Appointment not found');
             const appointmentData = appointmentSnapshot.data() || {};
@@ -1842,8 +1859,10 @@ app.patch("/api/records/appointments/:appointmentId", async (req, res) => {
             await assertDoctorAvailability(transaction, updates.doctorId, updates.appointmentDate, {
                 appointmentId: appointmentRef.id
             });
+            const serviceSnapshot = await appointmentServiceSnapshot(transaction, selection, updates.branchId, appointmentData);
             const trustedUpdates: Record<string, unknown> = {
                 ...updates,
+                ...serviceSnapshot,
                 patientName: typeof context.patientData.name === 'string' ? context.patientData.name : '',
                 updatedAt: now,
                 updatedByUid: authorization.decodedToken.uid,
@@ -1854,7 +1873,7 @@ app.patch("/api/records/appointments/:appointmentId", async (req, res) => {
                 trustedUpdates.lastStatusChangedByUid = authorization.decodedToken.uid;
                 trustedUpdates.lastStatusChangedByName = actorName;
             }
-            const changedFields = getChangedFieldNames(appointmentData, updates);
+            const changedFields = getChangedFieldNames(appointmentData, { ...updates, ...serviceSnapshot });
             transaction.update(appointmentRef, trustedUpdates);
             stageAuditLog(transaction, {
                 authorization,

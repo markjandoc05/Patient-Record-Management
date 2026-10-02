@@ -43,6 +43,10 @@ export function invalidateProtectedData(_reason?: unknown) {
   protectedGeneration++;
   for (const clear of [...protectedSubscriptions]) invokeSubscriber(clear, 'invalidation');
 }
+export function subscribeProtectedDataInvalidation(callback: () => void) {
+  protectedSubscriptions.add(callback);
+  return () => { protectedSubscriptions.delete(callback); };
+}
 export function onSnapshot(ref: Reference, callback: (value: any) => void, onError?: (error: any) => void) {
   let cancelled = false; let previous = ''; let timer: ReturnType<typeof setTimeout>; let errorReported: 'transient' | 'authorization' | null = null;
   let invalidated = false;
