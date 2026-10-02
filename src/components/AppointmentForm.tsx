@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { collection, getDocs, limit, orderBy, query, where } from '../dataClient';
 import { CheckCircle2, Clock3, Search } from 'lucide-react';
+import { developerRoles, hasAdministrativeAccess } from '../rbac';
 import { db, auth } from '../platform';
 import { CustomDatePicker } from './CustomDatePicker';
 import { createAppointmentRecord, updateAppointmentRecord } from '../utils/recordApi';
@@ -64,8 +65,8 @@ export default function AppointmentForm({
   const currentUserRole = users.find(user => user.email === currentUser?.email)?.role?.toLowerCase();
   const isVisitCreated = Boolean(appointment?.visitHistoryCreated);
   const isCompleted = appointment?.status === 'Completed';
-  const canModifySealed = ['admin', 'manager', 'doctor', 'support_developer'].includes(currentUserRole || '');
-  const canViewHistory = ['admin', 'support_developer'].includes(currentUserRole || '');
+  const canModifySealed = ['admin', 'manager', 'doctor', ...developerRoles].includes(currentUserRole || '');
+  const canViewHistory = hasAdministrativeAccess(currentUserRole);
   const isLocked = Boolean(appointment?.isArchived) || isVisitCreated || (isCompleted && !canModifySealed);
   const isView = currentMode === 'view';
   const isReadOnly = isView || isLocked;

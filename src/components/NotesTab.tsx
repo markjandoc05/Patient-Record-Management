@@ -1,9 +1,10 @@
+import { clinicalPatientRoles } from '../rbac';
 import React, { useState } from 'react';
 import PrivateNotesList from './PrivateNotesList';
 
 export default function NotesTab({ patient, userRole }: { patient: any; userRole?: string }) {
   const [subTab, setSubTab] = useState<'general' | 'private'>('general');
-  const canViewPrivateNotes = ['admin', 'doctor', 'support_developer'].includes(userRole || '');
+  const canViewPrivateNotes = (clinicalPatientRoles as readonly string[]).includes(userRole || '');
 
   return (
     <div className="min-w-0 space-y-4">

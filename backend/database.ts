@@ -56,7 +56,12 @@ export class RecordQuery {
     for (const [field, operator, value] of this.filters) {
       if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(field)) throw new Error('Invalid query field');
       values.push(field); const expression = `(data -> $${values.length}::text)`;
-      if (operator === 'in') {
+      if (operator === 'string-in') {
+        if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) throw new Error('Invalid string membership filter');
+        const textExpression = `(data ->> $${values.length}::text)`;
+        values.push(value);
+        clauses.push(`jsonb_typeof(${expression}) = 'string' AND ${textExpression} = ANY($${values.length}::text[])`);
+      } else if (operator === 'in') {
         if (!Array.isArray(value)) throw new Error('Invalid in filter');
         values.push(JSON.stringify(value)); clauses.push(`${expression} <@ $${values.length}::jsonb`);
       } else if (operator === 'array-contains') {

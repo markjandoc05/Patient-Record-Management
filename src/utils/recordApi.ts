@@ -1,4 +1,5 @@
 import { auth } from '../platform';
+import { invalidateProtectedData } from '../dataClient';
 
 type RecordKind = 'patients' | 'appointments' | 'visits';
 
@@ -22,7 +23,11 @@ async function recordRequest(
     body: JSON.stringify(payload)
   });
   const body = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(body?.error || `Failed to save ${kind.slice(0, -1)} record.`);
+  if (!response.ok) {
+    const error = Object.assign(new Error(body?.error || `Failed to save ${kind.slice(0, -1)} record.`), { status: response.status });
+    if (response.status === 401 || response.status === 403) invalidateProtectedData(error);
+    throw error;
+  }
   return body as { id: string; patientID?: string };
 }
 

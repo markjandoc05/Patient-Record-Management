@@ -1,9 +1,12 @@
 import type express from 'express';
 import { db, RecordQuery, DocumentReference, resolveData } from './database';
 import { sessionIdentity, trustedWriteOrigin } from './auth';
+import { RBAC, SUPPORT_DEVELOPER, administrativeRoles, clinicalPatientRoles, isSupportDeveloper } from '../src/rbac';
+import { assertDevelopmentRole } from './developmentAccess';
+import { assertAppointmentRead, scopeAppointmentRead } from './appointmentReadAccess';
 const publicSettings = new Set(['branding', 'timezone', 'footer', 'media']);
-const roles = new Set(['admin', 'manager', 'staff', 'doctor', 'support_developer']);
-const globalRoles = new Set(['admin', 'support_developer']);
+const roles = new Set(Object.keys(RBAC));
+const globalRoles = new Set<string>(administrativeRoles);
 const inventoryCollections = new Set(['inventory_items', 'inventory_stocks', 'suppliers', 'stock_transfers']);
 export function parseRecordPath(value: unknown, document: boolean) {
   if (typeof value !== 'string' || value.length > 500 || !/^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(value)) throw new Error('Invalid record path');
@@ -19,10 +22,12 @@ export function assertProfileWrite(actorId: string, role: string, targetId: stri
     if (updates.lastUpdatedBy !== actorId || Object.values(updates).some(value => typeof value !== 'string') || (updates.fullName !== undefined && (!updates.fullName.trim() || updates.fullName.length > 120))) forbidden('Invalid profile update'); return;
   }
   if (!globalRoles.has(role)) forbidden();
-  if (role !== 'support_developer' && (old?.role === 'support_developer' || updates.role === 'support_developer')) forbidden();
+  if (!isSupportDeveloper(role) && (isSupportDeveloper(old?.role) || isSupportDeveloper(updates.role))) forbidden();
   const permitted = ['role', 'assignedBranches', 'assignedBranchNames', 'defaultBranchId', 'defaultBranchName'];
   if (keys.some(key => !permitted.includes(key))) forbidden('Use the dedicated account lifecycle endpoint');
   if (updates.role !== undefined && !roles.has(updates.role)) forbidden('Invalid role');
+  assertDevelopmentRole(updates.role);
+  assertDevelopmentRole(old?.role);
   if (targetId === actorId && updates.role && updates.role !== old.role) forbidden('Cannot change your own role');
 }
 export function mountDataApi(app: express.Express) {
@@ -35,39 +40,51 @@ export function mountDataApi(app: express.Express) {
       const parts = parseRecordPath(req.body.path, isDocument);
       const collection = isDocument ? parts.slice(0, -1).join('/') : parts.join('/');
       const id = isDocument ? parts.at(-1)! : '';
-      let role = ''; let userId = '';
       const publicRead = isDocument && collection === 'settings' && publicSettings.has(id);
-      if (!publicRead) {
-        const identity = await sessionIdentity(req); userId = identity.uid;
-        const profile = (await db.collection('users').doc(userId).get()).data();
-        role = profile?.role || '';
+      const identity = publicRead ? null : await sessionIdentity(req);
+      const initialProfile = identity ? (await db.collection('users').doc(identity.uid).get()).data() : null;
+      const execute = async (tx?: any) => {
+        const read = (target: any) => tx ? tx.get(target) : target.get();
+        const userId = identity?.uid || '';
+        const profile = tx ? (await read(db.collection('users').doc(userId))).data() : initialProfile;
+        if (initialProfile?.role === SUPPORT_DEVELOPER && profile?.role !== SUPPORT_DEVELOPER) forbidden('Account scope changed');
+        const role = profile?.role || '';
         const ownProfile = isDocument && collection === 'users' && id === userId;
-        if (!ownProfile && (!profile?.active || !roles.has(role))) forbidden('Account is not approved or active');
-        if (collection === 'users' && !ownProfile && !roles.has(role)) forbidden();
-        if (['patients', 'appointments', 'visits', 'branches', 'users'].includes(collection)) { /* preserve shared clinic continuity reads */ }
-        else if (collection === 'audit_logs' || inventoryCollections.has(collection)) { if (!globalRoles.has(role)) forbidden(); }
-        else if (/^patients\/[A-Za-z0-9_-]+\/privateNotes$/.test(collection)) { if (!['admin', 'doctor', 'support_developer'].includes(role)) forbidden(); }
-        else forbidden();
-      }
-      if (isDocument) {
-        const snapshot = await new DocumentReference(collection, id).get();
-        return res.json({ document: { id, data: snapshot.data() || null } });
-      }
-      let query: RecordQuery = db.collection(collection);
-      const constraints = req.body.constraints || [];
-      if (!Array.isArray(constraints) || constraints.length > 10) throw new Error('Invalid constraints');
-      for (const constraint of constraints) {
-        if (constraint.type === 'where') query = query.where(constraint.field, constraint.operator, constraint.value);
-        else if (constraint.type === 'orderBy') {
-          if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(constraint.field)) throw new Error('Invalid order field');
-          query = query.orderBy(constraint.field, constraint.direction);
-        } else if (constraint.type === 'limit') {
-          if (!Number.isInteger(constraint.value) || constraint.value < 1 || constraint.value > 10000) throw new Error('Invalid limit');
-          query = query.limit(constraint.value);
-        } else throw new Error('Invalid constraint');
-      }
-      const snapshot = await query.get();
-      res.json({ documents: snapshot.docs.map(doc => ({ id: doc.id, data: doc.data() })) });
+        if (!publicRead) {
+          assertDevelopmentRole(role);
+          if (!ownProfile && (profile?.active !== true || !roles.has(role))) forbidden('Account is not approved or active');
+          if (['patients', 'appointments', 'visits', 'branches', 'users'].includes(collection)) { /* appointments additionally require server branch scope below */ }
+          else if (collection === 'audit_logs' || inventoryCollections.has(collection)) { if (!globalRoles.has(role)) forbidden(); }
+          else if (/^patients\/[A-Za-z0-9_-]+\/privateNotes$/.test(collection)) { if (!(clinicalPatientRoles as readonly string[]).includes(role)) forbidden(); }
+          else forbidden();
+        }
+        if (isDocument) {
+          const snapshot = await read(new DocumentReference(collection, id));
+          const data = snapshot.data();
+          if (collection === 'appointments' && data) assertAppointmentRead(profile, data);
+          return { document: { id, data: data || null } };
+        }
+        let query: RecordQuery = db.collection(collection);
+        const constraints = req.body.constraints || [];
+        if (!Array.isArray(constraints) || constraints.length > 10) throw new Error('Invalid constraints');
+        if (collection === 'appointments') query = scopeAppointmentRead(query, profile);
+        for (const constraint of constraints) {
+          if (constraint.type === 'where') query = query.where(constraint.field, constraint.operator, constraint.value);
+          else if (constraint.type === 'orderBy') {
+            if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(constraint.field)) throw new Error('Invalid order field');
+            query = query.orderBy(constraint.field, constraint.direction);
+          } else if (constraint.type === 'limit') {
+            if (!Number.isInteger(constraint.value) || constraint.value < 1 || constraint.value > 10000) throw new Error('Invalid limit');
+            query = query.limit(constraint.value);
+          } else throw new Error('Invalid constraint');
+        }
+        const snapshot = await read(query);
+        return { documents: snapshot.docs.map((doc: any) => ({ id: doc.id, data: doc.data() })) };
+      };
+      // Re-read scope under the same lock used by profile/assignment writes.
+      const result = collection === 'appointments' || initialProfile?.role === SUPPORT_DEVELOPER
+        ? await db.runTransaction(execute) : await execute();
+      res.json(result);
     } catch (error: any) { res.status(error.status || (error.message === 'Unauthorized' ? 401 : 400)).json({ error: error.status ? error.message : 'Data query failed' }); }
   });
   app.post('/api/data/write', async (req, res) => {
@@ -77,6 +94,7 @@ export function mountDataApi(app: express.Express) {
       if (!Array.isArray(operations) || operations.length < 1 || operations.length > 500) throw new Error('Invalid write batch');
       await db.runTransaction(async tx => {
         const profile = (await tx.get(db.collection('users').doc(identity.uid))).data();
+        assertDevelopmentRole(profile?.role);
         if (!profile?.active || !roles.has(profile.role)) forbidden('Account is not approved or active');
         const seen = new Set<string>();
         for (const operation of operations) {
@@ -106,7 +124,7 @@ export function mountDataApi(app: express.Express) {
               }
             } else if (!next.branchName?.trim() || !['Active', 'Inactive'].includes(next.status)) throw new Error('Invalid branch');
           } else if (/^patients\/[A-Za-z0-9_-]+\/privateNotes$/.test(collection)) {
-            if (!['admin', 'doctor', 'support_developer'].includes(profile.role) || operation.mode !== 'create') forbidden();
+            if (!(clinicalPatientRoles as readonly string[]).includes(profile.role) || operation.mode !== 'create') forbidden();
             const patientId = parts[1];
             if (!(await tx.get(db.collection('patients').doc(patientId))).exists || typeof data.note !== 'string' || !data.note.trim() || data.note.length > 10000) throw new Error('Invalid note');
             Object.assign(data, { patientId, authorId: identity.uid, authorName: profile.fullName, createdAt: { __operation: 'timestamp' } }); resource = 'Patient';

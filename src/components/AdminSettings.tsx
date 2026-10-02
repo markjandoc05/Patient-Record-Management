@@ -1,10 +1,11 @@
+import UserRoleSelect from './UserRoleSelect';
 import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot, doc, updateDoc, setDoc, getDoc, getDocs, addDoc, writeBatch, limit, query, where } from '../dataClient';
 import { auth } from '../platform';
 import imageCompression from 'browser-image-compression';
 import { getChangedFields } from '../utils/diffUtils';
 import { handleDataError, OperationType } from '../utils';
-import { RBAC } from '../rbac';
+import { RBAC, roleLabel, isSupportDeveloper, hasAdministrativeAccess } from '../rbac';
 import { logActivity } from '../utils/auditLogger';
 import { activateUserAccount, archiveUserAccount, deactivateUserAccount, deleteUserAccount, restoreUserAccount } from '../utils/userAccountApi';
 import { fetchLoginActivity, type LoginActivityRecord } from '../utils/loginActivityApi';
@@ -135,9 +136,9 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const [mediaSuccess, setMediaSuccess] = useState('');
   const [mediaSettings, setMediaSettings] = useState({ ...DEFAULT_MEDIA_SETTINGS });
 
-  const normalizedUserRole = userRole?.toLowerCase();
-  const canManageSettings = normalizedUserRole === 'admin' || normalizedUserRole === 'support_developer';
-  const canManageFooter = normalizedUserRole === 'support_developer';
+  const normalizedUserRole = userRole;
+  const canManageSettings = hasAdministrativeAccess(normalizedUserRole);
+  const canManageFooter = isSupportDeveloper(normalizedUserRole);
   const getAccountStatus = (account: any) => {
     if (account.isArchived === true || account.accountStatus === 'archived') return { label: 'Archived', className: 'bg-slate-100 text-slate-600' };
     if (account.active === true) return { label: 'Active', className: 'bg-emerald-50 text-emerald-700' };
@@ -245,7 +246,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     const dbRole = userDoc.exists() ? userDoc.data()?.role : null;
     console.log("AdminSettings: DB role verification:", dbRole);
 
-    if (dbRole !== 'admin' && dbRole !== 'support_developer') {
+    if (!hasAdministrativeAccess(dbRole)) {
         console.error("Branding upload failed: unauthorized access by role:", dbRole);
         setError("Permission Denied: Only Admin and Support / Developer can update branding.");
         return;
@@ -370,7 +371,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     const dbRole = userDoc.exists() ? userDoc.data()?.role : null;
     console.log("AdminSettings: DB role verification (save):", dbRole);
     
-    const isAdminOrSupport = dbRole === 'admin' || dbRole === 'support_developer';
+    const isAdminOrSupport = hasAdministrativeAccess(dbRole);
     if (!isAdminOrSupport) {
         console.error("AdminSettings: Branding save failed: unauthorized access by role:", dbRole);
         setError("Permission Denied: Only Admin and Support / Developer can update branding.");
@@ -757,7 +758,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         }
         const batch = writeBatch(db);
         batch.delete(doc(db, 'branches', id));
-        users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer').forEach(user => {
+        users.filter(user => isSupportDeveloper(userRole) || !isSupportDeveloper(user.role)).forEach(user => {
           const assignedBranches = user.assignedBranches || [];
           if (!assignedBranches.includes(id)) return;
           const nextIds = assignedBranches.filter((branchId: string) => branchId !== id);
@@ -813,7 +814,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     try {
         const batch = writeBatch(db);
         batch.update(doc(db, 'branches', editingBranchId), normalizedEditBranch);
-        users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer').forEach(user => {
+        users.filter(user => isSupportDeveloper(userRole) || !isSupportDeveloper(user.role)).forEach(user => {
           if (!(user.assignedBranches || []).includes(editingBranchId)) return;
           const assignedBranchNames = (user.assignedBranches || []).map((branchId: string, index: number) =>
             branchId === editingBranchId ? normalizedEditBranch.branchName : (user.assignedBranchNames?.[index] || branches.find(branch => branch.id === branchId)?.branchName || '')
@@ -868,7 +869,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         let updatedCount = 0;
         const validBranchIds = branches.map(b => b.id);
 
-        for (const user of users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer')) {
+        for (const user of users.filter(user => isSupportDeveloper(userRole) || !isSupportDeveloper(user.role))) {
              let needsUpdate = false;
              let assignedBranches = [...(user.assignedBranches || [])];
              let assignedBranchNames = [...(user.assignedBranchNames || [])];
@@ -936,7 +937,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
           onCancel={() => setActionToConfirm(null)}
           confirmLabel={actionToConfirm?.confirmLabel || 'Confirm Action'}
         />
-    {userRole === 'admin' || userRole === 'support_developer' ? (
+    {hasAdministrativeAccess(userRole) ? (
       <>
         <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="flex flex-col gap-4 border-b border-slate-100 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
@@ -951,7 +952,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
               <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-white text-teal-700 shadow-sm"><ShieldCheck className="h-4.5 w-4.5" /></div>
               <div>
                 <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Your access</p>
-                <p className="text-sm font-semibold text-slate-800">{userRole === 'support_developer' ? 'Support / Developer' : 'Administrator'}</p>
+                <p className="text-sm font-semibold text-slate-800">{isSupportDeveloper(userRole) ? 'Support / Developer' : 'Administrator'}</p>
               </div>
             </div>
           </div>
@@ -1537,19 +1538,19 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         <>
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left sm:px-6" onClick={() => setIsUserAccessOpen(!isUserAccessOpen)} aria-expanded={isUserAccessOpen}>
-              <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700"><Users className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">User access</span><span className="block text-xs font-normal text-slate-500">{users.filter(user => user.role !== 'support_developer' && user.active).length} active · {users.filter(user => user.role !== 'support_developer' && user.accountStatus === 'pending_activation').length} pending activation</span></span></span>
+              <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700"><Users className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">User access</span><span className="block text-xs font-normal text-slate-500">{users.filter(user => !isSupportDeveloper(user.role) && user.active).length} active · {users.filter(user => !isSupportDeveloper(user.role) && user.accountStatus === 'pending_activation').length} pending activation</span></span></span>
               <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${isUserAccessOpen ? 'rotate-180' : ''}`} />
           </button>
           {isUserAccessOpen && (
               <div className="border-t border-slate-100">
                   {(() => {
-                    const manageableUsers = users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer');
+                    const manageableUsers = users.filter(user => isSupportDeveloper(userRole) || !isSupportDeveloper(user.role));
                     const visibleUsers = manageableUsers.filter(user => {
                       if (userAccessView === 'archived') return user.isArchived === true;
                       if (userAccessView === 'pending') return user.isArchived !== true && user.accountStatus === 'pending_activation';
                       return user.isArchived !== true && user.active === true;
                     });
-                    const countedUsers = manageableUsers.filter(user => user.role !== 'support_developer');
+                    const countedUsers = manageableUsers.filter(user => !isSupportDeveloper(user.role));
                     const activeCount = countedUsers.filter(user => user.isArchived !== true && user.active === true).length;
                     const pendingCount = countedUsers.filter(user => user.isArchived !== true && user.accountStatus === 'pending_activation').length;
                     const archivedCount = countedUsers.filter(user => user.isArchived === true).length;
@@ -1574,7 +1575,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                               <button type="button" onClick={() => { setExpandedUserId(isExpanded ? null : user.id); setOpenUserActionMenuId(null); }} aria-expanded={isExpanded} className="grid min-w-0 flex-1 items-center gap-3 text-left sm:grid-cols-[minmax(190px,1.25fr)_minmax(200px,1.45fr)_130px_110px_82px]">
                                 <span className="min-w-0"><span className="block truncate text-sm font-semibold text-slate-900">{user.fullName || user.name || 'Name not set'}</span><span className="block text-[10px] font-medium uppercase tracking-wide text-slate-400 sm:hidden">Name</span></span>
                                 <span className="hidden truncate text-sm text-slate-500 sm:block">{user.email || 'No email address'}</span>
-                                <span className="hidden text-sm capitalize text-slate-600 sm:block">{user.role === 'support_developer' ? 'Support / Developer' : user.role || 'Staff'}</span>
+                                <span className="hidden text-sm capitalize text-slate-600 sm:block">{isSupportDeveloper(user.role) ? 'Support / Developer' : user.role || 'Staff'}</span>
                                 <span className="hidden text-sm text-slate-500 sm:block">{clinicCount} {clinicCount === 1 ? 'clinic' : 'clinics'}</span>
                                 <span className={`hidden w-fit rounded-full px-2 py-1 text-[10px] font-semibold sm:inline-flex ${accountStatus.className}`}>{accountStatus.label}</span>
                               </button>
@@ -1585,7 +1586,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                               </div>
                               <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                             </div>
-                            {isExpanded && <div className="grid gap-4 bg-slate-50/70 px-5 py-4 sm:grid-cols-[180px_minmax(0,1fr)] sm:px-6"><div><label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Role</label><select onChange={(e) => { const nextRole = e.target.value; setActionToConfirm({ onConfirm: () => updateRole(user.id, nextRole), title: 'Change User Role', message: `Change ${user.fullName || user.email} to ${nextRole === 'support_developer' ? 'Support / Developer' : nextRole}? Their permissions will update immediately.`, confirmLabel: 'Change role' }); }} value={user.role || 'staff'} className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm" disabled={userAccessView === 'archived' || (userRole !== 'support_developer' && user.role === 'support_developer') || (userRole !== 'support_developer' && isOwnAccount)}><option value="admin">Admin</option><option value="manager">Manager</option><option value="staff">Staff</option><option value="doctor">Doctor</option>{userRole === 'support_developer' && <option value="support_developer">Support / Developer</option>}</select></div><div><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Clinic access</p><div className="grid gap-x-4 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">{branches.filter(branch => branch.status === 'Active').map(branch => { const isChecked = user.assignedBranches?.includes(branch.id); return <div key={branch.id} className="flex min-w-0 items-center gap-2 text-xs"><input id={`user-${user.id}-branch-${branch.id}`} type="checkbox" checked={!!isChecked} disabled={userAccessView === 'archived'} onChange={(event) => updateUserBranches(user, branch, event.target.checked)} /><label htmlFor={`user-${user.id}-branch-${branch.id}`} className="min-w-0 cursor-pointer truncate text-slate-700">{branch.branchName}</label>{isChecked && user.assignedBranches.length > 1 && <button type="button" disabled={userAccessView === 'archived'} className={`ml-auto text-[10px] font-semibold ${user.defaultBranchId === branch.id ? 'text-teal-700' : 'text-slate-400 hover:text-slate-700'}`} onClick={() => setUserDefaultBranch(user, branch)}>{user.defaultBranchId === branch.id ? 'Default' : 'Set default'}</button>}</div>; })}{branches.filter(branch => branch.status === 'Active').length === 0 && <p className="text-xs text-red-600">Add or activate a branch before assigning access.</p>}</div></div></div>}
+                            {isExpanded && <div className="grid gap-4 bg-slate-50/70 px-5 py-4 sm:grid-cols-[180px_minmax(0,1fr)] sm:px-6"><div><label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Role</label><UserRoleSelect onChange={(e) => { const nextRole = e.target.value; setActionToConfirm({ onConfirm: () => updateRole(user.id, nextRole), title: 'Change User Role', message: `Change ${user.fullName || user.email} to ${isSupportDeveloper(nextRole) ? 'Support / Developer' : nextRole}? Their permissions will update immediately.`, confirmLabel: 'Change role' }); }} actorRole={userRole} currentRole={user.role || 'staff'} archived={userAccessView === 'archived'} ownAccount={isOwnAccount} development={Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV)} className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm" /></div><div><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Clinic access</p><div className="grid gap-x-4 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">{branches.filter(branch => branch.status === 'Active').map(branch => { const isChecked = user.assignedBranches?.includes(branch.id); return <div key={branch.id} className="flex min-w-0 items-center gap-2 text-xs"><input id={`user-${user.id}-branch-${branch.id}`} type="checkbox" checked={!!isChecked} disabled={userAccessView === 'archived'} onChange={(event) => updateUserBranches(user, branch, event.target.checked)} /><label htmlFor={`user-${user.id}-branch-${branch.id}`} className="min-w-0 cursor-pointer truncate text-slate-700">{branch.branchName}</label>{isChecked && user.assignedBranches.length > 1 && <button type="button" disabled={userAccessView === 'archived'} className={`ml-auto text-[10px] font-semibold ${user.defaultBranchId === branch.id ? 'text-teal-700' : 'text-slate-400 hover:text-slate-700'}`} onClick={() => setUserDefaultBranch(user, branch)}>{user.defaultBranchId === branch.id ? 'Default' : 'Set default'}</button>}</div>; })}{branches.filter(branch => branch.status === 'Active').length === 0 && <p className="text-xs text-red-600">Add or activate a branch before assigning access.</p>}</div></div></div>}
                           </article>;
                         })}
                         {visibleUsers.length === 0 && <div className="px-5 py-12 text-center text-sm text-slate-500 sm:px-6">{userAccessView === 'archived' ? 'No archived user accounts.' : userAccessView === 'pending' ? 'No user accounts are pending activation.' : 'No active user accounts.'}</div>}
@@ -1644,10 +1645,10 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                           </thead>
                           <tbody className="divide-y divide-slate-100 text-slate-700">
                               {Object.entries(RBAC)
-                                  .filter(([role]) => userRole === 'support_developer' || role !== 'support_developer')
+                                  .filter(([role]) => isSupportDeveloper(userRole) || !isSupportDeveloper(role))
                                   .map(([role, modules]) => (
                                   <tr key={role} className="capitalize">
-                                    <td className="px-6 py-4 font-semibold text-slate-900">{role === 'support_developer' ? 'Support / Developer' : role}</td>
+                                    <td className="px-6 py-4 font-semibold text-slate-900">{roleLabel(role)}</td>
                                     {Object.entries(modules).map(([moduleKey, permissions]) => (
                                       <td key={moduleKey} className="px-6 py-4">
                                           <div className="flex flex-wrap gap-1.5">

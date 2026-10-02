@@ -1,3 +1,4 @@
+import { administrativeRoles } from '../rbac';
 import {
   collection,
   Database,
@@ -12,7 +13,7 @@ export interface BranchAccessProfile {
   assignedBranches?: unknown;
 }
 
-const GLOBAL_BRANCH_ROLES = new Set(['admin', 'support_developer']);
+const GLOBAL_BRANCH_ROLES = new Set<string>(administrativeRoles);
 const BRANCH_QUERY_CHUNK_SIZE = 30;
 
 export function hasGlobalBranchAccess(profile: BranchAccessProfile | null | undefined) {
@@ -102,9 +103,12 @@ export function subscribeToBranchScopedCollection(
   }
 
   const branchChunks = chunk(assignedBranchIds, BRANCH_QUERY_CHUNK_SIZE);
+  let active = true;
+  let resetGeneration = -1;
   const snapshotsByChunk = branchChunks.map(() => new Map<string, any>());
 
   const emitMergedDocuments = () => {
+    if (!active) return;
     const mergedDocuments = new Map<string, any>();
     snapshotsByChunk.forEach(documents => {
       documents.forEach((document, id) => mergedDocuments.set(id, document));
@@ -122,6 +126,15 @@ export function subscribeToBranchScopedCollection(
     return onSnapshot(
       scopedQuery,
       snapshot => {
+        if (!active) return;
+        if (snapshot.invalidated) {
+          if (resetGeneration !== snapshot.invalidationGeneration) {
+            resetGeneration = snapshot.invalidationGeneration;
+            snapshotsByChunk.forEach(documents => documents.clear());
+            onData([]);
+          }
+          return;
+        }
         snapshotsByChunk[index] = new Map(
           snapshot.docs
             .map(document => [
@@ -132,9 +145,12 @@ export function subscribeToBranchScopedCollection(
         );
         emitMergedDocuments();
       },
-      error => onError?.(error),
+      error => {
+        if (!active) return;
+        onError?.(error);
+      },
     );
   });
 
-  return () => unsubscribers.forEach(unsubscribe => unsubscribe());
+  return () => { active = false; unsubscribers.forEach(unsubscribe => unsubscribe()); };
 }

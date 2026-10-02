@@ -3,16 +3,18 @@ import { mountHttpSecurity } from "./backend/httpSecurity";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { db, pool, FieldValue, RecordTransaction, DocumentReference } from "./backend/database";
-import { mountAuth, sessionIdentity, revokeSessions, SessionIdentity } from "./backend/auth";
+import { mountAuth, sessionIdentity, SessionIdentity } from "./backend/auth";
 import { storageBucket } from "./backend/storage";
 import { mountMaintenanceGate } from "./backend/maintenance";
 import { mountInventory } from "./backend/inventory";
 import { mountDataApi } from "./backend/dataApi";
+import { assertAppointmentRead } from "./backend/appointmentReadAccess";
+import { assertDevelopmentRole } from "./backend/developmentAccess";
 import multer from "multer";
 import { createHash, randomUUID } from "crypto";
 import { readFile } from "fs/promises";
 
-import { canEditPatient, hasPermission, RBAC, Role } from "./src/rbac";
+import { canEditPatient, hasPermission, RBAC, Role, SUPPORT_DEVELOPER, developerRoles, administrativeRoles, clinicalPatientRoles, isSupportDeveloper } from "./src/rbac";
 import { IMAGE_OPTIMIZATION, normalizeMediaSettings } from "./src/mediaSettings";
 import { AuditAction, AuditResource, shouldRecordAuditEvent } from "./src/auditPolicy";
 import { getDeveloperActivityDefinition } from "./src/developerToolsPolicy";
@@ -31,7 +33,7 @@ const upload = multer({
     limits: { fileSize: 20 * 1024 * 1024, files: 1 }
 });
 const uploadSingleFile: express.RequestHandler = async (req, res, next) => {
-    const authorization = await authorizeRequest(req, res, req.path === "/api/branding/upload" ? ["admin", "support_developer"] : applicationRoles);
+    const authorization = await authorizeRequest(req, res, req.path === "/api/branding/upload" ? administrativeRoles : applicationRoles);
     if (!authorization) return;
     upload.single('file')(req, res, error => {
         if (error instanceof multer.MulterError) {
@@ -63,7 +65,7 @@ app.get("/api/branding/content", async (req, res) => {
   } catch { res.sendStatus(404); }
 });
 const applicationRoles = Object.keys(RBAC) as Role[];
-const globalBranchRoles = new Set(['admin', 'support_developer']);
+const globalBranchRoles = new Set<string>(administrativeRoles);
 const developerRequestWindowMs = 60_000;
 const developerRequestLimit = 30;
 const developerRequestWindows = new Map<string, { startedAt: number; count: number }>();
@@ -132,9 +134,9 @@ const archiveRecordConfig: Record<RecordKind, {
 };
 
 const attachmentWriteRoles: Record<ResourceType, readonly string[]> = {
-    patient: ['admin', 'doctor', 'support_developer'],
+    patient: clinicalPatientRoles,
     appointment: applicationRoles,
-    visit: ['admin', 'doctor', 'support_developer']
+    visit: clinicalPatientRoles
 };
 const auditActions = new Set<AuditAction>(['CREATE', 'UPDATE', 'DELETE', 'VIEW', 'AUTH']);
 const auditResources = new Set<AuditResource>(['Patient', 'Appointment', 'Visit', 'User', 'Settings', 'Branch']);
@@ -237,6 +239,10 @@ async function authorizeAttachmentResource(
     if (resourceType !== 'patient' && resourceData.patientId !== patientId) return null;
 
     const resourceBranchId = resourceType === 'patient' ? patientData.homeBranchId : resourceData.branchId;
+    if (!requireWrite && resourceType === 'appointment') {
+        try { assertAppointmentRead(userProfile, resourceData); }
+        catch { return null; }
+    }
     // Patient identity and longitudinal history are shared across clinics.
     // Writes to an appointment or visit remain scoped to its operating branch.
     if (requireWrite && resourceType !== 'patient' && !canAccessBranch(userProfile, resourceBranchId)) return null;
@@ -585,6 +591,14 @@ function parseVisitPayload(payload: Record<string, unknown>): Record<string, any
     };
 }
 
+async function refreshSupportAuthorization(transaction: RecordTransaction, authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> }) {
+    if (authorization.userProfile.role !== SUPPORT_DEVELOPER) return;
+    const profile = (await transaction.get(db.collection('users').doc(authorization.decodedToken.uid))).data();
+    assertDevelopmentRole(profile?.role);
+    if (profile?.active !== true || profile.role !== SUPPORT_DEVELOPER) throw new RequestError(403, 'Account scope changed');
+    authorization.userProfile = profile;
+}
+
 async function transactionRecordContext(
     transaction: RecordTransaction,
     authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> },
@@ -592,6 +606,7 @@ async function transactionRecordContext(
     branchId: string,
     doctorId: string
 ) {
+    await refreshSupportAuthorization(transaction, authorization);
     const patientRef = db.collection('patients').doc(patientId);
     const branchRef = db.collection('branches').doc(branchId);
     const doctorRef = db.collection('users').doc(doctorId);
@@ -741,6 +756,7 @@ async function authorizeAuditResource(
     }
     const data = snapshot.data() || {};
     const branchId = resource === 'Patient' ? data.homeBranchId : data.branchId;
+    if (role === SUPPORT_DEVELOPER && !canAccessBranch(authorization.userProfile, branchId)) return null;
     if (resource !== 'Patient' && action !== 'VIEW'
         && !canAccessBranch(authorization.userProfile, branchId)) return null;
 
@@ -780,6 +796,7 @@ async function authorizeRequest(
             return null;
         }
 
+        assertDevelopmentRole(userProfile.role);
         if (typeof userProfile.role !== 'string' || !allowedRoles.includes(userProfile.role)) {
             res.status(403).json({ error: "Insufficient permissions" });
             return null;
@@ -788,7 +805,7 @@ async function authorizeRequest(
         return { decodedToken, userProfile };
     } catch (error) {
         console.error("Request authentication failed", error);
-        res.status(401).json({ error: "Unauthorized" });
+        res.status((error as any)?.status || 401).json({ error: (error as any)?.status ? (error as Error).message : "Unauthorized" });
         return null;
     }
 }
@@ -954,7 +971,7 @@ app.post('/api/login-activity/record', async (req, res) => {
 });
 
 app.get('/api/login-activity', async (req, res) => {
-    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    const authorization = await authorizeRequest(req, res, administrativeRoles);
     if (!authorization) return;
 
     try {
@@ -989,63 +1006,66 @@ function canManageUserTarget(
     if (authorization.decodedToken.uid === userId) {
         throw new RequestError(403, 'You cannot manage your own account with this action');
     }
-    if (authorization.userProfile.role === 'admin' && targetProfile.role === 'support_developer') {
+    if (authorization.userProfile.role === 'admin' && isSupportDeveloper(targetProfile.role)) {
         throw new RequestError(403, 'Administrators cannot manage Support / Developer accounts');
     }
 }
 
 async function getManagedUser(
     authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> },
-    userId: string
+    userId: string,
+    transaction?: RecordTransaction
 ) {
     if (!isValidDocumentId(userId)) throw new RequestError(400, 'Invalid user ID');
+    if (transaction) {
+        const actor = (await transaction.get(db.collection('users').doc(authorization.decodedToken.uid))).data();
+        if (!actor?.active || !administrativeRoles.includes(actor.role)) throw new RequestError(403, 'Account is not approved or authorized');
+        assertDevelopmentRole(actor.role);
+        authorization = { ...authorization, userProfile: actor };
+    }
     const userRef = db.collection('users').doc(userId);
-    const snapshot = await userRef.get();
+    const snapshot = transaction ? await transaction.get(userRef) : await userRef.get();
     if (!snapshot.exists) throw new RequestError(404, 'User account not found');
     const targetProfile = snapshot.data() || {};
     canManageUserTarget(authorization, userId, targetProfile);
-    return { userRef, targetProfile };
+    return { userRef, targetProfile, authorization };
 }
 
-async function validateUserActivationTarget(targetProfile: Record<string, any>) {
+async function validateUserActivationTarget(targetProfile: Record<string, any>, userId: string, transaction: RecordTransaction) {
     const role = targetProfile.role;
-    if (typeof role !== 'string' || !applicationRoles.includes(role as Role)) {
-        throw new RequestError(400, 'Assign a valid role before activating this user');
-    }
+    if (typeof role !== 'string' || !applicationRoles.includes(role as Role)) throw new RequestError(400, 'Assign a valid role before activating this user');
+    assertDevelopmentRole(role);
+    if (role === SUPPORT_DEVELOPER && !(await transaction.sql('SELECT 1 FROM auth_identities WHERE user_id = $1', [userId])).rows.length) throw new RequestError(400, 'Sign in with a dedicated Google test identity before activation');
     if (globalBranchRoles.has(role)) return;
-
     const branchIds = getAssignedBranchIds(targetProfile);
-    if (branchIds.length === 0) {
-        throw new RequestError(400, 'Assign at least one active clinic before activating this user');
-    }
-    const branches = await Promise.all(branchIds.map(branchId => db.collection('branches').doc(branchId).get()));
-    if (branches.some(branch => !branch.exists || branch.data()?.status !== 'Active')) {
-        throw new RequestError(400, 'All assigned clinics must be active before activating this user');
-    }
+    if (branchIds.length === 0) throw new RequestError(400, 'Assign at least one active clinic before activating this user');
+    const branches = await Promise.all(branchIds.map(branchId => transaction.get(db.collection('branches').doc(branchId))));
+    if (branches.some(branch => !branch.exists || branch.data()?.status !== 'Active')) throw new RequestError(400, 'All assigned clinics must be active before activating this user');
 }
 
 // User archive/delete operations intentionally never touch clinical records or
 // prior audit events. Archive retains the profile for later restoration; delete
 // removes only the authentication identity and current user profile.
 app.post('/api/users/:userId/archive', async (req, res) => {
-    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    const authorization = await authorizeRequest(req, res, administrativeRoles);
     if (!authorization) return;
 
     try {
-        const { userRef, targetProfile } = await getManagedUser(authorization, req.params.userId);
-        if (targetProfile.isArchived === true) throw new RequestError(409, 'User account is already archived');
         const now = new Date().toISOString();
         await db.runTransaction(async transaction => {
+            const { userRef, targetProfile, authorization: currentAuthorization } = await getManagedUser(authorization, req.params.userId, transaction);
+            if (targetProfile.isArchived === true) throw new RequestError(409, 'User account is already archived');
+            await transaction.sql('DELETE FROM auth_sessions WHERE user_id = $1', [userRef.id]);
             transaction.update(userRef, {
                 active: false,
                 isArchived: true,
                 accountStatus: 'archived',
                 archivedAt: now,
                 archivedByUid: authorization.decodedToken.uid,
-                archivedByName: trustedUserName(authorization)
+                archivedByName: trustedUserName(currentAuthorization)
             });
             transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
-                authorization,
+                authorization: currentAuthorization,
                 action: 'UPDATE',
                 resource: 'User',
                 resourceId: userRef.id,
@@ -1053,25 +1073,22 @@ app.post('/api/users/:userId/archive', async (req, res) => {
                 changeFields: ['active', 'isArchived', 'accountStatus']
             }));
         });
-        await revokeSessions(userRef.id).catch(error => {
-            if (error?.code !== 'auth/user-not-found') throw error;
-        });
-        res.status(200).json({ id: userRef.id, archivedAt: now });
+        res.status(200).json({ id: req.params.userId, archivedAt: now });
     } catch (error) {
         return sendRecordError(res, error, 'User archive');
     }
 });
 
 app.post('/api/users/:userId/restore', async (req, res) => {
-    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    const authorization = await authorizeRequest(req, res, administrativeRoles);
     if (!authorization) return;
 
     try {
-        const { userRef, targetProfile } = await getManagedUser(authorization, req.params.userId);
-        if (targetProfile.isArchived !== true) throw new RequestError(409, 'Only archived user accounts can be restored');
-        await validateUserActivationTarget(targetProfile);
         const now = new Date().toISOString();
         await db.runTransaction(async transaction => {
+            const { userRef, targetProfile, authorization: currentAuthorization } = await getManagedUser(authorization, req.params.userId, transaction);
+            if (targetProfile.isArchived !== true) throw new RequestError(409, 'Only archived user accounts can be restored');
+            await validateUserActivationTarget(targetProfile, userRef.id, transaction);
             transaction.update(userRef, {
                 active: true,
                 isArchived: false,
@@ -1081,10 +1098,10 @@ app.post('/api/users/:userId/restore', async (req, res) => {
                 archivedByName: FieldValue.delete(),
                 restoredAt: now,
                 restoredByUid: authorization.decodedToken.uid,
-                restoredByName: trustedUserName(authorization)
+                restoredByName: trustedUserName(currentAuthorization)
             });
             transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
-                authorization,
+                authorization: currentAuthorization,
                 action: 'UPDATE',
                 resource: 'User',
                 resourceId: userRef.id,
@@ -1092,32 +1109,32 @@ app.post('/api/users/:userId/restore', async (req, res) => {
                 changeFields: ['active', 'isArchived', 'accountStatus']
             }));
         });
-        res.status(200).json({ id: userRef.id, restoredAt: now });
+        res.status(200).json({ id: req.params.userId, restoredAt: now });
     } catch (error) {
         return sendRecordError(res, error, 'User restore');
     }
 });
 
 app.post('/api/users/:userId/activate', async (req, res) => {
-    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    const authorization = await authorizeRequest(req, res, administrativeRoles);
     if (!authorization) return;
 
     try {
-        const { userRef, targetProfile } = await getManagedUser(authorization, req.params.userId);
-        if (targetProfile.isArchived === true) throw new RequestError(409, 'Archived users must be restored before activation');
-        if (targetProfile.active === true) throw new RequestError(409, 'User account is already active');
-        await validateUserActivationTarget(targetProfile);
         const now = new Date().toISOString();
         await db.runTransaction(async transaction => {
+            const { userRef, targetProfile, authorization: currentAuthorization } = await getManagedUser(authorization, req.params.userId, transaction);
+            if (targetProfile.isArchived === true) throw new RequestError(409, 'Archived users must be restored before activation');
+            if (targetProfile.active === true) throw new RequestError(409, 'User account is already active');
+            await validateUserActivationTarget(targetProfile, userRef.id, transaction);
             transaction.update(userRef, {
                 active: true,
                 accountStatus: 'active',
                 activatedAt: now,
                 activatedByUid: authorization.decodedToken.uid,
-                activatedByName: trustedUserName(authorization)
+                activatedByName: trustedUserName(currentAuthorization)
             });
             transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
-                authorization,
+                authorization: currentAuthorization,
                 action: 'UPDATE',
                 resource: 'User',
                 resourceId: userRef.id,
@@ -1125,31 +1142,32 @@ app.post('/api/users/:userId/activate', async (req, res) => {
                 changeFields: ['active', 'accountStatus']
             }));
         });
-        res.status(200).json({ id: userRef.id, activatedAt: now });
+        res.status(200).json({ id: req.params.userId, activatedAt: now });
     } catch (error) {
         return sendRecordError(res, error, 'User activation');
     }
 });
 
 app.post('/api/users/:userId/deactivate', async (req, res) => {
-    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    const authorization = await authorizeRequest(req, res, administrativeRoles);
     if (!authorization) return;
 
     try {
-        const { userRef, targetProfile } = await getManagedUser(authorization, req.params.userId);
-        if (targetProfile.isArchived === true) throw new RequestError(409, 'Archived user accounts are already inactive');
-        if (targetProfile.active !== true) throw new RequestError(409, 'User account is already inactive');
         const now = new Date().toISOString();
         await db.runTransaction(async transaction => {
+            const { userRef, targetProfile, authorization: currentAuthorization } = await getManagedUser(authorization, req.params.userId, transaction);
+            if (targetProfile.isArchived === true) throw new RequestError(409, 'Archived user accounts are already inactive');
+            if (targetProfile.active !== true) throw new RequestError(409, 'User account is already inactive');
+            await transaction.sql('DELETE FROM auth_sessions WHERE user_id = $1', [userRef.id]);
             transaction.update(userRef, {
                 active: false,
                 accountStatus: 'inactive',
                 deactivatedAt: now,
                 deactivatedByUid: authorization.decodedToken.uid,
-                deactivatedByName: trustedUserName(authorization)
+                deactivatedByName: trustedUserName(currentAuthorization)
             });
             transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
-                authorization,
+                authorization: currentAuthorization,
                 action: 'UPDATE',
                 resource: 'User',
                 resourceId: userRef.id,
@@ -1157,37 +1175,31 @@ app.post('/api/users/:userId/deactivate', async (req, res) => {
                 changeFields: ['active', 'accountStatus']
             }));
         });
-        await revokeSessions(userRef.id).catch(error => {
-            if (error?.code !== 'auth/user-not-found') throw error;
-        });
-        res.status(200).json({ id: userRef.id, deactivatedAt: now });
+        res.status(200).json({ id: req.params.userId, deactivatedAt: now });
     } catch (error) {
         return sendRecordError(res, error, 'User deactivation');
     }
 });
 
 app.delete('/api/users/:userId', async (req, res) => {
-    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    const authorization = await authorizeRequest(req, res, administrativeRoles);
     if (!authorization) return;
 
     try {
-        const { userRef } = await getManagedUser(authorization, req.params.userId);
         await db.runTransaction(async transaction => {
+            const { userRef, authorization: currentAuthorization } = await getManagedUser(authorization, req.params.userId, transaction);
             await transaction.sql("DELETE FROM auth_sessions WHERE user_id = $1", [userRef.id]);
             await transaction.sql("DELETE FROM auth_identities WHERE user_id = $1", [userRef.id]);
             transaction.delete(userRef);
             // This audit entry is intentionally written in the same transaction
             // as the profile deletion and is retained after the account is gone.
             transaction.set(db.collection('audit_logs').doc(), buildAuditLogData({
-                authorization,
+                authorization: currentAuthorization,
                 action: 'DELETE',
                 resource: 'User',
                 resourceId: userRef.id,
                 eventType: 'user_deleted'
             }));
-        });
-        await revokeSessions(userRef.id).catch(error => {
-            if (error?.code !== 'auth/user-not-found') throw error;
         });
         res.status(204).send();
     } catch (error) {
@@ -1199,7 +1211,7 @@ app.delete('/api/users/:userId', async (req, res) => {
 // never downloads full clinical collections merely to display an operational
 // count. These routes are intentionally narrower than general admin access.
 app.get('/api/developer/metrics', async (req, res) => {
-    const authorization = await authorizeRequest(req, res, ['support_developer']);
+    const authorization = await authorizeRequest(req, res, developerRoles);
     if (!authorization) return;
     if (!authorizeDeveloperRequest(authorization, res)) return;
 
@@ -1231,7 +1243,7 @@ app.get('/api/developer/metrics', async (req, res) => {
 });
 
 app.post('/api/developer/diagnostics', async (req, res) => {
-    const authorization = await authorizeRequest(req, res, ['support_developer']);
+    const authorization = await authorizeRequest(req, res, developerRoles);
     if (!authorization) return;
     if (!authorizeDeveloperRequest(authorization, res)) return;
 
@@ -1254,7 +1266,7 @@ app.post('/api/developer/diagnostics', async (req, res) => {
 });
 
 app.post('/api/developer/maintenance', async (req, res) => {
-    const authorization = await authorizeRequest(req, res, ['support_developer']);
+    const authorization = await authorizeRequest(req, res, developerRoles);
     if (!authorization) return;
     if (!authorizeDeveloperRequest(authorization, res)) return;
 
@@ -1282,7 +1294,7 @@ app.post('/api/developer/maintenance', async (req, res) => {
 });
 
 app.post('/api/developer/activity', async (req, res) => {
-    const authorization = await authorizeRequest(req, res, ['support_developer']);
+    const authorization = await authorizeRequest(req, res, developerRoles);
     if (!authorization) return;
     if (!authorizeDeveloperRequest(authorization, res)) return;
 
@@ -1308,7 +1320,7 @@ app.post('/api/developer/activity', async (req, res) => {
 
 // Branding remains publicly readable, but only this trusted endpoint may write it.
 app.post("/api/branding/upload", uploadSingleFile, async (req, res) => {
-    const authorization = await authorizeRequest(req, res, ['admin', 'support_developer']);
+    const authorization = await authorizeRequest(req, res, administrativeRoles);
     if (!authorization) return;
 
     try {
@@ -1797,6 +1809,7 @@ app.patch("/api/records/appointments/:appointmentId", async (req, res) => {
         const actorName = trustedUserName(authorization);
 
         await db.runTransaction(async transaction => {
+            await refreshSupportAuthorization(transaction, authorization);
             const appointmentSnapshot = await transaction.get(appointmentRef);
             if (!appointmentSnapshot.exists) throw new RequestError(404, 'Appointment not found');
             const appointmentData = appointmentSnapshot.data() || {};
@@ -2098,6 +2111,7 @@ app.delete("/api/records/:kind/:recordId", async (req, res) => {
         const actorName = trustedUserName(authorization);
 
         await db.runTransaction(async transaction => {
+            await refreshSupportAuthorization(transaction, authorization);
             const recordSnapshot = await transaction.get(recordRef);
             if (!recordSnapshot.exists) throw new RequestError(404, `${config.resource} not found`);
             const recordData = recordSnapshot.data() || {};
@@ -2174,6 +2188,7 @@ app.post("/api/records/:kind/:recordId/restore", async (req, res) => {
         const actorName = trustedUserName(authorization);
 
         await db.runTransaction(async transaction => {
+            await refreshSupportAuthorization(transaction, authorization);
             const recordSnapshot = await transaction.get(recordRef);
             if (!recordSnapshot.exists) throw new RequestError(404, `${config.resource} not found`);
             const recordData = recordSnapshot.data() || {};
@@ -2245,15 +2260,18 @@ app.get("/api/patients", async (req, res) => {
 
     try {
         console.log("Fetching patients");
-        const snapshot = await db.collection("patients").get();
+        const snapshot = authorization.userProfile.role === SUPPORT_DEVELOPER
+            ? await db.runTransaction(async transaction => {
+                await refreshSupportAuthorization(transaction, authorization);
+                return transaction.get(db.collection('patients'));
+            }) : await db.collection("patients").get();
         const patients = snapshot.docs
             .map(doc => ({ id: doc.id, ...doc.data() }) as Record<string, any> & { id: string })
             .filter(patient => patient.isArchived !== true);
 
         res.json(patients);
     } catch (error) {
-        console.error("Error in /api/patients", error);
-        res.status(500).json({ error: "Internal Server Error" });
+        return sendRecordError(res, error, 'Patient directory');
     }
 });
 

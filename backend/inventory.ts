@@ -1,6 +1,8 @@
 import type express from 'express';
 import { db } from './database';
 import { sessionIdentity } from './auth';
+import { hasAdministrativeAccess } from '../src/rbac';
+import { assertDevelopmentRole } from './developmentAccess';
 export function mountInventory(app: express.Express) {
   for (const action of ['create', 'complete']) {
     app.post(`/api/inventory/transfers/${action}`, async (req, res) => {
@@ -8,7 +10,8 @@ export function mountInventory(app: express.Express) {
         const identity = await sessionIdentity(req);
         const result = await db.runTransaction(async tx => {
           const profile = (await tx.get(db.collection('users').doc(identity.uid))).data();
-          if (!profile?.active || !['admin', 'support_developer'].includes(profile.role)) throw Object.assign(new Error('Insufficient permissions'), { status: 403 });
+          assertDevelopmentRole(profile?.role);
+          if (!profile?.active || !hasAdministrativeAccess(profile.role)) throw Object.assign(new Error('Insufficient permissions'), { status: 403 });
           const ref = db.collection('stock_transfers').doc(action === 'complete' ? String(req.body.id) : undefined);
           const existing = action === 'complete' ? (await tx.get(ref)).data() : undefined;
           if (action === 'complete' && !existing) throw new Error('Transfer not found');

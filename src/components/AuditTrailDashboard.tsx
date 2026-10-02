@@ -1,3 +1,4 @@
+import { hasAdministrativeAccess } from '../rbac';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { collection, getDocs, limit, orderBy, query } from '../dataClient';
 import { formatInTimeZone } from 'date-fns-tz';
@@ -79,7 +80,7 @@ export default function AuditTrailDashboard({ role }: AuditTrailDashboardProps) 
   const [currentPage, setCurrentPage] = useState(1);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
-  const canViewAuditTrail = ['admin', 'support_developer'].includes(role || '');
+  const canViewAuditTrail = hasAdministrativeAccess(role);
 
   const loadLogs = useCallback(async (isRefresh = false) => {
     if (!canViewAuditTrail) {

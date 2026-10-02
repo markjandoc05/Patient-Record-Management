@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { collection, getDocs, limit, orderBy, query, where } from '../dataClient';
 import { CheckCircle2, Clock3, Search } from 'lucide-react';
 import { db, auth } from '../platform';
-import { hasPermission, Role } from '../rbac';
+import { hasPermission, Role, hasAdministrativeAccess } from '../rbac';
 import { CustomDatePicker } from './CustomDatePicker';
 import { createAppointmentRecord, createVisitRecord, updateVisitRecord } from '../utils/recordApi';
 import FileAttachmentSection from './FileAttachmentSection';
@@ -62,7 +62,7 @@ export default function VisitForm({
   const [logs, setLogs] = useState<any[]>([]);
 
   const isAppointment = Boolean(appointment);
-  const canViewHistory = ['admin', 'support_developer'].includes(userRole || '');
+  const canViewHistory = hasAdministrativeAccess(userRole);
   const selectedPatient = patients.find(patient => patient.id === patientId);
   const doctors = useMemo(() => users.filter(user => user.role?.toLowerCase() === 'doctor' && user.active !== false
     && (userRole !== 'doctor' || user.id === auth.currentUser?.uid)), [userRole, users]);

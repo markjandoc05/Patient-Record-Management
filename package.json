@@ -18,7 +18,14 @@
     "migration:import": "node --import tsx scripts/import-postgres.ts",
     "admin:bootstrap": "node --import tsx scripts/bootstrap-admin.ts",
     "test:postgres": "node --import tsx scripts/test-postgres.ts",
-    "test:migration-import": "node --import tsx scripts/test-migration-import.ts"
+    "test:migration-import": "node --import tsx scripts/test-migration-import.ts",
+    "test:support-access": "node --import tsx scripts/test-support-access.ts",
+    "test:support-subscriptions": "node --import tsx scripts/test-support-subscriptions.ts",
+    "test:support-ui": "node --import tsx scripts/test-support-ui.ts",
+    "test:appointment-read-auth": "node --import tsx scripts/test-appointment-read-auth.ts",
+    "test:parity-regression": "node --import tsx scripts/test-parity-regression.ts",
+    "test:protected-invalidation": "tsx scripts/test-protected-invalidation.ts",
+    "test:support-role-selector": "tsx scripts/test-support-role-selector.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
