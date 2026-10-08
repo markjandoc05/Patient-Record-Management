@@ -1,4 +1,8 @@
-import { auth } from '../firebase';
+import { captureProtectedRequestScope, protectedFetch } from '../dataClient';
+import { auth } from '../platform';
+import { invalidateProtectedData } from '../dataClient';
+
+export type RecordRequestScope = { signal: AbortSignal; current: () => boolean };
 
 type RecordKind = 'patients' | 'appointments' | 'visits';
 
@@ -7,14 +11,25 @@ async function recordRequest(
   method: 'POST' | 'PATCH' | 'DELETE',
   payload: Record<string, unknown>,
   recordId?: string,
-  action?: 'restore'
+  action?: 'restore',
+  scope?: RecordRequestScope
 ) {
+  const lifetime = captureProtectedRequestScope();
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Please sign in again before saving this record.');
-  const token = await currentUser.getIdToken();
+  const assertCurrent = () => {
+    lifetime();
+    if (!scope) return;
+    scope.signal.throwIfAborted();
+    if (!scope.current() || auth.currentUser?.uid !== currentUser.uid) throw new DOMException('Protected record request is no longer current.', 'AbortError');
+  };
+  const token = await currentUser.getRequestToken();
+  lifetime();
+  assertCurrent();
   const path = `/api/records/${kind}${recordId ? `/${encodeURIComponent(recordId)}` : ''}${action ? `/${action}` : ''}`;
-  const response = await fetch(path, {
+  const response = await protectedFetch(path, {
     method,
+    signal: scope?.signal,
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json'
@@ -22,7 +37,13 @@ async function recordRequest(
     body: JSON.stringify(payload)
   });
   const body = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(body?.error || `Failed to save ${kind.slice(0, -1)} record.`);
+  assertCurrent();
+  lifetime();
+  if (!response.ok) {
+    const error = Object.assign(new Error(body?.error || `Failed to save ${kind.slice(0, -1)} record.`), { status: response.status, code: body?.code });
+    if (response.status === 401 || response.status === 403) invalidateProtectedData(error);
+    throw error;
+  }
   return body as { id: string; patientID?: string };
 }
 
@@ -32,17 +53,17 @@ export const createPatientRecord = (payload: Record<string, unknown>) =>
 export const updatePatientRecord = (patientId: string, payload: Record<string, unknown>) =>
   recordRequest('patients', 'PATCH', payload, patientId);
 
-export const createAppointmentRecord = (payload: Record<string, unknown>) =>
-  recordRequest('appointments', 'POST', payload);
+export const createAppointmentRecord = (payload: Record<string, unknown>, scope?: RecordRequestScope) =>
+  recordRequest('appointments', 'POST', payload, undefined, undefined, scope);
 
-export const updateAppointmentRecord = (appointmentId: string, payload: Record<string, unknown>) =>
-  recordRequest('appointments', 'PATCH', payload, appointmentId);
+export const updateAppointmentRecord = (appointmentId: string, payload: Record<string, unknown>, scope?: RecordRequestScope) =>
+  recordRequest('appointments', 'PATCH', payload, appointmentId, undefined, scope);
 
-export const createVisitRecord = (payload: Record<string, unknown>) =>
-  recordRequest('visits', 'POST', payload);
+export const createVisitRecord = (payload: Record<string, unknown>, scope?: RecordRequestScope) =>
+  recordRequest('visits', 'POST', payload, undefined, undefined, scope);
 
-export const updateVisitRecord = (visitId: string, payload: Record<string, unknown>) =>
-  recordRequest('visits', 'PATCH', payload, visitId);
+export const updateVisitRecord = (visitId: string, payload: Record<string, unknown>, scope?: RecordRequestScope) =>
+  recordRequest('visits', 'PATCH', payload, visitId, undefined, scope);
 
 export const archiveRecord = (kind: RecordKind, recordId: string, reason: string) =>
   recordRequest(kind, 'DELETE', { reason }, recordId);

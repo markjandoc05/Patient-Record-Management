@@ -56,7 +56,7 @@ export enum OperationType {
     WRITE = 'write',
   }
   
-  export interface FirestoreErrorInfo {
+  export interface DataErrorInfo {
     error: string;
     operationType: OperationType;
     path: string | null;
@@ -73,8 +73,8 @@ export enum OperationType {
     }
   }
   
-  export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null, auth: any) {
-    const errInfo: FirestoreErrorInfo = {
+  export function handleDataError(error: unknown, operationType: OperationType, path: string | null, auth: any) {
+    const errInfo: DataErrorInfo = {
       error: error instanceof Error ? error.message : String(error),
       authInfo: {
         userId: auth.currentUser?.uid,
@@ -90,6 +90,6 @@ export enum OperationType {
       operationType,
       path
     }
-    console.error('Firestore Error: ', JSON.stringify(errInfo));
+    console.error('PostgreSQL Error: ', JSON.stringify(errInfo));
     throw new Error(JSON.stringify(errInfo));
   }

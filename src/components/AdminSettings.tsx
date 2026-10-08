@@ -1,15 +1,22 @@
-import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, doc, updateDoc, setDoc, getDoc, getDocs, addDoc, writeBatch, limit, query, where } from 'firebase/firestore';
-import { auth } from '../firebase';
+import UserOperationalDetails from './UserOperationalDetails';
+import { hasCapability, canOpenView, permissionScopeKey } from '../permissions';
+import UserPermissionEditor from './UserPermissionEditor';
+import { updateUserAccess } from '../utils/accessApi';
+import UserRoleSelect from './UserRoleSelect';
+import React, { useState, useEffect, useRef } from 'react';
+import { collection, onSnapshot, doc, updateDoc, setDoc, getDoc, getDocs, addDoc, writeBatch, limit, query, where } from '../dataClient';
+import { auth } from '../platform';
 import imageCompression from 'browser-image-compression';
 import { getChangedFields } from '../utils/diffUtils';
-import { handleFirestoreError, OperationType } from '../utils';
-import { RBAC } from '../rbac';
+import { handleDataError, OperationType } from '../utils';
+import { RBAC, roleLabel, isSupportDeveloper, hasAdministrativeAccess } from '../rbac';
 import { logActivity } from '../utils/auditLogger';
 import { activateUserAccount, archiveUserAccount, deactivateUserAccount, deleteUserAccount, restoreUserAccount } from '../utils/userAccountApi';
 import { fetchLoginActivity, type LoginActivityRecord } from '../utils/loginActivityApi';
 import { DEFAULT_MEDIA_SETTINGS, IMAGE_OPTIMIZATION, normalizeMediaSettings } from '../mediaSettings';
 import ConfirmationModal from './ConfirmationModal';
+import UserActivationReadiness from './UserActivationReadiness';
+import { activationIssues, matchesUserAccessView, type UserAccessView } from '../utils/userActivation';
 import {
   Building2,
   ChevronDown,
@@ -29,7 +36,6 @@ import {
 
 type SettingsTab = 'general' | 'branches' | 'access' | 'data';
 type GeneralSection = 'general' | 'time' | 'theme' | 'footer';
-type UserAccessView = 'active' | 'pending' | 'archived';
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string; description: string; icon: React.ElementType }> = [
   { id: 'general', label: 'General', description: 'Brand, uploads, time and footer', icon: Settings2 },
@@ -86,6 +92,13 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const [isUserAccessOpen, setIsUserAccessOpen] = useState(true);
   const [userAccessView, setUserAccessView] = useState<UserAccessView>('active');
   const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
+  const [branchesLoaded, setBranchesLoaded] = useState(false);
+  const [usersLoaded, setUsersLoaded] = useState(false);
+  const [accessErrors, setAccessErrors] = useState<{ users?: string; branches?: string }>({});
+  const [accessRetry, setAccessRetry] = useState(0);
+  const [confirmingAction, setConfirmingAction] = useState(false);
+  const [confirmationError, setConfirmationError] = useState('');
+  const confirmationBusy = useRef(false);
   const [openUserActionMenuId, setOpenUserActionMenuId] = useState<string | null>(null);
   const [isRoleAccessOpen, setIsRoleAccessOpen] = useState(false);
   const [isLoginActivityOpen, setIsLoginActivityOpen] = useState(false);
@@ -95,12 +108,14 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const [isDataManagementOpen, setIsDataManagementOpen] = useState(false);
   const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
   const [editBranchData, setEditBranchData] = useState({ branchName: '', address: '', contactNumber: '', email: '' });
-  const [actionToConfirm, setActionToConfirm] = useState<null | {
+  const [actionToConfirm, setActionToConfirmState] = useState<null | {
     onConfirm: () => Promise<void>;
     title: string;
     message: string;
     confirmLabel?: string;
   }>(null);
+
+  const setActionToConfirm = (action: typeof actionToConfirm) => { setConfirmationError(''); setActionToConfirmState(action); };
 
   // Dynamic white-label branding configurations
   const [brandingForm, setBrandingForm] = useState<any>({
@@ -135,9 +150,17 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const [mediaSuccess, setMediaSuccess] = useState('');
   const [mediaSettings, setMediaSettings] = useState({ ...DEFAULT_MEDIA_SETTINGS });
 
-  const normalizedUserRole = userRole?.toLowerCase();
-  const canManageSettings = normalizedUserRole === 'admin' || normalizedUserRole === 'support_developer';
-  const canManageFooter = normalizedUserRole === 'support_developer';
+  const normalizedUserRole = userRole;
+  const canManageSettings = hasCapability(userProfile, 'settings.manage');
+  const canManageAccess = hasCapability(userProfile, 'access.manage');
+  const canManageUsers = hasCapability(userProfile, 'users.manage');
+  const canManageBranches = canManageAccess && hasCapability(userProfile, 'branches.manage');
+  const allowedTabs = SETTINGS_TABS.filter(tab => tab.id === 'access' ? canManageAccess || canManageUsers : tab.id === 'branches' ? hasCapability(userProfile, 'branches.view') && hasCapability(userProfile, 'settings.view') : hasCapability(userProfile, 'settings.view'));
+  useEffect(() => { if (!allowedTabs.some(tab => tab.id === activeSettingsTab) && allowedTabs[0]) setActiveSettingsTab(allowedTabs[0].id); }, [userProfile, activeSettingsTab]);
+  const acceptAccess = (result: any) => setUsers(current => current.map(user => user.id === result.id ? { ...user, ...result } : user));
+  const canManageFooter = isSupportDeveloper(normalizedUserRole) && canManageSettings;
+  const latestUserAccess = useRef({ users, branches, usersLoaded, branchesLoaded, accessErrors });
+  latestUserAccess.current = { users, branches, usersLoaded, branchesLoaded, accessErrors };
   const getAccountStatus = (account: any) => {
     if (account.isArchived === true || account.accountStatus === 'archived') return { label: 'Archived', className: 'bg-slate-100 text-slate-600' };
     if (account.active === true) return { label: 'Active', className: 'bg-emerald-50 text-emerald-700' };
@@ -146,7 +169,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   };
 
   const loadLoginActivity = async () => {
-    if (!canManageSettings) return;
+    if (!hasCapability(userProfile, 'audit.view')) return;
     setLoadingLoginActivity(true);
     setLoginActivityError('');
     try {
@@ -245,7 +268,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     const dbRole = userDoc.exists() ? userDoc.data()?.role : null;
     console.log("AdminSettings: DB role verification:", dbRole);
 
-    if (dbRole !== 'admin' && dbRole !== 'support_developer') {
+    if (!hasCapability(userDoc.data(), 'settings.manage')) {
         console.error("Branding upload failed: unauthorized access by role:", dbRole);
         setError("Permission Denied: Only Admin and Support / Developer can update branding.");
         return;
@@ -280,7 +303,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
             }
         }
 
-        const token = await auth.currentUser!.getIdToken();
+        const token = await auth.currentUser!.getRequestToken();
         const formData = new FormData();
         formData.append('file', fileToUpload, file.name);
         formData.append('folder', folder);
@@ -303,13 +326,13 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         };
         
         // Update branding document
-        console.log("AdminSettings: About to update branding document in Firestore");
+        console.log("AdminSettings: About to update branding document in PostgreSQL");
         await setDoc(doc(db, 'settings', 'branding'), {
             [fieldName]: downloadUrl,
             [`${fieldName}_metadata`]: assetMetadata,
             updatedAt: newTimestamp
         }, { merge: true });
-        console.log("AdminSettings: Firestore update successful");
+        console.log("AdminSettings: PostgreSQL update successful");
         
         // Update local state
         setBrandingForm((prev: any) => ({
@@ -357,7 +380,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       showActionSuccess('Branding asset removed. The app has switched to its fallback immediately.');
     } catch (removeError: any) {
       showActionError(`Unable to remove the branding asset: ${removeError?.message || 'Unknown error'}`);
-      handleFirestoreError(removeError, OperationType.UPDATE, 'settings/branding', auth);
+      handleDataError(removeError, OperationType.UPDATE, 'settings/branding', auth);
     }
   };
 
@@ -368,10 +391,9 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     // Verify role directly from DB
     const userDoc = await getDoc(doc(db, 'users', auth.currentUser!.uid));
     const dbRole = userDoc.exists() ? userDoc.data()?.role : null;
-    const isOwner = auth.currentUser?.email === 'markjandoc@gmail.com';
-    console.log("AdminSettings: DB role verification (save):", dbRole, "IsOwner:", isOwner);
+    console.log("AdminSettings: DB role verification (save):", dbRole);
     
-    const isAdminOrSupport = dbRole === 'admin' || dbRole === 'support_developer' || isOwner;
+    const isAdminOrSupport = hasCapability(userDoc.data(), 'settings.manage');
     if (!isAdminOrSupport) {
         console.error("AdminSettings: Branding save failed: unauthorized access by role:", dbRole);
         setError("Permission Denied: Only Admin and Support / Developer can update branding.");
@@ -397,7 +419,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         updatedAt: newTimestamp
       };
       
-      console.log("AdminSettings: Writing branding to Firestore path settings/branding");
+      console.log("AdminSettings: Writing branding to PostgreSQL path settings/branding");
       await setDoc(doc(db, 'settings', 'branding'), updatedBranding, { merge: true });
       
       await logActivity({
@@ -413,7 +435,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     } catch (err: any) {
       console.error("AdminSettings: Branding save error:", err);
       setError('Failed to save settings: ' + (err.message || String(err)));
-      handleFirestoreError(err, OperationType.UPDATE, 'settings/branding', auth);
+      handleDataError(err, OperationType.UPDATE, 'settings/branding', auth);
     } finally {
       setSavingBranding(false);
     }
@@ -453,7 +475,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       setTimeout(() => setTimezoneSuccess(''), 4000);
     } catch (err: any) {
       setError('Failed to save timezone settings: ' + (err.message || String(err)));
-      handleFirestoreError(err, OperationType.UPDATE, 'settings/timezone', auth);
+      handleDataError(err, OperationType.UPDATE, 'settings/timezone', auth);
     } finally {
       setSavingTimezone(false);
     }
@@ -491,30 +513,43 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       setTimeout(() => setFooterSuccess(''), 4000);
     } catch (err: any) {
       setError('Failed to save footer settings: ' + (err.message || String(err)));
-      handleFirestoreError(err, OperationType.UPDATE, 'settings/footer', auth);
+      handleDataError(err, OperationType.UPDATE, 'settings/footer', auth);
     } finally {
       setSavingFooter(false);
     }
   };
   
   useEffect(() => {
+    setUsersLoaded(false);
+    setBranchesLoaded(false);
+    setAccessErrors({});
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
       setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'users', auth));
+      setUsersLoaded(true);
+      setAccessErrors(current => ({ ...current, users: undefined }));
+    }, (error: any) => {
+      if ([401, 403].includes(error.status)) setUsers([]);
+      setAccessErrors(current => ({ ...current, users: 'User accounts could not be refreshed.' }));
+    });
     
     const unsubBranches = onSnapshot(collection(db, 'branches'), (snapshot) => {
       setBranches(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'branches', auth));
+      setBranchesLoaded(true);
+      setAccessErrors(current => ({ ...current, branches: undefined }));
+    }, (error: any) => {
+      if ([401, 403].includes(error.status)) setBranches([]);
+      setAccessErrors(current => ({ ...current, branches: 'Clinic assignments could not be checked.' }));
+    });
     
     // Fetch media settings
     const unsubMedia = onSnapshot(doc(db, 'settings', 'media'), (doc) => {
       if (doc.exists()) {
           setMediaSettings(normalizeMediaSettings(doc.data()));
       }
-    }, (snapshotError) => handleFirestoreError(snapshotError, OperationType.GET, 'settings/media', auth));
+    }, (snapshotError) => handleDataError(snapshotError, OperationType.GET, 'settings/media', auth));
     
     return () => { unsubUsers(); unsubBranches(); unsubMedia(); };
-  }, [db]);
+  }, [db, accessRetry]);
 
   const handleSaveMediaSettings = async (e: React.FormEvent) => {
       e.preventDefault();
@@ -561,16 +596,18 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
           setTimeout(() => setMediaSuccess(''), 4000);
       } catch (err: any) {
           setError('Failed to save media settings: ' + (err.message || String(err)));
-          handleFirestoreError(err, OperationType.UPDATE, 'settings/media', auth);
+          handleDataError(err, OperationType.UPDATE, 'settings/media', auth);
       } finally {
           setSavingMedia(false);
       }
   };
 
   const updateRole = async (userId: string, newRole: string) => {
-    if (!canManageSettings) return;
+    if (!canManageAccess) return;
     try {
-        await updateDoc(doc(db, 'users', userId), { role: newRole });
+        const target = latestUserAccess.current.users.find(user => user.id === userId);
+        if (!target) throw new Error('Reload user access.');
+        acceptAccess({ ...await updateUserAccess(userId, target.accessRevision ?? 0, { role: newRole }), role: newRole });
         await logActivity({
             action: 'UPDATE',
             resource: 'User',
@@ -580,13 +617,12 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         });
         showActionSuccess('User role updated.');
     } catch (error) {
-        showActionError('Unable to update the user role.');
-        handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`, auth);
+        throw error;
     }
   };
 
   const updateUserBranches = async (user: any, branch: any, isAssigning: boolean) => {
-    if (!canManageSettings) return;
+    if (!canManageAccess) return;
     const assignments = (user.assignedBranches || []).map((branchId: string, index: number) => ({
       id: branchId,
       name: user.assignedBranchNames?.[index] || branches.find(item => item.id === branchId)?.branchName || '',
@@ -599,12 +635,11 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       : nextAssignments[0];
 
     try {
-      await updateDoc(doc(db, 'users', user.id), {
+      const result = await updateUserAccess(user.id, user.accessRevision ?? 0, {
         assignedBranches: nextAssignments.map((item: any) => item.id),
-        assignedBranchNames: nextAssignments.map((item: any) => item.name),
         defaultBranchId: nextDefault?.id || null,
-        defaultBranchName: nextDefault?.name || null,
       });
+      acceptAccess({ ...result, assignedBranches: nextAssignments.map((item: any) => item.id), assignedBranchNames: nextAssignments.map((item: any) => item.name), defaultBranchId: nextDefault?.id || null });
       await logActivity({
         action: 'UPDATE', resource: 'User', resourceId: user.id,
         details: `${isAssigning ? 'Assigned' : 'Unassigned'} clinic branch: ${branch.branchName}`,
@@ -612,15 +647,14 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       });
       showActionSuccess(`Branch access ${isAssigning ? 'assigned' : 'removed'} for ${user.fullName || user.email}.`);
     } catch (updateError) {
-      showActionError('Unable to update this user’s clinic access.');
-      handleFirestoreError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
+      showActionError((updateError instanceof Error ? updateError.message : 'Unable to update this user’s clinic access.') + ' Retry the clinic assignment.');
     }
   };
 
   const setUserDefaultBranch = async (user: any, branch: any) => {
-    if (!canManageSettings) return;
+    if (!canManageAccess) return;
     try {
-      await updateDoc(doc(db, 'users', user.id), { defaultBranchId: branch.id, defaultBranchName: branch.branchName });
+      acceptAccess({ ...await updateUserAccess(user.id, user.accessRevision ?? 0, { defaultBranchId: branch.id }), defaultBranchId: branch.id, defaultBranchName: branch.branchName });
       await logActivity({
         action: 'UPDATE', resource: 'User', resourceId: user.id,
         details: `Set default clinic branch to: ${branch.branchName}`,
@@ -628,13 +662,24 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
       });
       showActionSuccess(`Default clinic updated for ${user.fullName || user.email}.`);
     } catch (updateError) {
-      showActionError('Unable to set the default clinic.');
-      handleFirestoreError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
+      showActionError((updateError instanceof Error ? updateError.message : 'Unable to set the default clinic.') + ' Retry selecting the default clinic.');
     }
   };
 
   const toggleUserStatus = async (user: any) => {
-    if (!canManageSettings || user.id === auth.currentUser?.uid) return;
+    if (!canManageAccess || !canManageUsers || user.id === auth.currentUser?.uid) return;
+    if (!user.active) {
+      const latest = latestUserAccess.current;
+      const current = latest.users.find(item => item.id === user.id);
+      if (!current) throw new Error('This account is no longer available. Reload user access.');
+      if (!latest.branchesLoaded || !latest.usersLoaded || latest.accessErrors.users || latest.accessErrors.branches) throw new Error('Reload user access before approving this account.');
+      if (current.active === true && !current.isArchived) {
+        showActionSuccess('This account is already activated. The user can sign in again with the same Google account.');
+        return;
+      }
+      const issues = activationIssues(current, latest.branches);
+      if (issues.length) throw new Error(issues[0]);
+    }
     try {
       if (!user.active) {
         await activateUserAccount(user.id);
@@ -646,13 +691,12 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         return;
       }
     } catch (updateError) {
-      showActionError('Unable to update the user account status.');
-      handleFirestoreError(updateError, OperationType.UPDATE, `users/${user.id}`, auth);
+      throw updateError;
     }
   };
 
   const archiveUser = async (user: any) => {
-    if (!canManageSettings || user.id === auth.currentUser?.uid) return;
+    if (!canManageAccess || !canManageUsers || user.id === auth.currentUser?.uid) return;
     try {
       await archiveUserAccount(user.id);
       showActionSuccess(`${user.fullName || user.email} was archived and can be restored later.`);
@@ -662,7 +706,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   };
 
   const restoreArchivedUser = async (user: any) => {
-    if (!canManageSettings || user.id === auth.currentUser?.uid) return;
+    if (!canManageAccess || !canManageUsers || user.id === auth.currentUser?.uid) return;
     try {
       await restoreUserAccount(user.id);
       showActionSuccess(`${user.fullName || user.email} was restored and can sign in again.`);
@@ -672,7 +716,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   };
 
   const deleteUser = async (user: any) => {
-    if (!canManageSettings || user.id === auth.currentUser?.uid) return;
+    if (!canManageAccess || !canManageUsers || user.id === auth.currentUser?.uid) return;
     try {
       await deleteUserAccount(user.id);
       showActionSuccess(`${user.fullName || user.email} was deleted. Clinical and audit history were retained.`);
@@ -683,7 +727,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
 
   const handleAddBranch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canManageSettings) {
+    if (!canManageBranches) {
       showActionError('You do not have permission to add clinic branches.');
       return;
     }
@@ -715,12 +759,12 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         showActionSuccess('Clinic branch added.');
     } catch (error) {
         showActionError('Unable to add the clinic branch.');
-        handleFirestoreError(error, OperationType.CREATE, 'branches', auth);
+        handleDataError(error, OperationType.CREATE, 'branches', auth);
     }
   };
 
   const toggleBranchStatus = async (branchId: string, currentStatus: string) => {
-      if (!canManageSettings) {
+      if (!canManageBranches) {
           showActionError('You do not have permission to change branch status.');
           return;
       }
@@ -737,12 +781,12 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
           showActionSuccess(`Clinic branch ${newStatus === 'Active' ? 'activated' : 'deactivated'}.`);
       } catch (error) {
           showActionError('Unable to change the clinic branch status.');
-          handleFirestoreError(error, OperationType.UPDATE, `branches/${branchId}`, auth);
+          handleDataError(error, OperationType.UPDATE, `branches/${branchId}`, auth);
       }
   };
 
   const executeDeleteBranch = async (id: string, name: string) => {
-    if (!canManageSettings) {
+    if (!canManageBranches) {
         showActionError('You do not have permission to delete clinic branches.');
         return;
     }
@@ -758,7 +802,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         }
         const batch = writeBatch(db);
         batch.delete(doc(db, 'branches', id));
-        users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer').forEach(user => {
+        users.filter(user => isSupportDeveloper(userRole) || !isSupportDeveloper(user.role)).forEach(user => {
           const assignedBranches = user.assignedBranches || [];
           if (!assignedBranches.includes(id)) return;
           const nextIds = assignedBranches.filter((branchId: string) => branchId !== id);
@@ -783,7 +827,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         showActionSuccess('Clinic branch deleted.');
     } catch (error) {
         showActionError('Unable to delete the clinic branch.');
-        handleFirestoreError(error, OperationType.DELETE, `branches/${id}`, auth);
+        handleDataError(error, OperationType.DELETE, `branches/${id}`, auth);
     }
   };
    
@@ -796,7 +840,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   };
 
   const handleUpdateBranch = async () => {
-    if (!canManageSettings) {
+    if (!canManageBranches) {
         showActionError('You do not have permission to update clinic branches.');
         return;
     }
@@ -814,7 +858,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
     try {
         const batch = writeBatch(db);
         batch.update(doc(db, 'branches', editingBranchId), normalizedEditBranch);
-        users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer').forEach(user => {
+        users.filter(user => isSupportDeveloper(userRole) || !isSupportDeveloper(user.role)).forEach(user => {
           if (!(user.assignedBranches || []).includes(editingBranchId)) return;
           const assignedBranchNames = (user.assignedBranches || []).map((branchId: string, index: number) =>
             branchId === editingBranchId ? normalizedEditBranch.branchName : (user.assignedBranchNames?.[index] || branches.find(branch => branch.id === branchId)?.branchName || '')
@@ -837,7 +881,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         showActionSuccess('Clinic branch updated.');
     } catch (error) {
         showActionError('Unable to update the clinic branch.');
-        handleFirestoreError(error, OperationType.UPDATE, `branches/${editingBranchId}`, auth);
+        handleDataError(error, OperationType.UPDATE, `branches/${editingBranchId}`, auth);
     }
   }
 
@@ -860,16 +904,17 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   };
 
   const cleanupBranchAssignments = async () => {
-    if (!canManageSettings) {
+    if (!canManageBranches) {
         showActionError('You do not have permission to repair branch assignments.');
         return;
     }
+    let savedCount = 0;
     try {
-        const batch = writeBatch(db);
+        const pending: { user: any; changes: Record<string, unknown> }[] = [];
         let updatedCount = 0;
         const validBranchIds = branches.map(b => b.id);
 
-        for (const user of users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer')) {
+        for (const user of users.filter(user => isSupportDeveloper(userRole) || !isSupportDeveloper(user.role))) {
              let needsUpdate = false;
              let assignedBranches = [...(user.assignedBranches || [])];
              let assignedBranchNames = [...(user.assignedBranchNames || [])];
@@ -901,26 +946,28 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
              }
 
              if (needsUpdate) {
-                 batch.update(doc(db, 'users', user.id), {
+                 pending.push({ user, changes: {
                      assignedBranches: newAssignedBranches,
-                     assignedBranchNames: newAssignedBranchNames,
                      defaultBranchId: defaultBranchId,
-                     defaultBranchName: defaultBranchName
-                 });
+                 } });
                  updatedCount++;
              }
         }
 
         if (updatedCount > 0) {
-            await batch.commit();
+            for (const entry of pending) {
+                const result = await updateUserAccess(entry.user.id, entry.user.accessRevision ?? 0, entry.changes);
+                acceptAccess({ ...result, ...entry.changes });
+                savedCount++;
+            }
             showActionSuccess(`Cleaned invalid branch assignments for ${updatedCount} users.`);
         } else {
             showActionSuccess('All branch assignments are already valid.');
         }
 
     } catch (error) {
-        showActionError('Unable to clean invalid branch assignments.');
-        handleFirestoreError(error, OperationType.UPDATE, 'users', auth);
+        showActionError(`Assignment cleanup stopped. ${savedCount} user updates were saved. Reload users and review before retrying.`);
+        handleDataError(error, OperationType.UPDATE, 'users', auth);
     }
   };
 
@@ -931,13 +978,26 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
           title={actionToConfirm?.title || ""}
           message={actionToConfirm?.message || ""}
           onConfirm={async () => {
-            if (actionToConfirm) await actionToConfirm.onConfirm();
-            setActionToConfirm(null);
+            if (!actionToConfirm || confirmationBusy.current) return;
+            confirmationBusy.current = true;
+            setConfirmingAction(true);
+            setConfirmationError('');
+            try {
+              await actionToConfirm.onConfirm();
+              setActionToConfirm(null);
+            } catch (error) {
+              setConfirmationError((error instanceof Error ? error.message : 'The action could not be completed.') + ' Retry the action, or cancel to review the account settings.');
+            } finally {
+              confirmationBusy.current = false;
+              setConfirmingAction(false);
+            }
           }}
-          onCancel={() => setActionToConfirm(null)}
+          onCancel={() => { if (!confirmationBusy.current) { setActionToConfirm(null); setConfirmationError(''); } }}
+          isSubmitting={confirmingAction}
+          error={confirmationError}
           confirmLabel={actionToConfirm?.confirmLabel || 'Confirm Action'}
         />
-    {userRole === 'admin' || userRole === 'support_developer' ? (
+    {canOpenView(userProfile, 'Settings') ? (
       <>
         <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="flex flex-col gap-4 border-b border-slate-100 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
@@ -952,12 +1012,12 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
               <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-white text-teal-700 shadow-sm"><ShieldCheck className="h-4.5 w-4.5" /></div>
               <div>
                 <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Your access</p>
-                <p className="text-sm font-semibold text-slate-800">{userRole === 'support_developer' ? 'Support / Developer' : 'Administrator'}</p>
+                <p className="text-sm font-semibold text-slate-800">{roleLabel(userRole || '')}</p>
               </div>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2 p-3 lg:grid-cols-4">
-            {SETTINGS_TABS.map(({ id, label, description, icon: Icon }) => (
+            {allowedTabs.map(({ id, label, description, icon: Icon }) => (
               <button
                 key={id}
                 type="button"
@@ -982,8 +1042,8 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         )}
 
         {/* General settings */}
-        {activeSettingsTab === 'general' && (
-                <form onSubmit={handleSaveBranding} className="space-y-3" aria-label="General settings sections">
+        {activeSettingsTab === 'general' && hasCapability(userProfile, 'settings.view') && (
+                <form onSubmit={handleSaveBranding} className="space-y-3" aria-label="General settings sections"><fieldset disabled={!canManageSettings} className="contents">
                     {renderGeneralSectionToggle('general')}
 
                     {/* SECTION 1: Application Branding */}
@@ -1445,11 +1505,11 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                 </div>
             )}
             
-                </form>
+                </fieldset></form>
         )}
 
         {/* Development / Data Management Settings Accordion */}
-        {activeSettingsTab === 'data' && (
+        {activeSettingsTab === 'data' && hasCapability(userProfile, 'settings.view') && (
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left sm:px-6" onClick={() => setIsDataManagementOpen(!isDataManagementOpen)} aria-expanded={isDataManagementOpen}>
                 <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-700"><Database className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">Data safety</span><span className="block text-xs font-normal text-slate-500">Retention, backups, and safe maintenance guidance</span></span></span>
@@ -1467,7 +1527,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         )}
 
         {/* Existing Branch accordion */}
-        {activeSettingsTab === 'branches' && (
+        {activeSettingsTab === 'branches' && hasCapability(userProfile, 'settings.view') && (
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left sm:px-6" onClick={() => setIsBranchOpen(!isBranchOpen)} aria-expanded={isBranchOpen}>
                 <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-700"><Building2 className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">Clinic locations</span><span className="block text-xs font-normal text-slate-500">{branches.length} {branches.length === 1 ? 'branch' : 'branches'} · {branches.filter(branch => branch.status === 'Active').length} active</span></span></span>
@@ -1534,31 +1594,31 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
         </div>
         )}
 
-        {activeSettingsTab === 'access' && (
+        {activeSettingsTab === 'access' && (canManageAccess || canManageUsers) && (
         <>
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <button type="button" className="flex w-full items-center justify-between px-5 py-4 text-left sm:px-6" onClick={() => setIsUserAccessOpen(!isUserAccessOpen)} aria-expanded={isUserAccessOpen}>
-              <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700"><Users className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">User access</span><span className="block text-xs font-normal text-slate-500">{users.filter(user => user.role !== 'support_developer' && user.active).length} active · {users.filter(user => user.role !== 'support_developer' && user.accountStatus === 'pending_activation').length} pending activation</span></span></span>
+              <span className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700"><Users className="h-5 w-5" /></span><span><span className="block text-base font-semibold text-slate-900">User access</span><span className="block text-xs font-normal text-slate-500">{users.filter(user => !isSupportDeveloper(user.role) && user.active).length} active · {users.filter(user => !isSupportDeveloper(user.role) && user.accountStatus === 'pending_activation').length} pending activation</span></span></span>
               <ChevronDown className={`h-5 w-5 text-slate-400 transition-transform ${isUserAccessOpen ? 'rotate-180' : ''}`} />
           </button>
           {isUserAccessOpen && (
               <div className="border-t border-slate-100">
+                  <p className="px-5 py-3 text-xs leading-relaxed text-slate-600 sm:px-6">Employees sign in with Google first. Open Pending activation, assign their role and clinics, then approve their access.</p>
+                  {(accessErrors.users || accessErrors.branches) && <div role="alert" className="mx-5 mb-3 text-sm text-red-700 sm:mx-6">{accessErrors.users} {accessErrors.branches} <button type="button" onClick={() => setAccessRetry(value => value + 1)} className="font-semibold underline underline-offset-2">Retry loading user access</button></div>}
                   {(() => {
-                    const manageableUsers = users.filter(user => userRole === 'support_developer' || user.role !== 'support_developer');
-                    const visibleUsers = manageableUsers.filter(user => {
-                      if (userAccessView === 'archived') return user.isArchived === true;
-                      if (userAccessView === 'pending') return user.isArchived !== true && user.accountStatus === 'pending_activation';
-                      return user.isArchived !== true && user.active === true;
-                    });
-                    const countedUsers = manageableUsers.filter(user => user.role !== 'support_developer');
+                    const manageableUsers = users.filter(user => isSupportDeveloper(userRole) || !isSupportDeveloper(user.role));
+                    const visibleUsers = manageableUsers.filter(user => matchesUserAccessView(user, userAccessView));
+                    const countedUsers = manageableUsers.filter(user => !isSupportDeveloper(user.role));
                     const activeCount = countedUsers.filter(user => user.isArchived !== true && user.active === true).length;
                     const pendingCount = countedUsers.filter(user => user.isArchived !== true && user.accountStatus === 'pending_activation').length;
+                    const inactiveCount = countedUsers.filter(user => matchesUserAccessView(user, 'inactive')).length;
                     const archivedCount = countedUsers.filter(user => user.isArchived === true).length;
                     return <>
-                      <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3 sm:px-6">
-                        <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1" role="tablist" aria-label="User account status">
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-3 sm:px-6">
+                        <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-lg bg-slate-100 p-1" role="tablist" aria-label="User account status">
                           <button type="button" role="tab" aria-selected={userAccessView === 'active'} onClick={() => { setUserAccessView('active'); setExpandedUserId(null); setOpenUserActionMenuId(null); }} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${userAccessView === 'active' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Active users <span className="ml-1 text-slate-400">{activeCount}</span></button>
                           <button type="button" role="tab" aria-selected={userAccessView === 'pending'} onClick={() => { setUserAccessView('pending'); setExpandedUserId(null); setOpenUserActionMenuId(null); }} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${userAccessView === 'pending' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Pending activation <span className="ml-1 text-slate-400">{pendingCount}</span></button>
+                          <button type="button" role="tab" aria-selected={userAccessView === 'inactive'} onClick={() => { setUserAccessView('inactive'); setExpandedUserId(null); setOpenUserActionMenuId(null); }} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${userAccessView === 'inactive' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Inactive users <span className="ml-1 text-slate-400">{inactiveCount}</span></button>
                           <button type="button" role="tab" aria-selected={userAccessView === 'archived'} onClick={() => { setUserAccessView('archived'); setExpandedUserId(null); setOpenUserActionMenuId(null); }} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${userAccessView === 'archived' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Archived users <span className="ml-1 text-slate-400">{archivedCount}</span></button>
                         </div>
                         <button type="button" onClick={() => setActionToConfirm({ onConfirm: cleanupBranchAssignments, title: 'Clean Invalid Assignments', message: 'Clean invalid branch assignments for all users?', confirmLabel: 'Clean assignments' })} className="text-xs font-semibold text-slate-500 transition hover:text-slate-900">Clean assignments</button>
@@ -1567,29 +1627,32 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                         {visibleUsers.map(user => {
                           const isExpanded = expandedUserId === user.id;
                           const isOwnAccount = user.id === auth.currentUser?.uid;
-                          const canManageLifecycle = !isOwnAccount;
+                          const canManageLifecycle = canManageAccess && canManageUsers && !isOwnAccount;
+                          const readinessLoading = !usersLoaded || !branchesLoaded || !!accessErrors.users || !!accessErrors.branches;
+                          const canActivate = !readinessLoading && activationIssues(user, branches).length === 0;
                           const clinicCount = user.assignedBranches?.length || 0;
                           const accountStatus = getAccountStatus(user);
                           return <article key={user.id} className="relative">
                             <div className="flex min-h-16 items-center gap-3 px-5 py-3 sm:px-6">
-                              <button type="button" onClick={() => { setExpandedUserId(isExpanded ? null : user.id); setOpenUserActionMenuId(null); }} aria-expanded={isExpanded} className="grid min-w-0 flex-1 items-center gap-3 text-left sm:grid-cols-[minmax(190px,1.25fr)_minmax(200px,1.45fr)_130px_110px_82px]">
-                                <span className="min-w-0"><span className="block truncate text-sm font-semibold text-slate-900">{user.fullName || user.name || 'Name not set'}</span><span className="block text-[10px] font-medium uppercase tracking-wide text-slate-400 sm:hidden">Name</span></span>
-                                <span className="hidden truncate text-sm text-slate-500 sm:block">{user.email || 'No email address'}</span>
-                                <span className="hidden text-sm capitalize text-slate-600 sm:block">{user.role === 'support_developer' ? 'Support / Developer' : user.role || 'Staff'}</span>
-                                <span className="hidden text-sm text-slate-500 sm:block">{clinicCount} {clinicCount === 1 ? 'clinic' : 'clinics'}</span>
-                                <span className={`hidden w-fit rounded-full px-2 py-1 text-[10px] font-semibold sm:inline-flex ${accountStatus.className}`}>{accountStatus.label}</span>
+                              <button type="button" onClick={() => { setExpandedUserId(isExpanded ? null : user.id); setOpenUserActionMenuId(null); }} aria-expanded={isExpanded} className="grid min-w-0 flex-1 items-center gap-3 text-left xl:grid-cols-[minmax(190px,1.25fr)_minmax(200px,1.45fr)_130px_110px_82px]">
+                                <span className="min-w-0"><span className="block truncate text-sm font-semibold text-slate-900">{user.fullName || user.name || 'Name not set'}</span><span className="block text-[10px] font-medium uppercase tracking-wide text-slate-400 xl:hidden">Name</span></span>
+                                <span className="hidden truncate text-sm text-slate-500 xl:block">{user.email || 'No email address'}</span>
+                                <span className="hidden text-sm capitalize text-slate-600 xl:block">{roleLabel(user.role || 'staff')}</span>
+                                <span className="hidden text-sm text-slate-500 xl:block">{clinicCount} {clinicCount === 1 ? 'clinic' : 'clinics'}</span>
+                                <span className={`hidden w-fit rounded-full px-2 py-1 text-[10px] font-semibold xl:inline-flex ${accountStatus.className}`}>{accountStatus.label}</span>
                               </button>
                               <div className="relative flex shrink-0 items-center gap-1">
-                                <span className={`rounded-full px-2 py-1 text-[10px] font-semibold sm:hidden ${accountStatus.className}`}>{accountStatus.label}</span>
+                                <span className={`rounded-full px-2 py-1 text-[10px] font-semibold xl:hidden ${accountStatus.className}`}>{accountStatus.label}</span>
                                 <button type="button" onClick={() => setOpenUserActionMenuId(openUserActionMenuId === user.id ? null : user.id)} aria-label={`More actions for ${user.fullName || user.email}`} aria-expanded={openUserActionMenuId === user.id} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"><MoreHorizontal className="h-4 w-4" /></button>
-                                {openUserActionMenuId === user.id && <div className="absolute right-0 top-9 z-10 w-44 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg"><p className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">More actions</p>{userAccessView === 'archived' ? <button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => restoreArchivedUser(user), title: 'Restore Archived User', message: `Restore ${user.fullName || user.email}? They will become active and regain access based on their assigned role and clinics.`, confirmLabel: 'Restore user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"><RotateCcw className="h-3.5 w-3.5" /> Restore</button> : <><button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => toggleUserStatus(user), title: user.active ? 'Disable User' : user.accountStatus === 'pending_activation' ? 'Approve Pending User' : 'Activate User', message: user.active ? `Disable ${user.fullName || user.email}? They will lose access until reactivated.` : `Approve and activate ${user.fullName || user.email}? They can sign in with their assigned role and clinic access.`, confirmLabel: user.active ? 'Disable user' : user.accountStatus === 'pending_activation' ? 'Approve & activate' : 'Activate user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">{user.active ? 'Disable user' : user.accountStatus === 'pending_activation' ? 'Approve & activate' : 'Activate user'}</button><button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => archiveUser(user), title: 'Archive User', message: `Archive ${user.fullName || user.email}? Their account will be deactivated, their records will be retained, and an administrator can restore it later.`, confirmLabel: 'Archive user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-40"><Archive className="h-3.5 w-3.5" /> Archive user</button></>}<button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => deleteUser(user), title: 'Delete User', message: `Permanently delete ${user.fullName || user.email}? They will no longer be able to sign in. Clinical records and audit history will not be removed.`, confirmLabel: 'Delete user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" /> Delete user</button></div>}
+                                {openUserActionMenuId === user.id && <div className="absolute right-0 top-9 z-10 w-44 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg"><p className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">More actions</p>{userAccessView === 'archived' ? <button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => restoreArchivedUser(user), title: 'Restore Archived User', message: `Restore ${user.fullName || user.email}? They will become active and regain access based on their assigned role and clinics.`, confirmLabel: 'Restore user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"><RotateCcw className="h-3.5 w-3.5" /> Restore</button> : <><button type="button" disabled={!canManageLifecycle || (!user.active && !canActivate)} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => toggleUserStatus(user), title: user.active ? 'Disable User' : user.accountStatus === 'pending_activation' ? 'Approve Pending User' : 'Activate User', message: user.active ? `Disable ${user.fullName || user.email}? They will lose access until reactivated.` : `Approve and activate ${user.fullName || user.email}? They can sign in with their assigned role and clinic access.`, confirmLabel: user.active ? 'Disable user' : user.accountStatus === 'pending_activation' ? 'Approve & activate' : 'Activate user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">{user.active ? 'Disable user' : user.accountStatus === 'pending_activation' ? 'Approve & activate' : 'Activate user'}</button><button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => archiveUser(user), title: 'Archive User', message: `Archive ${user.fullName || user.email}? Their account will be deactivated, their records will be retained, and an administrator can restore it later.`, confirmLabel: 'Archive user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-40"><Archive className="h-3.5 w-3.5" /> Archive user</button></>}<button type="button" disabled={!canManageLifecycle} onClick={() => { setOpenUserActionMenuId(null); setActionToConfirm({ onConfirm: () => deleteUser(user), title: 'Delete User', message: `Permanently delete ${user.fullName || user.email}? They will no longer be able to sign in. Clinical records and audit history will not be removed.`, confirmLabel: 'Delete user' }); }} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" /> Delete user</button></div>}
                               </div>
                               <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                             </div>
-                            {isExpanded && <div className="grid gap-4 bg-slate-50/70 px-5 py-4 sm:grid-cols-[180px_minmax(0,1fr)] sm:px-6"><div><label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Role</label><select onChange={(e) => { const nextRole = e.target.value; setActionToConfirm({ onConfirm: () => updateRole(user.id, nextRole), title: 'Change User Role', message: `Change ${user.fullName || user.email} to ${nextRole === 'support_developer' ? 'Support / Developer' : nextRole}? Their permissions will update immediately.`, confirmLabel: 'Change role' }); }} value={user.role || 'staff'} className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm" disabled={userAccessView === 'archived' || (userRole !== 'support_developer' && user.role === 'support_developer') || (userRole !== 'support_developer' && isOwnAccount)}><option value="admin">Admin</option><option value="manager">Manager</option><option value="staff">Staff</option><option value="doctor">Doctor</option>{userRole === 'support_developer' && <option value="support_developer">Support / Developer</option>}</select></div><div><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Clinic access</p><div className="grid gap-x-4 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">{branches.filter(branch => branch.status === 'Active').map(branch => { const isChecked = user.assignedBranches?.includes(branch.id); return <div key={branch.id} className="flex min-w-0 items-center gap-2 text-xs"><input id={`user-${user.id}-branch-${branch.id}`} type="checkbox" checked={!!isChecked} disabled={userAccessView === 'archived'} onChange={(event) => updateUserBranches(user, branch, event.target.checked)} /><label htmlFor={`user-${user.id}-branch-${branch.id}`} className="min-w-0 cursor-pointer truncate text-slate-700">{branch.branchName}</label>{isChecked && user.assignedBranches.length > 1 && <button type="button" disabled={userAccessView === 'archived'} className={`ml-auto text-[10px] font-semibold ${user.defaultBranchId === branch.id ? 'text-teal-700' : 'text-slate-400 hover:text-slate-700'}`} onClick={() => setUserDefaultBranch(user, branch)}>{user.defaultBranchId === branch.id ? 'Default' : 'Set default'}</button>}</div>; })}{branches.filter(branch => branch.status === 'Active').length === 0 && <p className="text-xs text-red-600">Add or activate a branch before assigning access.</p>}</div></div></div>}
+                            {!user.active && user.isArchived !== true && <div className="px-5 pb-3 sm:px-6"><UserActivationReadiness profile={user} branches={branches} loading={readinessLoading} /></div>}
+                            {isExpanded && <div className="grid gap-4 bg-slate-50/70 px-5 py-4 lg:grid-cols-[180px_minmax(0,1fr)] sm:px-6"><div><label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Role</label><UserRoleSelect onChange={(e) => { const nextRole = e.target.value; setActionToConfirm({ onConfirm: () => updateRole(user.id, nextRole), title: 'Change User Role', message: `Change ${user.fullName || user.email} to ${roleLabel(nextRole)}? Their permissions will update immediately.`, confirmLabel: 'Change role' }); }} actorRole={userRole} currentRole={user.role || 'staff'} archived={!canManageAccess || userAccessView === 'archived'} ownAccount={isOwnAccount} development={Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV)} className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm" /></div><div><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Clinic access</p><div className="grid gap-x-4 gap-y-2 lg:grid-cols-2 xl:grid-cols-3">{branches.filter(branch => branch.status === 'Active').map(branch => { const isChecked = user.assignedBranches?.includes(branch.id); return <div key={branch.id} className="flex min-w-0 items-center gap-2 text-xs"><input id={`user-${user.id}-branch-${branch.id}`} type="checkbox" checked={!!isChecked} disabled={!canManageAccess || userAccessView === 'archived'} onChange={(event) => updateUserBranches(user, branch, event.target.checked)} /><label htmlFor={`user-${user.id}-branch-${branch.id}`} className="min-w-0 cursor-pointer truncate text-slate-700">{branch.branchName}</label>{isChecked && user.assignedBranches.length > 1 && <button type="button" disabled={!canManageAccess || userAccessView === 'archived'} className={`ml-auto text-[10px] font-semibold ${user.defaultBranchId === branch.id ? 'text-teal-700' : 'text-slate-400 hover:text-slate-700'}`} onClick={() => setUserDefaultBranch(user, branch)}>{user.defaultBranchId === branch.id ? 'Default' : 'Set default'}</button>}</div>; })}{branches.filter(branch => branch.status === 'Active').length === 0 && <p className="text-xs text-red-600">Add or activate a branch before assigning access.</p>}</div></div><UserOperationalDetails key={`details:${user.id}`} actor={userProfile} target={user} /><UserPermissionEditor key={`${user.id}:${permissionScopeKey(userProfile)}`} actor={userProfile} target={user} onSaved={acceptAccess} /></div>}
                           </article>;
                         })}
-                        {visibleUsers.length === 0 && <div className="px-5 py-12 text-center text-sm text-slate-500 sm:px-6">{userAccessView === 'archived' ? 'No archived user accounts.' : userAccessView === 'pending' ? 'No user accounts are pending activation.' : 'No active user accounts.'}</div>}
+                        {visibleUsers.length === 0 && !accessErrors.users && <div className="px-5 py-12 text-center text-sm text-slate-500 sm:px-6">{!usersLoaded ? 'Loading user accounts…' : userAccessView === 'archived' ? 'No archived user accounts.' : userAccessView === 'pending' ? 'No user accounts are pending activation.' : userAccessView === 'inactive' ? 'No inactive user accounts.' : 'No active user accounts.'}</div>}
                       </div>
                     </>;
                   })()}
@@ -1645,10 +1708,10 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                           </thead>
                           <tbody className="divide-y divide-slate-100 text-slate-700">
                               {Object.entries(RBAC)
-                                  .filter(([role]) => userRole === 'support_developer' || role !== 'support_developer')
+                                  .filter(([role]) => isSupportDeveloper(userRole) || !isSupportDeveloper(role))
                                   .map(([role, modules]) => (
                                   <tr key={role} className="capitalize">
-                                    <td className="px-6 py-4 font-semibold text-slate-900">{role === 'support_developer' ? 'Support / Developer' : role}</td>
+                                    <td className="px-6 py-4 font-semibold text-slate-900">{roleLabel(role)}</td>
                                     {Object.entries(modules).map(([moduleKey, permissions]) => (
                                       <td key={moduleKey} className="px-6 py-4">
                                           <div className="flex flex-wrap gap-1.5">

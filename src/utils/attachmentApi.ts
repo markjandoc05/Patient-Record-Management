@@ -1,4 +1,5 @@
-import { auth } from '../firebase';
+import { captureProtectedRequestScope, protectedFetch, invalidateProtectedData, subscribeProtectedDataInvalidation } from '../dataClient';
+import { auth } from '../platform';
 import imageCompression from 'browser-image-compression';
 import { DEFAULT_MEDIA_SETTINGS, IMAGE_OPTIMIZATION } from '../mediaSettings';
 
@@ -56,19 +57,24 @@ export async function optimizeAttachmentImage(file: File | Blob, originalName: s
 }
 
 async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  const lifetime = captureProtectedRequestScope();
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Please sign in again to access attachments.');
-  const token = await currentUser.getIdToken();
+  const token = await currentUser.getRequestToken();
+  lifetime();
   const headers = new Headers(init.headers);
   headers.set('Authorization', `Bearer ${token}`);
-  return fetch(input, { ...init, headers });
+  return protectedFetch(input, { ...init, headers }, lifetime);
 }
 
 async function getErrorMessage(response: Response, fallback: string) {
   try {
     const body = await response.json();
+    if (response.status === 401 || response.status === 403) invalidateProtectedData();
     return typeof body?.error === 'string' ? body.error : fallback;
-  } catch {
+  } catch (error: any) {
+    if (error?.name === 'AbortError') throw error;
+    if (response.status === 401 || response.status === 403) invalidateProtectedData();
     return fallback;
   }
 }
@@ -82,9 +88,11 @@ export async function uploadAttachment(options: {
   resourceType: 'patient' | 'appointment' | 'visit';
   resourceId: string;
 }) {
+  const lifetime = captureProtectedRequestScope();
   const fileToUpload = isOptimizableImageUpload(options.file, options.originalName)
     ? await optimizeAttachmentImage(options.file, options.originalName, options.maxFileSizeMB)
     : options.file;
+  lifetime();
   const formData = new FormData();
   formData.append('file', fileToUpload, options.originalName);
   formData.append('note', options.note);
@@ -134,7 +142,8 @@ export async function openAttachment(file: StoredAttachment) {
       anchor.rel = 'noopener noreferrer';
       anchor.click();
     }
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    const stop = subscribeProtectedDataInvalidation(() => { URL.revokeObjectURL(objectUrl); placeholder?.close(); stop(); });
+    window.setTimeout(() => { URL.revokeObjectURL(objectUrl); stop(); }, 60_000);
   } catch (error) {
     placeholder?.close();
     throw error;

@@ -1,4 +1,5 @@
-import { auth } from '../firebase';
+import { captureProtectedRequestScope, protectedFetch, invalidateProtectedData } from '../dataClient';
+import { auth } from '../platform';
 
 export type LoginActivityRecord = {
   id: string;
@@ -13,15 +14,19 @@ export type LoginActivityRecord = {
 };
 
 async function loginActivityRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const lifetime = captureProtectedRequestScope();
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Please sign in again before accessing login activity.');
-  const token = await currentUser.getIdToken();
-  const response = await fetch(path, {
+  const token = await currentUser.getRequestToken();
+  lifetime();
+  const response = await protectedFetch(path, {
     ...init,
     credentials: 'same-origin',
     headers: { ...init.headers, Authorization: `Bearer ${token}`, Accept: 'application/json' },
   });
   const body = await response.json().catch(() => null);
+  lifetime();
+  if (response.status === 401 || response.status === 403) invalidateProtectedData();
   if (!response.ok) throw new Error(body?.error || 'Login activity request failed.');
   return body as T;
 }

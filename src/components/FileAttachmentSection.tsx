@@ -1,7 +1,9 @@
+import { uiCan } from '../permissionState';
+import { subscribeProtectedDataInvalidation } from '../dataClient';
 import React, { useState, useEffect } from 'react';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot } from '../dataClient';
 import { LayoutGrid, List, X } from 'lucide-react';
-import { db } from '../firebase';
+import { db } from '../platform';
 import Lightbox from './Lightbox';
 import ConfirmationModal from './ConfirmationModal';
 import { deleteAttachment, downloadAttachment, fetchAttachmentBlob, isImageAttachment, isOptimizableImageUpload, openAttachment, uploadAttachment } from '../utils/attachmentApi';
@@ -30,6 +32,8 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
 
   const resourceId = isGeneral ? patientId : (visitId || appointmentId);
   const collectionName = isGeneral ? 'patients' : (visitId ? 'visits' : 'appointments');
+  const writable = uiCan(null, 'clinical.view') && uiCan(null, `${collectionName}.attachments.manage`);
+  useEffect(() => subscribeProtectedDataInvalidation(() => { setFiles([]); setSelectedFiles([]); setPreviewUrl(null); setFileToDelete(null); setSecureUrls(current => { Object.values(current).forEach(url => URL.revokeObjectURL(url)); return {}; }); }), []);
   const resourceType = isGeneral ? 'patient' : (visitId ? 'visit' : 'appointment');
   
   useEffect(() => {
@@ -48,12 +52,13 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
     Promise.all(imageFiles.map(async file => {
       try {
         const blob = await fetchAttachmentBlob(file.storagePath);
+        if (!active) return null;
         const objectUrl = URL.createObjectURL(blob);
         createdUrls.push(objectUrl);
         return [file.storagePath, objectUrl] as const;
       } catch (error) {
         console.error('Failed to load protected attachment preview:', error);
-        setFailedLoadFiles(previous => new Set(previous).add(file.id));
+        if (active) setFailedLoadFiles(previous => new Set(previous).add(file.id));
         return null;
       }
     })).then(entries => {
@@ -67,6 +72,7 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
   }, [files]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!writable) return;
     const fileList = e.target.files;
     if (!fileList) return;
     
@@ -99,6 +105,7 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
   };
 
   const performUpload = async () => {
+    if (!writable) return;
     if (selectedFiles.length === 0 || !resourceId || !patientId) return;
 
     setUploading(true);
@@ -130,6 +137,7 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
   };
 
   const handleDelete = async (file: any) => {
+    if (!writable) return;
     if (!resourceId) return;
     try {
         await deleteAttachment(file.storagePath);
@@ -177,6 +185,7 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
     setFileToRemoveIndex(null);
   };
 
+  if (!uiCan(null, 'clinical.view')) return <p className="text-sm text-slate-600">Clinical attachments are unavailable with your current access.</p>;
   return (
     <section className="space-y-4">
         <div className="flex justify-between items-center border-b border-teal-100 pb-1">
@@ -188,12 +197,12 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
         </div>
         
         <div className="flex items-center gap-2">
-            <input type="file" multiple accept={settings.allowedExtensions.join(',')} onChange={handleFileSelect} disabled={uploading} className="hidden" id="file-upload" />
+            <input type="file" multiple accept={settings.allowedExtensions.join(',')} onChange={handleFileSelect} disabled={uploading || !writable} className="hidden" id="file-upload" />
             <label htmlFor="file-upload" className="px-3 py-1 bg-white border border-teal-600 text-teal-700 rounded text-xs font-medium cursor-pointer hover:bg-teal-50 transition">
                 Select Files
             </label>
             {selectedFiles.length > 0 && (
-                <button type="button" onClick={performUpload} disabled={uploading} className="px-3 py-1 bg-teal-600 text-white rounded text-xs hover:bg-teal-700 transition">
+                <button type="button" onClick={performUpload} disabled={uploading || !writable} className="px-3 py-1 bg-teal-600 text-white rounded text-xs hover:bg-teal-700 transition">
                     Upload {selectedFiles.length} File{selectedFiles.length > 1 ? 's' : ''}
                 </button>
             )}
@@ -251,7 +260,7 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
                             </div>
                             <div className='flex items-center gap-2'>
                               <button type="button" onClick={() => handleDownload(file)} className="text-teal-600 hover:underline text-[10px]">Download</button>
-                              <button type="button" onClick={() => setFileToDelete(file)} className="text-red-500 hover:text-red-700 ml-2">Delete</button>
+                              <button type="button" disabled={!writable} onClick={() => setFileToDelete(file)} className="text-red-500 hover:text-red-700 ml-2">Delete</button>
                             </div>
                         </div>
                     ))}

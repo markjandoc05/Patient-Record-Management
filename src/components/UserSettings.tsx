@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { updateProfile } from 'firebase/auth';
-import { auth } from '../firebase';
+import { doc, getDoc, setDoc } from '../dataClient';
+import { updateProfile } from '../session';
+import { auth } from '../platform';
 import { CustomDatePicker } from './CustomDatePicker';
-import { RBAC, Role } from '../rbac';
+import { RBAC, Role, roleLabel } from '../rbac';
 import { getChangedFields } from '../utils/diffUtils';
 import { logActivity } from '../utils/auditLogger';
 import { 
@@ -302,7 +302,7 @@ export default function UserSettings({ db }: { db: any }) {
                     </div>
                     <div>
                       <span className="text-xs uppercase font-extrabold tracking-widest text-teal-900 bg-teal-100 px-2.5 py-1 rounded">
-                        {profile.role === 'support_developer' ? 'Support / Developer' : (profile.role || 'Staff')}
+                        {roleLabel(profile.role || 'staff')}
                       </span>
                       <p className="text-slate-500 text-[11px] font-medium mt-1">
                         Roles define system modules access scope and action permissions. Let admins manage this.
@@ -317,7 +317,7 @@ export default function UserSettings({ db }: { db: any }) {
                     </span>
                     
                     {(() => {
-                      const userRoleKey = (profile.role || 'staff').toLowerCase() as Role;
+                      const userRoleKey = (profile.role || 'staff') as Role;
                       const config = RBAC[userRoleKey] || RBAC.staff;
                       const modules = [
                         { key: 'patientRecord', name: 'Patient Records' },

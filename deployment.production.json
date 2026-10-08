@@ -1,0 +1,60 @@
+{
+  "provider": "dokploy",
+  "panelUrl": "https://cloud.aiph.tech",
+  "projectName": "Vine System",
+  "projectId": "uv4h0gGoxpGgi4D1hiIXB",
+  "environmentId": "RTv2jrLuIPYimdyVhih-t",
+  "postgresId": "7WR6SANe3HfNoxMWo6Sxu",
+  "postgresService": "vine-system-postgres-bq7rry",
+  "database": "vine",
+  "databaseImage": "postgres:17-alpine",
+  "publicDatabasePort": null,
+  "databaseDeployment": "running_verified",
+  "domain": "app.vineaesthetics.com",
+  "dnsChanged": true,
+  "backupDestinationId": "LzvLpPyj57hLBRInjHlvS",
+  "backupConfigured": true,
+  "schemaMigrations": [
+    "001_platform.sql",
+    "002_session_integrity.sql"
+  ],
+  "schemaVerificationRecordCount": 0,
+  "schemaInitializerComposeId": "OpxVi_Wf1pDGor-ggm0Uc",
+  "backupId": "kSvmf-mMBDjxP9Layu0Wm",
+  "backupScheduleUtc": "0 19 * * *",
+  "backupRetentionCount": 14,
+  "backupRestoreTested": false,
+  "applicationDeployed": true,
+  "applicationId": "bAdvGfBU7-tJYcp8utfVO",
+  "applicationService": "vine-system-app-osbgzr",
+  "gitBranch": "deploy/dokploy-postgres",
+  "applicationConfigured": true,
+  "applicationDeploymentId": "JnW4Ce3rjiF-IW9_VVq6e",
+  "applicationRuntime": "running",
+  "migrationDecision": "import_existing_firebase",
+  "firebaseImportCompleted": true,
+  "stagingMigrationVerification": {
+    "records": 496,
+    "patientProfiles": 15,
+    "identities": 8,
+    "files": 22,
+    "collectionCountsMatched": true,
+    "fileChecksumsMatched": true
+  },
+  "domainId": "Re49-cwVWayc9KbAzHoYk",
+  "domainConfigured": true,
+  "dnsNameservers": [
+    "ns1.dns-parking.com",
+    "ns2.dns-parking.com"
+  ],
+  "httpsVerified": true,
+  "productionMigrationVerification": {
+    "records": 497,
+    "patientProfiles": 15,
+    "identities": 8,
+    "files": 22,
+    "collectionCountsMatched": true,
+    "fileChecksumsMatched": true
+  },
+  "userLoginVerificationPending": true
+}

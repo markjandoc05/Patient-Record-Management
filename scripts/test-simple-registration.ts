@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import { parseEmergencyContact } from '../src/utils/emergencyContact';
+import { parsePatientBirth } from '../src/utils/patientBirth';
+let checks=0;const check=(f:()=>void)=>{f();checks++;};
+for(const [birthday,age] of [['1990-10-01',36],['1990-10-02',36],['1990-10-03',35],['2026-10-02',0]] as const)check(()=>assert.equal(parsePatientBirth({birthday,birthDateStatus:'exact'},'2026-10-02').age,age));
+check(()=>assert.equal(parsePatientBirth({},'2026-10-02').age,null));
+check(()=>assert.throws(()=>parsePatientBirth({birthday:'2026-02-30'},'2026-10-02')));
+check(()=>assert.deepEqual(parseEmergencyContact({}),{emergencyContactName:'',emergencyContactRelationship:'',emergencyContactNumber:''}));
+check(()=>assert.deepEqual(parseEmergencyContact({emergencyContactName:' Ana Santos ',emergencyContactRelationship:' Mother ',emergencyContactNumber:' +63 917 123 4567 '}),{emergencyContactName:'Ana Santos',emergencyContactRelationship:'Mother',emergencyContactNumber:'+63 917 123 4567'}));
+for(const input of [{emergencyContactNumber:'123'},{emergencyContactNumber:12345678},{emergencyContactName:'x'.repeat(121)},{emergencyContactRelationship:'x'.repeat(81)},{emergencyContactNumber:'1234567890123456'}])check(()=>assert.throws(()=>parseEmergencyContact(input)));
+console.log(`${checks} simple age/emergency contact checks passed.`);

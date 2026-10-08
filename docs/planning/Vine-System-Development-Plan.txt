@@ -1,0 +1,321 @@
+VINE SYSTEM — DEVELOPMENT PLAN AND INDEPENDENT REVIEW BRIEF
+Prepared: October 1, 2026 (Asia/Manila)
+Status: Incremental roadmap for an operational production app. This document does not authorize deployments or claim that planned features already exist.
+
+DELIVERY MODEL UPDATE — LIVE SYSTEM FIRST
+
+Vine is already in operational use. Treat all phases below as workstreams and
+capability groupings, not sequential gates or a greenfield implementation plan.
+
+Default delivery unit: one small, independently useful improvement to an existing
+clinic workflow. Preserve current UI, records, permissions and behavior unless
+changing them is the explicit purpose of that release.
+
+For each improvement:
+1. Identify a concrete clinic problem and inspect the existing implementation.
+2. Define a narrow outcome, acceptance checks and recovery approach.
+3. Implement locally against the separate development database.
+4. Test the changed workflow and directly affected existing behavior.
+5. Save a meaningful GitHub milestone and release through the available validation
+   environment. Use staging for schema, authentication, clinical, stock and money
+   changes; small low-risk fixes need proportionate checks, not a broad redesign.
+6. Deploy the reviewed release, verify production behavior and record the result.
+
+Run recovery, staging and documentation improvements alongside feature delivery.
+Do not block unrelated low-risk improvements on completion of every foundation
+item. Gate a release only on safeguards relevant to its actual risk: for example,
+verified backups/recovery before destructive data changes, and transaction and
+concurrency checks before financial or stock changes.
+
+Do not normalize the entire database upfront. Retain the current JSONB model where
+adequate. Introduce relational structures only for the workflow being improved,
+using backward-compatible migrations and explicit validation of existing records.
+
+Prioritize confirmed daily pain points over the order of feature headings.
+First candidate: audit the existing service catalogue and branch pricing; ship
+only the smallest missing behavior if the audit confirms operational value.
+If another workflow is causing greater disruption, prioritize that instead.
+
+Release records can be brief: problem, change, checks, deployment result and
+recovery notes. Avoid mandatory paperwork or speculative infrastructure that
+slows small improvements without reducing a demonstrated risk.
+
+The numbered phases below remain a scope map. Their exit criteria apply to
+completion of each capability, not permission to begin every later workstream.
+
+1. PURPOSE
+
+Incrementally improve the operational Vine app toward a complete multi-branch aesthetic clinic management system. Preserve useful UI, existing records and workflows. Develop incrementally with documented requirements, meaningful tests and reversible deployments.
+
+Business priorities:
+- Reliable clinic operations and patient-record continuity.
+- Simple, affordable hosting on the existing Hostinger VPS through Dokploy.
+- Clear branch access and accountability for clinical, stock and financial actions.
+- No testing against live patient records.
+- Document improvements and release working milestones.
+
+2. VERIFIED BASELINE AND LIMITATIONS
+
+Production:
+- URL: https://app.vineaesthetics.com
+- App and PostgreSQL run on the Hostinger VPS under Dokploy.
+- HTTPS and the database health endpoint passed at migration verification.
+- Imported 497 records, including 15 patient profiles, 8 Google identity links and 22 files. Per-collection counts and file checksums matched the final export. These are migration-time counts, not current live totals.
+- Daily database backup schedule enabled to an existing Cloudflare destination at 3:00 AM Philippine time, retaining 14 backups.
+- Successful backup restoration has NOT yet been verified.
+- Separate recurring photo/attachment backups remain outstanding.
+- Full end-user production workflow acceptance remains to be documented.
+
+Development:
+- Separate PostgreSQL 17 service in Dokploy's development environment.
+- Local app on http://localhost:3000 connects through a localhost-bound SSH tunnel.
+- Separate credentials and attachment directory; synthetic branch and patient data.
+- Same versioned SQL migrations as production; schemas evolve through migrations, not automatic record synchronization.
+- Development administrator activated for the owner's verified Google account.
+- Public branding, logo assets and footer copied to development and settings compared successfully.
+- Local health checks and TypeScript checks passed. End-to-end sign-in after account activation still needs user verification.
+
+Current technical stack:
+- Frontend: React 19, TypeScript, Vite 6, Tailwind CSS 4.
+- Backend: Node.js 22 production image, Express 4, TypeScript.
+- Database: PostgreSQL 17.
+- Authentication: Google OAuth, server-managed sessions, HttpOnly cookies and CSRF checks.
+- Storage: private persistent Docker volume, accessed through authorized API routes.
+- Deployment: Docker and Dokploy; Traefik and Let's Encrypt for routing/HTTPS.
+- Source repository: https://github.com/markjandoc05/Patient-Record-Management
+- Deployment branch: deploy/dokploy-postgres. Branch/release policy needs formalization.
+- Firebase runtime removed from the migrated app. Firebase Admin remains a development-only export dependency. The old installation is a rollback reference; retirement needs an explicit retention/cutover decision.
+
+Important architecture limitation:
+Existing application records are stored in PostgreSQL app_records as JSONB, preserving legacy IDs and fields. Authentication identities and sessions use separate tables. This is a transitional compatibility model, not a fully normalized clinic database. Legacy writes use a broad transaction advisory lock and frontend subscriptions poll approximately every five seconds. Revisit these constraints as workflows and load grow.
+
+Existing feature areas to audit before extending:
+Patient records, appointments, visits/clinical documentation, branches, user administration, audit records, inventory-related workflows, attachments, branding and analytics. The migration did not itself implement the full target feature list below. Audit actual behavior; do not infer completeness from a screen or menu item.
+
+3. TARGET PRODUCT SCOPE
+
+Dashboard:
+Branch/date filters; billed sales versus actual collections; refunds; outstanding balances; appointments; patients served; package sessions used; stock alerts.
+
+Appointments:
+Day/week/month/list views; scheduled bookings and walk-ins; patient lookup or quick registration; staff and room/equipment assignment; conflict checks; confirmation; check-in; rescheduling; cancellation; no-shows.
+
+Patients and import/export:
+Directory; demographics; addresses; contact/emergency details; referrals; groups/tags; duplicate review; complete patient profiles; CSV templates, validation, preview, duplicate checks and demographic export.
+
+Clinical records:
+Encounters; medical history; allergies; medications; health concerns; clinical notes; clinician-authored prescription drafts. No automatic clinical decision-making is included in this plan.
+
+Consent, media and interactive charts:
+Versioned consent; private attachments; before/after/progress photos; face, front/back body and dental markers; editable drafts; undo; signed charts; attributed amendments; print/export.
+
+Services:
+Categories; descriptions; duration; standard and branch-specific pricing; branch availability; scheduling requirements; descriptive consumable defaults.
+
+Packages:
+Versioned definitions; included services and allowances; validity; eligible branches; patient ownership; balances; reservations; redemption history.
+
+Treatment completion:
+Confirm actual consumables; deduct stock; redeem eligible prepaid sessions exactly once; pass chargeable items to billing. Clinical completion and financial posting need explicit state transitions and retry-safe behavior.
+
+POS and payments:
+Service/product/package line items; invoice drafts and posting; authorized discounts; full/partial payments; later collections; cash change; references; receipt acknowledgments. Manual payment recording is distinct from a future payment gateway.
+
+Inventory:
+Items; categories; suppliers; units/conversions; batches/expiry; receiving; consumption; waste; counts; quarantine; branch transfers; movement history.
+
+Operational accounting:
+Sales/collections; receivables aging; expenses; supplier bills/payments; cash-flow summaries; reconciliation; private attachments; exports. This does not yet promise a statutory accounting system or compliant tax invoicing.
+
+Employees/resources:
+Profiles and account links; employment status; branch assignments; capabilities; credential metadata; availability; blocked time; rooms/equipment.
+
+Reports:
+Sales; payments/refunds; balances; service/product activity; appointments/no-shows; visits; packages; stock/waste; employee status; branch comparisons; CSV/Excel exports.
+
+Access/usability:
+Branch switching; roles/custom permissions; user allow/deny overrides; MFA decision; session revocation; audit trails; archive/restore; responsive layouts; keyboard access; light/dark appearance.
+
+Items described as incomplete or gated in the original brief must be re-audited:
+Simulated SMS/email delivery; automatic package activation; transfers; posted financial corrections/refunds; commissions; patient-profile history/bills placeholders; manual payments; test receipt acknowledgments. Some migration work introduced validated stock-transfer endpoints; do not assume the entire transfer workflow is complete.
+
+4. CAPABILITY WORKSTREAMS (NUMBERED FOR REFERENCE, NOT STRICT RELEASE ORDER)
+
+PHASE 1 — PRODUCTION VERIFICATION AND RECOVERY
+Work:
+- Verify Google login, role/branch permissions, imported patient histories, appointments, uploads/downloads and printing.
+- Run a real database backup and restore it into an isolated recovery database.
+- Verify record counts and representative workflows after restore.
+- Design and test separate encrypted/private file backup and restore, including metadata.
+- Define coordinated database/file recovery procedure, retention, access, recovery-point objective and recovery-time objective.
+- Record VPS capacity, disk alerts, database health and operational ownership.
+- Establish rollback and old-Firebase retention/write-freeze status.
+Exit:
+Documented workflow acceptance and demonstrated recoverability. Do not label production readiness complete based only on a successful container build.
+
+PHASE 2 — DEVELOPMENT AND RELEASE FOUNDATION
+Work:
+- Verify local development login and demo workflows.
+- Create a staging app/database with production-like configuration, separate from shared development and production.
+- Use synthetic/anonymized staging data; restrict any real-data recovery test to an isolated controlled environment.
+- Add automated type checks, builds and meaningful authorization/workflow tests.
+- Establish branch, review, release-tag and environment promotion conventions.
+- Ensure database migrations are versioned, checksummed and rehearsed before release.
+- Document local startup, configuration, deployment, backup and recovery.
+Exit:
+A small change can move from local testing through staging to production with recorded checks and a recovery plan.
+
+PHASE 3 — CORE CLINIC OPERATIONS
+Work:
+- Audit existing patients, branches, services, employees/resources and appointment workflows.
+- Introduce relational structures incrementally for the domains being changed.
+- Start with services, duration, branch availability and branch-specific prices.
+- Add staff capabilities, rooms/equipment and schedule availability.
+- Complete appointment lifecycle, conflict checks and patient appointment history.
+- Add safe patient CSV import/export and duplicate review where missing.
+Exit:
+Reception can manage patients/bookings across branches; simultaneous bookings cannot silently over-allocate a constrained resource; agreed branch access rules are enforced server-side.
+
+PHASE 4 — CLINICAL WORKFLOW
+Work:
+- Encounters, histories, allergies, medications and clinical documentation.
+- Clinician-authored prescription drafts.
+- Consent templates/versions and patient acceptance records.
+- Private clinical media and attachment authorization.
+- Chart drafts, markers, undo, signing, attributed amendments and printing.
+Exit:
+Clinicians can document treatment with author/time attribution. Signed records cannot be silently overwritten. Unauthorized file access is denied.
+
+PHASE 5 — PACKAGES AND TREATMENT STOCK
+Work:
+- Versioned package definitions and patient-owned entitlements.
+- Expiry, eligible branches, balances, reservations, releases and redemption history.
+- Inventory units, batches, expiry, receiving, quarantine, transfers, counts and waste.
+- Record actual treatment consumables and complete treatment with transaction integrity.
+- Produce stable chargeable treatment items for billing; agree how paid entitlement activation will integrate with Phase 6.
+Exit:
+Concurrent/retried completion cannot double-redeem a session or double-deduct stock. Cancelled reservations release balances. Historical package terms remain available.
+
+PHASE 6 — BILLING AND OPERATIONAL FINANCE
+Work:
+- Invoice drafts/posting and immutable posted financial history.
+- Authorized discounts, partial payments, collections and allocations.
+- Reversals, credit/refund workflows and permission/approval rules.
+- Patient bills and balances; expenses; supplier bills/payments; reconciliation.
+- Activate packages from the agreed financial event, with retry-safe integration.
+Exit:
+Sales, collections, refunds and receivables reconcile. Posted corrections preserve the original transaction and audit history. Monetary calculations use explicit currency/rounding rules.
+
+PHASE 7 — REPORTING AND AUTOMATION
+Work:
+- Reports and dashboards based on verified transaction definitions.
+- CSV/Excel exports with branch/permission filters.
+- Real reminder delivery with consent/preferences, retries and delivery/failure tracking.
+- Commissions only after calculation, refund/clawback and approval rules are agreed.
+- MFA/access enhancements prioritized earlier if risk review requires them.
+Exit:
+Report totals reconcile to source transactions; automation failures are visible and retrying does not duplicate actions.
+
+5. DATABASE EVOLUTION STRATEGY
+
+- Keep IDs and mappings that preserve patient/clinical continuity.
+- Normalize by workflow rather than rewrite all tables upfront.
+- Candidate domains: branches, patients, employee/resource assignments, services/prices, appointments, encounters, consent versions, chart revisions, packages/entitlements, stock movements/batches, invoices/lines, payments/allocations, refunds, expenses and supplier bills.
+- Define foreign keys, uniqueness, check constraints, indexes and ownership before implementation.
+- Use transactions, explicit row locks and idempotency keys for money, stock and package balances.
+- Use exact numeric monetary values; define units and rounding before calculations.
+- Preserve historical prices, package terms, consent versions and financial events.
+- Use expand/backfill/verify/switch/retire migrations when live data needs structural changes.
+- Avoid unbounded dual writes. If temporary dual writes are necessary, define reconciliation and retirement criteria.
+- Keep development/staging/production schemas aligned by promoting migrations. Never synchronize test records into production.
+
+6. DOCUMENTATION AND CHANGE TRACKING
+
+Create and maintain:
+- ROADMAP.md: phases, dependencies, priorities, progress.
+- CHANGELOG.md: dated user-facing release improvements/fixes/known limitations.
+- DEVELOPMENT.md: local startup, development database and sign-in setup (already exists).
+- DEPLOYMENT.md: deployment/migration/recovery guidance (already exists).
+- docs/decisions/: architecture and business-rule decisions with rationale.
+- docs/releases/: scope, migration steps, test evidence, rollback and acceptance notes.
+- docs/operations/: backup, restore, monitoring, maintenance and incident procedures.
+- GitHub Issues/project board: tasks, bugs, acceptance criteria and release grouping; establish this board rather than assume it exists.
+
+Each task records:
+Problem; user-visible outcome; scope/exclusions; acceptance criteria; dependencies; permission/data impacts; validation; documentation changes.
+
+Each release records:
+Version/date; change summary; schema changes; checks/results; staging acceptance; deployment verification; rollback approach; known limitations.
+
+7. WORKFLOW AND DEFINITION OF DONE
+
+1. Audit existing behavior and identify the smallest useful workflow improvement.
+2. Agree material business rules and acceptance criteria.
+3. Implement locally against the separate development database.
+4. Run targeted tests; do not add trivial tests that merely mirror implementation.
+5. Commit working milestones. Local testing does not require GitHub pushes.
+6. Push the release candidate for staging deployment.
+7. Demonstrate the workflow and obtain acceptance where required.
+8. Back up, deploy and run production smoke checks.
+9. Update release notes, roadmap and operating instructions.
+
+Definition of done:
+- Acceptance criteria pass.
+- Server-side access rules and branch boundaries are verified.
+- Relevant validation/error/retry/concurrency cases pass.
+- Migration and recovery implications are documented and tested where applicable.
+- No secrets or patient data in source control, build logs or release artifacts.
+- User-facing behavior is understandable and usable on target devices.
+- Documentation and release status accurately distinguish implemented, tested and pending work.
+
+8. BUSINESS DECISIONS STILL REQUIRED
+
+- Clinic-wide versus branch-restricted patient/clinical visibility.
+- Employee roles, explicit allow/deny precedence and approval limits.
+- Scheduling buffers, overlap rules, resource capacity and cancellation rules.
+- Clinical signing/amendment authority and consent renewal requirements.
+- Package expiry, activation event, reservations, cross-branch use, cancellations and refunds.
+- Negative stock policy, batch selection, substitutions and transfer custody.
+- Tax/invoice requirements, numbering, currencies, discount limits, refunds and reconciliation.
+- Receipt acknowledgment versus legally compliant invoice requirements.
+- Reminder providers, consent/preferences, message costs and delivery ownership.
+- Commission basis, eligibility, timing, clawbacks and approvals.
+- Retention/deletion requirements, backup retention, recovery objectives and MFA approach.
+- Expected concurrent users, branches, file growth and performance targets.
+
+Do not invent these rules. Record decisions before implementing dependent workflows.
+
+9. RISKS AND CONTROLS
+
+- App/database share one VPS: backups must support recovery from total VPS loss. Recovery testing remains required.
+- Development shares VPS capacity with production: resource limits and monitoring must prevent development work from starving live operations.
+- JSONB compatibility and broad write locking may limit consistency enforcement and throughput as scope grows: normalize high-integrity workflows and measure load.
+- Five-second polling may affect load/latency: measure before replacing it with another synchronization mechanism.
+- Database backups alone do not protect clinical files: verify both components and their consistent recovery.
+- Reusing a Google OAuth client for local and production needs careful callback management; assess separate clients for environment isolation.
+- Root SSH was used for setup: plan least-privilege operational/development access and key lifecycle management.
+- Imported data can contain legacy inconsistencies: reconcile before enforcing new constraints.
+- A migration rollback may require restoring data rather than simply deploying older code; assess per release.
+
+10. REQUEST TO CHATGPT / INDEPENDENT REVIEWER
+
+Please analyze this plan as a software architect and clinic-operations product reviewer.
+
+Do not assume the target features are implemented. Distinguish verified baseline,
+planned work, reported test results and unresolved decisions. Do not execute changes.
+
+Please provide:
+1. Gaps, contradictions and assumptions, ranked by impact.
+2. Recommended small-release sequence and dependency corrections, especially packages, treatment completion, billing and inventory; do not impose a broad foundation rewrite before useful improvements.
+3. A practical MVP boundary and items to defer.
+4. Relational entity model and high-integrity transaction boundaries.
+5. Access-control, clinical-history, media, financial and backup/recovery concerns.
+6. Concrete acceptance criteria and failure/concurrency test cases per phase.
+7. Improvements to local/staging/production workflow and documentation.
+8. Clarifying business questions before coding.
+9. A revised roadmap with independently releasable milestones.
+10. Effort estimates as ranges with assumptions, not guaranteed dates.
+
+Prefer incremental modernization of the current app. Explain any recommendation
+for a rewrite or new infrastructure with evidence and migration costs. Avoid
+adding microservices, providers or infrastructure without a clear operational need.

@@ -1,6 +1,7 @@
+import { uiCan } from '../permissionState';
 import React, { useState, useEffect } from 'react';
-import { db, auth } from '../firebase';
-import { collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, limit } from 'firebase/firestore';
+import { db, auth } from '../platform';
+import { collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, limit } from '../dataClient';
 import { formatDateTime } from '../utils';
 import { logActivity } from '../utils/auditLogger';
 
@@ -33,7 +34,7 @@ export default function PrivateNotesList({ patientId, userRole }: { patientId: s
   }, [patientId, noteLimit, user]);
 
   const handleAddNote = async () => {
-    if (!newNote.trim() || !user) return;
+    if (!newNote.trim() || !user || !uiCan(userRole, 'clinical.private_notes.create') || !uiCan(userRole, 'clinical.edit_draft')) return;
     await addDoc(collection(db, `patients/${patientId}/privateNotes`), {
       patientId,
       authorId: user.uid,
@@ -53,7 +54,7 @@ export default function PrivateNotesList({ patientId, userRole }: { patientId: s
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-2">
+      {uiCan(userRole, 'clinical.private_notes.create') && uiCan(userRole, 'clinical.edit_draft') && <div className="flex gap-2">
         <input
           value={newNote}
           onChange={(e) => setNewNote(e.target.value)}
@@ -61,7 +62,7 @@ export default function PrivateNotesList({ patientId, userRole }: { patientId: s
           placeholder="Add a private note..."
         />
         <button onClick={handleAddNote} className="bg-teal-600 text-white px-4 py-2 rounded-lg text-sm font-bold">Add</button>
-      </div>
+      </div>}
       <div className="space-y-2">
         {notes.map(n => (
           <div key={n.id} className="bg-slate-50 p-3 rounded-lg text-sm">

@@ -1,0 +1,268 @@
+{
+  "runtime": "Node 22 / PostgreSQL 17 disposable local containers",
+  "fullRunCommands": 32,
+  "fullRunPassed": true,
+  "commands": [
+    {
+      "command": "npm ci --include=dev",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": []
+    },
+    {
+      "command": "npm run lint",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": []
+    },
+    {
+      "command": "npm run build",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": []
+    },
+    {
+      "command": "npm run db:migrate",
+      "testDatabase": "vine_services_empty_test",
+      "exitCode": 0,
+      "reportedResults": []
+    },
+    {
+      "command": "npm run test:services",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "Services policy: 74 checks passed"
+      ]
+    },
+    {
+      "command": "npm run test:services-api",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "Synthetic HTTP list timing (10 requests, small disposable catalogue): median 1.3 ms, max 1.9 ms",
+        "Services API/database: 101 checks passed"
+      ]
+    },
+    {
+      "command": "npm run test:rbac",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "RBAC assertions passed"
+      ]
+    },
+    {
+      "command": "npm run test:audit",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "Audit policy tests passed."
+      ]
+    },
+    {
+      "command": "npm run test:developer-tools",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "Developer Tools policy tests passed."
+      ]
+    },
+    {
+      "command": "npm run test:login-activity",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "Login activity policy tests passed."
+      ]
+    },
+    {
+      "command": "npm run test:support-access",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "122 full Support / Developer access checks passed (real HTTP routes, in-memory synthetic persistence and disposable test uploads)."
+      ]
+    },
+    {
+      "command": "npm run test:support-ui",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": []
+    },
+    {
+      "command": "npm run test:support-subscriptions",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "6 protected-cache and rapid-scope scenarios passed (controlled HTTP responses)."
+      ]
+    },
+    {
+      "command": "npm run test:development-activation",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "28 development activation checks passed (real local HTTP routes, simulated Google provider and in-memory persistence)."
+      ]
+    },
+    {
+      "command": "npm run test:shared-data",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "32 shared patient/visit/directory/cache/profile regression checks passed (synthetic controlled responses; profile rendering, not browser acceptance)."
+      ]
+    },
+    {
+      "command": "npm run test:workspace-overview",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "28 workspace overview state/security checks passed."
+      ]
+    },
+    {
+      "command": "npm run test:patient-lookup",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "50 patient lookup checks passed (pure matching and static component guards, not browser/API evidence)."
+      ]
+    },
+    {
+      "command": "npm run test:patient-birth",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "26 patient birth validation checks passed."
+      ]
+    },
+    {
+      "command": "npm run test:patient-duplicates",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "24 advisory patient duplicate checks passed (pure matching, not browser acceptance)."
+      ]
+    },
+    {
+      "command": "npm run test:clinical-findings",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "48 clinical finding state checks passed (no clinician-review evidence)."
+      ]
+    },
+    {
+      "command": "npm run test:simple-registration",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "13 simple age/emergency contact checks passed."
+      ]
+    },
+    {
+      "command": "npm run test:user-onboarding-ui",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "48 user onboarding guidance/component checks passed (static rendering, no browser or Google sign-in evidence)."
+      ]
+    },
+    {
+      "command": "node --import tsx scripts/test-appointment-loading.ts",
+      "testDatabase": "vine_services_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "16 appointment loading scenarios passed (synthetic records and controlled responses)."
+      ]
+    },
+    {
+      "command": "npm run test:postgres",
+      "testDatabase": "vine_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "Passed 54 PostgreSQL, authorization, session and inventory checks."
+      ]
+    },
+    {
+      "command": "npm run test:appointment-read-auth",
+      "testDatabase": "vine_appointment_auth_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "Passed 236 appointment read-authorization assertions (disposable synthetic data)."
+      ]
+    },
+    {
+      "command": "npm run test:parity-regression",
+      "testDatabase": "vine_parity_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "142 parity/shared clinical/upload/audit regression checks passed (disposable PostgreSQL and files)."
+      ]
+    },
+    {
+      "command": "npm run test:migration-import",
+      "testDatabase": "vine_import_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "Passed 8 migration import checks: IDs, identities, private notes, timestamps, branding, files and overwrite rejection."
+      ]
+    },
+    {
+      "command": "npm run test:user-onboarding",
+      "testDatabase": "vine_onboarding_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "82 onboarding PostgreSQL/HTTP checks passed (simulated Google provider; real server, transactions, sessions and audits)."
+      ]
+    },
+    {
+      "command": "npm run test:patient-lookup-api",
+      "testDatabase": "vine_parity_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "20 patient lookup API/policy/duplicate-risk checks passed (real disposable PostgreSQL and HTTP; synthetic identities)."
+      ]
+    },
+    {
+      "command": "npm run test:patient-registration-api",
+      "testDatabase": "vine_parity_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "39 patient registration API/policy/birth-source checks passed (real disposable PostgreSQL and HTTP; synthetic identities)."
+      ]
+    },
+    {
+      "command": "npm run test:clinical-findings-api",
+      "testDatabase": "vine_parity_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "32 clinical finding API/permission checks passed (real disposable PostgreSQL and HTTP; synthetic identities)."
+      ]
+    },
+    {
+      "command": "npm run test:simple-registration-api",
+      "testDatabase": "vine_parity_test",
+      "exitCode": 0,
+      "reportedResults": [
+        "28 simple registration/emergency contact API checks passed (real disposable PostgreSQL and HTTP; synthetic identities)."
+      ]
+    }
+  ],
+  "finalUiVerification": [
+    {
+      "command": "npm ci --include=dev",
+      "exitCode": 0
+    },
+    {
+      "command": "npm run lint",
+      "exitCode": 0
+    },
+    {
+      "command": "npm run build",
+      "exitCode": 0
+    }
+  ]
+}

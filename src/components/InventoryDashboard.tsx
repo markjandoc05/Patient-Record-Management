@@ -1,3 +1,5 @@
+import { uiCan } from '../permissionState';
+import { transferRequest } from '../utils/inventoryApi';
 import React, { useState, useEffect } from 'react';
 import { 
   collection, 
@@ -9,9 +11,10 @@ import {
   where, 
   serverTimestamp,
   increment,
-  writeBatch
-} from 'firebase/firestore';
+  getDocs
+} from '../dataClient';
 import { 
+  X,
   Package, 
   Truck, 
   Users, 
@@ -25,7 +28,7 @@ import {
   Clock,
   ChevronRight
 } from 'lucide-react';
-import { db } from '../firebase';
+import { db } from '../platform';
 import { formatDateTime } from '../utils';
 
 interface InventoryItem {
@@ -94,7 +97,7 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
       setTransfers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as StockTransfer)));
     });
     const unsubBranches = onSnapshot(collection(db, 'branches'), (snapshot) => {
-      setBranches(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Branch)));
+      setBranches(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), name: doc.data().branchName || doc.data().name } as Branch)));
     });
 
     return () => {
@@ -126,48 +129,16 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
       return;
     }
 
-    await addDoc(collection(db, 'stock_transfers'), transferData);
+    if (!uiCan(userProfile, 'inventory.transfer')) return;
+    try { await transferRequest('create', transferData); }
+    catch (error) { alert(error instanceof Error ? error.message : 'Transfer failed'); return; }
     setIsTransferring(false);
   };
 
   const handleCompleteTransfer = async (transfer: StockTransfer) => {
-    const batch = writeBatch(db);
-    
-    // Update source stock
-    const sourceStockQuery = query(collection(db, 'inventory_stocks'), 
-      where('itemId', '==', transfer.itemId), 
-      where('branchId', '==', transfer.fromBranchId)
-    );
-    const sourceSnap = await getDocs(sourceStockQuery);
-    if (!sourceSnap.empty) {
-      batch.update(doc(db, 'inventory_stocks', sourceSnap.docs[0].id), {
-        quantity: increment(-transfer.quantity)
-      });
-    }
-
-    // Update destination stock
-    const destStockQuery = query(collection(db, 'inventory_stocks'), 
-      where('itemId', '==', transfer.itemId), 
-      where('branchId', '==', transfer.toBranchId)
-    );
-    const destSnap = await getDocs(destStockQuery);
-    if (!destSnap.empty) {
-      batch.update(doc(db, 'inventory_stocks', destSnap.docs[0].id), {
-        quantity: increment(transfer.quantity)
-      });
-    } else {
-      const newStockRef = doc(collection(db, 'inventory_stocks'));
-      batch.set(newStockRef, {
-        itemId: transfer.itemId,
-        branchId: transfer.toBranchId,
-        quantity: transfer.quantity
-      });
-    }
-
-    // Mark transfer as completed
-    batch.update(doc(db, 'stock_transfers', transfer.id), { status: 'completed' });
-    
-    await batch.commit();
+    if (!uiCan(userProfile, 'inventory.transfer')) return;
+    try { await transferRequest('complete', { id: transfer.id }); }
+    catch (error) { alert(error instanceof Error ? error.message : 'Transfer failed'); }
   };
 
   return (
@@ -178,7 +149,7 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
           <p className="text-slate-500">Track stocks, manage suppliers, and handle branch transfers.</p>
         </div>
         <div className="flex gap-2">
-          {activeTab === 'stocks' && (
+          {activeTab === 'stocks' && uiCan(userProfile, 'inventory.manage') && (
             <button 
               onClick={() => setIsAddingItem(true)}
               className="flex items-center gap-2 bg-teal-600 text-white px-4 py-2 rounded-lg hover:bg-teal-700 transition-colors shadow-sm"
@@ -186,7 +157,7 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
               <Plus className="w-4 h-4" /> Add Item
             </button>
           )}
-          {activeTab === 'suppliers' && (
+          {activeTab === 'suppliers' && uiCan(userProfile, 'inventory.manage') && (
             <button 
               onClick={() => setIsAddingSupplier(true)}
               className="flex items-center gap-2 bg-teal-600 text-white px-4 py-2 rounded-lg hover:bg-teal-700 transition-colors shadow-sm"
@@ -194,7 +165,7 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
               <Plus className="w-4 h-4" /> Add Supplier
             </button>
           )}
-          {activeTab === 'transfers' && (
+          {activeTab === 'transfers' && uiCan(userProfile, 'inventory.transfer') && (
             <button 
               onClick={() => setIsTransferring(true)}
               className="flex items-center gap-2 bg-teal-600 text-white px-4 py-2 rounded-lg hover:bg-teal-700 transition-colors shadow-sm"
@@ -541,15 +512,3 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
     </div>
   );
 }
-
-// Internal helper for batch operations
-async function getDocs(q: any) {
-  const { getDocs: firestoreGetDocs } = await import('firebase/firestore');
-  return firestoreGetDocs(q);
-}
-
-const X = ({ className }: { className?: string }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-  </svg>
-);
