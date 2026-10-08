@@ -73,6 +73,7 @@ db.runTransaction = (async (callback: any) => {
   beforeTransaction?.(); beforeTransaction = null;
   const staged: (() => void)[] = [];
   const tx: any = { get: (ref: any) => ref.get(), sql: async (sql: string, values: any[]) => {
+    if (sql.includes('FROM auth_sessions s')) return pool.query(sql, values);
     if (sql === 'SELECT 1 FROM service_branch_settings WHERE branch_id=$1 LIMIT 1') return { rows: [] }; // No service fixtures in this in-memory suite.
     if (sql.includes('SELECT 1 FROM auth_identities')) return pool.query(sql, values);
     if (!sql.startsWith('DELETE FROM auth_')) throw new Error('Unexpected mutation SQL');
@@ -136,10 +137,10 @@ try {
   const write = (operation: any) => request('/api/data/write', { operations: [operation] });
   check((await request('/api/data/write', { operations: [{ path: 'users/test-staff', mode: 'update', data: { role: SUPPORT_DEVELOPER } }] }, 'admin')).status === 403, 'Admin cannot grant developer role from submitted selector value');
   check((await request('/api/data/write', { operations: [{ path: 'users/test-staff', mode: 'update', data: { role: SUPPORT_DEVELOPER } }] }, 'staff')).status === 403, 'Staff cannot grant developer role from submitted selector value');
-  check((await write({ path: 'users/test-staff', mode: 'update', data: { role: 'manager' } })).status === 200, 'Role administration available');
-  check((await write({ path: 'users/test-staff', mode: 'update', data: { assignedBranches: ['demo-branch', 'acceptance-branch-b'] } })).status === 200, 'Branch assignment administration available');
+  check((await request('/api/users/test-staff/access', { expectedAccessRevision: 0, role: 'manager' }, SUPPORT_DEVELOPER, 'PATCH')).status === 200, 'Role administration available');
+  check((await request('/api/users/test-staff/access', { expectedAccessRevision: 1, assignedBranches: ['demo-branch', 'acceptance-branch-b'] }, SUPPORT_DEVELOPER, 'PATCH')).status === 200, 'Branch assignment administration available');
   check((await write({ path: `users/test-${SUPPORT_DEVELOPER}`, mode: 'update', data: { role: 'admin' } })).status === 403, 'Own-role change safeguard preserved');
-  check((await write({ path: 'users/test-support_developer', mode: 'update', data: { assignedBranches: ['demo-branch'] } })).status === 200, 'Developer can manage legacy developer profiles');
+  check((await request('/api/users/test-support_developer/access', { expectedAccessRevision: 0, assignedBranches: ['demo-branch'] }, SUPPORT_DEVELOPER, 'PATCH')).status === 200, 'Developer can manage legacy developer profiles');
   for (const setting of ['branding', 'timezone', 'footer', 'media']) check((await write({ path: `settings/${setting}`, mode: 'set', merge: true, data: setting === 'branding' ? { appName: 'Test Vine' } : { developmentTest: true } })).status === 200, `${setting} configuration available`);
   check((await write({ path: 'settings/branding', mode: 'update', data: { maintenanceMode: true } })).status === 403, 'Maintenance must use dedicated validated endpoint');
   check((await write({ path: 'branches/unused', mode: 'create', data: { branchName: 'Synthetic Branch', status: 'Active' } })).status === 200, 'Branch creation available');

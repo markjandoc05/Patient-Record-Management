@@ -84,6 +84,7 @@ export function subscribeToBranchScopedCollection(
   onError?: (error: Error) => void,
   constraints: QueryConstraint[] = [],
   includeArchived = false,
+  waitForAll = false,
 ): () => void {
   if (hasGlobalBranchAccess(profile)) {
     const scopedQuery = query(collection(db, collectionName), ...constraints);
@@ -105,10 +106,12 @@ export function subscribeToBranchScopedCollection(
   const branchChunks = chunk(assignedBranchIds, BRANCH_QUERY_CHUNK_SIZE);
   let active = true;
   let resetGeneration = -1;
+  const readyChunks = new Set<number>();
+  const failedChunks = new Set<number>();
   const snapshotsByChunk = branchChunks.map(() => new Map<string, any>());
 
   const emitMergedDocuments = () => {
-    if (!active) return;
+    if (!active || (waitForAll && (readyChunks.size !== branchChunks.length || failedChunks.size > 0))) return;
     const mergedDocuments = new Map<string, any>();
     snapshotsByChunk.forEach(documents => {
       documents.forEach((document, id) => mergedDocuments.set(id, document));
@@ -131,10 +134,12 @@ export function subscribeToBranchScopedCollection(
           if (resetGeneration !== snapshot.invalidationGeneration) {
             resetGeneration = snapshot.invalidationGeneration;
             snapshotsByChunk.forEach(documents => documents.clear());
+            readyChunks.clear(); failedChunks.clear();
             onData([]);
           }
           return;
         }
+        readyChunks.add(index); failedChunks.delete(index);
         snapshotsByChunk[index] = new Map(
           snapshot.docs
             .map(document => [
@@ -147,6 +152,7 @@ export function subscribeToBranchScopedCollection(
       },
       error => {
         if (!active) return;
+        failedChunks.add(index);
         onError?.(error);
       },
     );

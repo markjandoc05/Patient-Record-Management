@@ -1,3 +1,4 @@
+import { uiRecordPermission } from '../permissionState';
 import { performedServiceLabel, isVisitClinicallySealed } from '../utils/visitServicePolicy';
 import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot } from '../dataClient';
@@ -46,9 +47,9 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [showArchived, setShowArchived] = useState(false);
 
-  const canCreate = role ? hasPermission(role as Role, 'visitHistory', 'create') : false;
-  const canUpdate = role ? hasPermission(role as Role, 'visitHistory', 'update') : false;
-  const canArchive = role ? hasPermission(role as Role, 'visitHistory', 'delete') : false;
+  const canCreate = role ? uiRecordPermission(role as Role, 'visitHistory', 'create') : false;
+  const canUpdate = role ? uiRecordPermission(role as Role, 'visitHistory', 'update') : false;
+  const canArchive = role ? uiRecordPermission(role as Role, 'visitHistory', 'delete') : false;
 
   useEffect(() => {
     const unsubVisits = subscribeToBranchScopedCollection(db, 'visits', 'branchId', userProfile, setVisits, undefined, [], true);

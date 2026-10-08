@@ -1,3 +1,5 @@
+import { currentActor, assertCapability } from './permissions';
+import { hasCapability, hasGlobalBranchScope } from '../src/permissions';
 import type express from 'express';
 import { randomUUID } from 'node:crypto';
 import { db, type RecordTransaction } from './database';
@@ -60,11 +62,10 @@ export function mountServices(app: express.Express) {
       try {
         const identity = await sessionIdentity(req);
         const result = await db.runTransaction(async tx => {
-          const profile = (await tx.get(db.collection('users').doc(identity.uid))).data();
-          assertDevelopmentRole(profile?.role);
-          if (profile?.active !== true || !canViewServices(profile.role)) fail(403, 'FORBIDDEN', 'Your account cannot access services.');
-          if (write && !canManageServices(profile.role)) fail(403, 'FORBIDDEN', 'Service changes require administrator access.');
-          const global = canManageServices(profile.role);
+          const { profile } = await currentActor(req, tx);
+          assertCapability(profile, 'services.view');
+          if (write) assertCapability(profile, 'services.manage');
+          const global = hasGlobalBranchScope(profile);
           const assigned = Array.isArray(profile.assignedBranches) ? profile.assignedBranches.filter((v: any) => typeof v === 'string') : [];
           const branches = (await tx.sql("SELECT id, data->>'branchName' AS name, data->>'status' AS status FROM app_records WHERE collection_path='branches' AND ($1::boolean OR id=ANY($2::text[])) ORDER BY lower(data->>'branchName'),id", [global, assigned])).rows;
           return handler(req, tx, { identity, profile, global, assigned, branches });
@@ -135,6 +136,10 @@ export function mountServices(app: express.Express) {
     if (!create && version(p.expectedVersion) !== old.version) fail(409, 'STALE_VERSION', 'This service changed. Reload and review the latest configuration.');
     const next = serviceFields(p, create ? undefined : old), branches = branchFields(p);
     const previous = old ? (await tx.sql('SELECT * FROM service_branch_settings WHERE service_id=$1 ORDER BY branch_id', [id])).rows : [];
+    for (const branch of branches) if (!actor.global && !actor.assigned.includes(branch.branch_id)) fail(403, 'BRANCH_FORBIDDEN', 'Branch access denied.');
+    const priceChanged = !same(next.standard_price, old?.standard_price ?? null)
+      || branches.some(branch => !same(branch.price_override, previous.find(row => row.branch_id === branch.branch_id)?.price_override ?? null));
+    if (priceChanged) assertCapability(actor.profile, 'services.pricing');
     if (create && old) {
       if (old.created_by !== actor.identity.uid || !same(canonical(old), canonical(next)) || !sameSettings(previous, branches)) fail(409, 'CREATE_CONFLICT', 'This create identifier already has different content. Reload the catalogue.');
       return { body: await detail(tx, id, actor), status: 200 };

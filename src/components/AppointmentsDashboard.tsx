@@ -1,4 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import { uiRecordPermission } from '../permissionState';
+import { uiCan, uiPermissionScope } from '../permissionState';
+import React, { useState, useEffect, useRef } from 'react';
 import { collection, onSnapshot } from '../dataClient';
 import { auth, db } from '../platform';
 import AppointmentForm from './AppointmentForm';
@@ -9,6 +11,7 @@ import { formatDateTime } from '../utils';
 import { Archive, Calendar, CalendarCheck2, CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, Eye, Inbox, LayoutList, MapPin, Plus, RotateCcw, Search, Stethoscope, UserRound, X } from 'lucide-react';
 import { getAccessibleBranches, subscribeToBranchScopedCollection, subscribeToSharedCollection } from '../utils/branchAccess';
 import { archiveRecord, restoreRecord } from '../utils/recordApi';
+import { emptyAppointmentState, subscribeAppointmentData } from '../utils/appointmentSubscriptions';
 import { getActiveDatePrefix } from '../utils/timezone';
 
 function appointmentInitials(name?: string) {
@@ -30,12 +33,14 @@ function appointmentStatusClass(status?: string) {
 }
 
 export default function AppointmentsDashboard({ role, userProfile, activeBranchId }: { role: string | null, userProfile: any, activeBranchId?: string }) {
-  const [appointments, setAppointments] = useState<any[]>([]);
-  const [visits, setVisits] = useState<any[]>([]);
-  const [patients, setPatients] = useState<any[]>([]);
-  const [users, setUsers] = useState<any[]>([]);
-  const [branches, setBranches] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const scope = JSON.stringify([uiPermissionScope(userProfile), activeBranchId || 'All', userProfile?.uid || userProfile?.id, userProfile?.role, userProfile?.assignedBranches || []]);
+  const [load, setLoad] = useState(() => ({ scope, ...emptyAppointmentState() }));
+  const latestLoad = useRef(load);
+  const [retry, setRetry] = useState(0);
+  const currentLoad = load.scope === scope ? load : { scope, ...emptyAppointmentState() };
+  const { appointments, visits, patients, users, branches } = currentLoad.data;
+  const loadErrors = Object.values(currentLoad.errors);
+  const loading = !currentLoad.ready && loadErrors.length === 0;
   const [showAddForm, setShowAddForm] = useState(false);
   const [showVisitForm, setShowVisitForm] = useState(false);
   const [selectedAppointment, setSelectedAppointment] = useState<any>(null);
@@ -49,20 +54,26 @@ export default function AppointmentsDashboard({ role, userProfile, activeBranchI
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [showArchived, setShowArchived] = useState(false);
   
-  const canCreate = role ? hasPermission(role as Role, 'appointment', 'create') : false;
-  const canCreateVisit = role ? hasPermission(role as Role, 'visitHistory', 'create') : false;
-  const canArchive = role ? hasPermission(role as Role, 'appointment', 'delete') : false;
+  const canCreate = role ? uiRecordPermission(role as Role, 'appointment', 'create') : false;
+  const canCreateVisit = role ? uiRecordPermission(role as Role, 'visitHistory', 'create') : false;
+  const canArchive = role ? uiRecordPermission(role as Role, 'appointment', 'delete') : false;
 
   useEffect(() => {
-    const unsubAppointments = subscribeToBranchScopedCollection(db, 'appointments', 'branchId', userProfile, setAppointments, undefined, [], true);
-    const unsubVisits = subscribeToBranchScopedCollection(db, 'visits', 'branchId', userProfile, setVisits);
-    const unsubPatients = subscribeToSharedCollection(db, 'patients', setPatients);
-    const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => setUsers(snap.docs.map(d => ({id: d.id, ...d.data()}))));
-    const unsubBranches = onSnapshot(collection(db, 'branches'), (snap) => setBranches(snap.docs.map(d => ({id: d.id, ...d.data()}))));
-    
-    Promise.all([unsubAppointments, unsubVisits, unsubPatients, unsubUsers, unsubBranches]).then(() => setLoading(false));
-    return () => { unsubAppointments(); unsubVisits(); unsubPatients(); unsubUsers(); unsubBranches(); };
-  }, [userProfile]);
+    const previous = latestLoad.current.scope === scope ? latestLoad.current : emptyAppointmentState();
+    return subscribeAppointmentData((source, success, failure) => {
+      if (source === 'visits' && !uiRecordPermission(role as Role, 'visitHistory', 'read')) { success([]); return () => undefined; }
+      if (source === 'appointments' || source === 'visits') {
+        return subscribeToBranchScopedCollection(db, source, 'branchId', userProfile, success, failure, [], source === 'appointments', true);
+      }
+      if (source === 'patients') return subscribeToSharedCollection(db, source, success, failure);
+      return onSnapshot(collection(db, source), snap => success(snap.docs.map(d => ({ id: d.id, ...d.data() }))), failure);
+    }, state => {
+      const next = { scope, ...state };
+      latestLoad.current = next;
+      setLoad(next);
+      if (!state.ready && Object.keys(state.errors).length) { setShowAddForm(false); setShowVisitForm(false); setSelectedAppointment(null); }
+    }, previous);
+  }, [scope, retry]);
 
   useEffect(() => {
     setFilterBranch(activeBranchId || 'All');
@@ -154,6 +165,16 @@ export default function AppointmentsDashboard({ role, userProfile, activeBranchI
     }
   };
 
+  const errorNotice = loadErrors.length > 0 ? (
+    <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+      <p>{currentLoad.ready ? 'Some appointment information could not be refreshed. Showing the last loaded data.' : 'Unable to load the appointment schedule.'}</p>
+      <p className="mt-1">{loadErrors.join(' ')} Check your connection or sign in again if access has expired.</p>
+      <button type="button" onClick={() => setRetry(value => value + 1)} className="mt-2 font-semibold underline">Retry loading</button>
+    </div>
+  ) : null;
+
+  if (!currentLoad.ready && errorNotice) return errorNotice;
+
   if (loading) {
     return (
       <div className="space-y-5" aria-label="Loading appointment schedule">
@@ -167,6 +188,7 @@ export default function AppointmentsDashboard({ role, userProfile, activeBranchI
 
   return (
     <div className="space-y-5">
+      {errorNotice}
       <section aria-label="Appointment summary" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[
           { label: "Today's appointments", value: todayAppointments.length, detail: 'Scheduled for today', icon: Calendar, tone: 'bg-teal-50 text-teal-700' },

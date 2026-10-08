@@ -1,4 +1,6 @@
+import { uiCan, uiPermissionScope } from '../permissionState';
 import AppointmentServicePicker, { type AppointmentServiceChoice } from './AppointmentServicePicker';
+import { matchesPatientLookup } from '../utils/patientLookup';
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { collection, getDocs, limit, orderBy, query, subscribeProtectedDataInvalidation, where } from '../dataClient';
 import { CheckCircle2, Clock3, Search } from 'lucide-react';
@@ -71,15 +73,15 @@ function AppointmentFormWorkspace({
   }, [branchId]);
 
   const currentUser = auth.currentUser;
-  const currentUserRole = users.find(user => user.email === currentUser?.email)?.role?.toLowerCase();
+  const currentUserRole = users.find(user => user.email === currentUser?.email)?.role;
   const isVisitCreated = Boolean(appointment?.visitHistoryCreated);
   const isCompleted = appointment?.status === 'Completed';
   const canModifySealed = ['admin', 'manager', 'doctor', ...developerRoles].includes(currentUserRole || '');
   const canViewHistory = hasAdministrativeAccess(currentUserRole);
   const isLocked = Boolean(appointment?.isArchived) || isVisitCreated || (isCompleted && !canModifySealed);
   const isView = currentMode === 'view';
-  const isReadOnly = isView || isLocked;
-  const clinicalFieldsReadOnly = isReadOnly || (Boolean(appointment) && currentUserRole === 'staff');
+  const isReadOnly = isView || isLocked || !uiCan(currentUserRole, appointment ? 'appointments.edit' : 'appointments.create');
+  const clinicalFieldsReadOnly = !uiCan(currentUserRole, 'clinical.view') || isReadOnly || (Boolean(appointment) && currentUserRole === 'staff');
   const today = getActiveDatePrefix();
   const nowTime = getActiveDateTimeInput().slice(11, 16);
 
@@ -93,7 +95,7 @@ function AppointmentFormWorkspace({
     if (!needle || patientId) return [];
     return patients
       .filter(patient => patient.isArchived !== true)
-      .filter(patient => [patient.name, patient.patientID, patient.contactNumber].filter(Boolean).join(' ').toLowerCase().includes(needle))
+      .filter(patient => matchesPatientLookup(patient, needle))
       .slice(0, 8);
   }, [patientId, patientSearch, patients]);
 
@@ -195,8 +197,8 @@ function AppointmentFormWorkspace({
     if (!selectedTime) validationErrors.appointmentDate = 'Select an available time slot.';
     if (!visitType) validationErrors.visitType = 'Select the visit type.';
     if (!finalStatus) validationErrors.status = 'Select an appointment status.';
-    if (finalStatus === 'Completed' && !mainConcern.trim()) validationErrors.mainConcern = 'A main concern is required before completion.';
-    if (finalStatus === 'Completed' && !notes.trim()) validationErrors.notes = 'Clinical notes are required before completion.';
+    if (uiCan(currentUserRole, 'clinical.view') && finalStatus === 'Completed' && !mainConcern.trim()) validationErrors.mainConcern = 'A main concern is required before completion.';
+    if (uiCan(currentUserRole, 'clinical.view') && finalStatus === 'Completed' && !notes.trim()) validationErrors.notes = 'Clinical notes are required before completion.';
     if (doctorId && selectedTime && !isSlotAvailable(selectedTime)) validationErrors.appointmentDate = 'This time slot is no longer available. Choose another slot.';
 
     if (Object.keys(validationErrors).length > 0) {
@@ -325,7 +327,7 @@ export default function AppointmentForm(props: AppointmentFormProps) {
   const currentUser = auth.currentUser;
   const profile = currentUser ? props.users.find(user => user.id === currentUser.uid || user.email === currentUser.email) : undefined;
   const branches = props.branches.filter(branch => hasAdministrativeAccess(profile?.role) || profile?.assignedBranches?.includes(branch.id));
-  const scope = JSON.stringify([currentUser?.uid ?? null, profile?.role ?? null, profile?.active === true,
+  const scope = JSON.stringify([uiPermissionScope(profile), currentUser?.uid ?? null, profile?.role ?? null, profile?.active === true,
     [...(profile?.assignedBranches || [])].sort(), branches.map(branch => [branch.id, branch.status]).sort()]);
   const [invalidatedScope, setInvalidatedScope] = useState<string | null>(null);
   useLayoutEffect(() => subscribeProtectedDataInvalidation(() => setInvalidatedScope(scope)), [scope]);

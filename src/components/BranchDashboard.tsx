@@ -1,42 +1,22 @@
-import { useEffect, useMemo, useState } from 'react';
+import { uiRecordPermission } from '../permissionState';
+import { useMemo } from 'react';
 import { Calendar, CheckCircle, Clock, MapPin, UserPlus, Users } from 'lucide-react';
-import { db } from '../platform';
 import { formatDateTime } from '../utils';
-import { subscribeToSharedCollection } from '../utils/branchAccess';
+import type { OverviewState } from '../utils/workspaceOverview';
+import { hasPermission, Role } from '../rbac';
 import { getActiveDatePrefix } from '../utils/timezone';
 
 type BranchDashboardProps = {
   activeBranchId: string;
+  userProfile: any;
   branches: any[];
   onNavigate: (view: string) => void;
+  overview: OverviewState;
 };
 
-export default function BranchDashboard({ activeBranchId, branches, onNavigate }: BranchDashboardProps) {
-  const [patients, setPatients] = useState<any[]>([]);
-  const [appointments, setAppointments] = useState<any[]>([]);
-  const [visits, setVisits] = useState<any[]>([]);
-  const [loaded, setLoaded] = useState({ patients: false, appointments: false, visits: false });
-
-  useEffect(() => {
-    const unsubPatients = subscribeToSharedCollection(db, 'patients', documents => {
-      setPatients(documents);
-      setLoaded(current => ({ ...current, patients: true }));
-    });
-    const unsubAppointments = subscribeToSharedCollection(db, 'appointments', documents => {
-      setAppointments(documents);
-      setLoaded(current => ({ ...current, appointments: true }));
-    });
-    const unsubVisits = subscribeToSharedCollection(db, 'visits', documents => {
-      setVisits(documents);
-      setLoaded(current => ({ ...current, visits: true }));
-    });
-
-    return () => {
-      unsubPatients();
-      unsubAppointments();
-      unsubVisits();
-    };
-  }, []);
+export default function BranchDashboard({ activeBranchId, branches, onNavigate, userProfile, overview }: BranchDashboardProps) {
+  const { patients, appointments, visits } = overview.data;
+  const refreshErrors = Object.values(overview.errors);
 
   const activeBranch = branches.find(branch => branch.id === activeBranchId);
   const isAllBranches = activeBranchId === 'All';
@@ -77,7 +57,10 @@ export default function BranchDashboard({ activeBranchId, branches, onNavigate }
     );
   }
 
-  if (!loaded.patients || !loaded.appointments || !loaded.visits) {
+  if (!overview.ready && refreshErrors.length) {
+    return <div role="alert" className="text-sm text-red-700">Could not load the workspace overview. Retrying automatically.</div>;
+  }
+  if (!overview.ready) {
     return <div className="text-sm text-slate-500">Loading {workspaceName} workspace...</div>;
   }
 
@@ -86,10 +69,11 @@ export default function BranchDashboard({ activeBranchId, branches, onNavigate }
     { label: isAllBranches ? 'Registered patients' : 'Registered here', value: registeredPatients.length, icon: UserPlus, iconClass: 'text-blue-700', iconBg: 'bg-blue-50' },
     { label: "Today's appointments", value: todayAppointments.length, icon: Calendar, iconClass: 'text-violet-700', iconBg: 'bg-violet-50' },
     { label: 'Visits completed today', value: completedVisitsToday, icon: CheckCircle, iconClass: 'text-emerald-700', iconBg: 'bg-emerald-50' },
-  ];
+  ].filter(kpi => kpi.label !== 'Visits completed today' || uiRecordPermission(userProfile?.role as Role, 'visitHistory', 'read'));
 
   return (
     <div className="space-y-5">
+      {refreshErrors.length > 0 && <div role="status" className="text-sm text-amber-700">The workspace overview could not refresh. Showing the last available data while retrying.</div>}
       <section className="bg-white border border-slate-200/80 rounded-2xl p-5 md:p-6 shadow-sm shadow-slate-200/40">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="min-w-0">
@@ -147,7 +131,7 @@ export default function BranchDashboard({ activeBranchId, branches, onNavigate }
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm shadow-slate-200/30 overflow-hidden">
+        {uiRecordPermission(userProfile?.role as Role, 'visitHistory', 'read') && <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm shadow-slate-200/30 overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
             <div>
               <h3 className="font-semibold tracking-[-0.01em] text-slate-950">Recent visits</h3>
@@ -168,7 +152,7 @@ export default function BranchDashboard({ activeBranchId, branches, onNavigate }
               <div className="px-5 py-10 text-center text-sm text-slate-500">No clinic visits recorded yet.</div>
             )}
           </div>
-        </div>
+        </div>}
       </section>
     </div>
   );

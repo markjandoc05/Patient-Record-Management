@@ -1,3 +1,7 @@
+import { uiCan } from '../permissionState';
+import { uiRecordPermission } from '../permissionState';
+import { birthMode, patientBirthLabel } from '../utils/patientBirth';
+import { matchesPatientLookup } from '../utils/patientLookup';
 import { useState, useEffect } from 'react';
 import { collection, onSnapshot } from '../dataClient';
 import PatientForm from './PatientForm';
@@ -6,6 +10,7 @@ import { canEditPatient, hasPermission, Role } from '../rbac';
 import { formatDateTime } from '../utils';
 import { getAccessibleBranches, subscribeToSharedCollection } from '../utils/branchAccess';
 import { archiveRecord, restoreRecord } from '../utils/recordApi';
+import { workspaceAccessScope } from '../utils/workspaceOverview';
 import { Activity, Archive, CalendarClock, ChevronLeft, ChevronRight, Eye, Inbox, Mail, MapPin, Pencil, Phone, Plus, RotateCcw, Search, Users, X } from 'lucide-react';
 
 function patientInitials(name?: string) {
@@ -33,6 +38,10 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
   const [appointments, setAppointments] = useState<any[]>([]);
   const [visits, setVisits] = useState<any[]>([]);
   const [selectedPatient, setSelectedPatient] = useState<any>(null);
+  const [lookupErrors, setLookupErrors] = useState<Record<string, string>>({});
+  const [hasLoadedPatients, setHasLoadedPatients] = useState(false);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [retryAttempt, setRetryAttempt] = useState(0);
   const [loadingPatients, setLoadingPatients] = useState(true);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [loadingBranches, setLoadingBranches] = useState(true);
@@ -47,44 +56,56 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
   const [editingPatient, setEditingPatient] = useState<any>(null);
   const [saveNotice, setSaveNotice] = useState('');
   const [showArchived, setShowArchived] = useState(false);
+  const accessScope = workspaceAccessScope(user?.uid, userProfile);
 
   useEffect(() => {
     if (!user) return;
+    setLookupErrors({}); setAccessDenied(false); setHasLoadedPatients(false);
+    setPatients([]); setUsers([]); setBranches([]); setAppointments([]); setVisits([]); setSelectedPatient(null);
     setLoadingPatients(true);
     setLoadingUsers(true);
     setLoadingBranches(true);
     setLoadingAppointments(true);
     setLoadingVisits(true);
     
+    const recovered = (source: string) => setLookupErrors(previous => { const next = { ...previous }; delete next[source]; return next; });
+    const failed = (source: string, error: any) => {
+      setLookupErrors(previous => ({ ...previous, [source]: `${source} could not be loaded.` }));
+      if (error.status === 401 || error.status === 403 || error.code === 'permission-denied') {
+        setAccessDenied(true); setPatients([]); setUsers([]); setBranches([]); setAppointments([]); setVisits([]);
+        setSelectedPatient(null); setEditingPatient(null); setShowAddForm(false);
+      }
+    };
     const unsubPatients = subscribeToSharedCollection(db, 'patients',
       (documents) => {
         setPatients(documents);
-        setLoadingPatients(false);
-      }, (error) => { console.error("Error fetching patients", error); setLoadingPatients(false); }, [], true
+        recovered('patients'); setHasLoadedPatients(true); setLoadingPatients(false);
+      }, (error) => { failed('patients', error); setLoadingPatients(false); }, [], true
     );
     const unsubUsers = onSnapshot(collection(db, 'users'), 
       (snapshot) => {
         setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-        setLoadingUsers(false);
-      }, (error) => { console.error("Error fetching users", error); setLoadingUsers(false); }
+        recovered('users'); setLoadingUsers(false);
+      }, (error) => { failed('users', error); setLoadingUsers(false); }
     );
     const unsubBranches = onSnapshot(collection(db, 'branches'), 
         (snapshot) => {
           setBranches(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-          setLoadingBranches(false);
-        }, (error) => { console.error("Error fetching branches", error); setLoadingBranches(false); }
+          recovered('branches'); setLoadingBranches(false);
+        }, (error) => { failed('branches', error); setLoadingBranches(false); }
     );
     const unsubAppointments = subscribeToSharedCollection(db, 'appointments',
       (documents) => {
         setAppointments(documents);
-        setLoadingAppointments(false);
-      }, (error) => { console.error("Error fetching appointments", error); setLoadingAppointments(false); }
+        recovered('appointments'); setLoadingAppointments(false);
+      }, (error) => { failed('appointments', error); setLoadingAppointments(false); }
     );
-    const unsubVisits = subscribeToSharedCollection(db, 'visits',
+    const unsubVisits = !uiRecordPermission(role as Role, 'visitHistory', 'read') ? (() => { setVisits([]); recovered('visits'); setLoadingVisits(false); return () => undefined; })() : subscribeToSharedCollection(db, 'visits',
       (documents) => {
         setVisits(documents);
+        recovered('visits');
         setLoadingVisits(false);
-      }, (error) => { console.error("Error fetching visits", error); setLoadingVisits(false); }
+      }, (error) => { failed('visits', error); setLoadingVisits(false); }
     );
 
     return () => {
@@ -94,7 +115,7 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
       unsubAppointments();
       unsubVisits();
     };
-  }, [db, user, userProfile]);
+  }, [db, user?.uid, accessScope, retryAttempt]);
 
   useEffect(() => {
     if (!saveNotice) return;
@@ -102,9 +123,9 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
     return () => window.clearTimeout(timeout);
   }, [saveNotice]);
 
-  const canCreate = role ? hasPermission(role as Role, 'patientRecord', 'create') : false;
-  const canUpdate = role ? canEditPatient(role as Role) : false;
-  const canArchive = role ? hasPermission(role as Role, 'patientRecord', 'delete') : false;
+  const canCreate = role ? uiRecordPermission(role as Role, 'patientRecord', 'create') : false;
+  const canUpdate = role ? uiCan(role, 'patients.edit') : false;
+  const canArchive = role ? uiRecordPermission(role as Role, 'patientRecord', 'delete') : false;
   
   const accessibleBranches = getAccessibleBranches(branches, userProfile);
   
@@ -126,6 +147,10 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
       .map(visit => visit.patientId)
       .filter(Boolean)
   );
+
+  if (accessDenied || (!hasLoadedPatients && Object.keys(lookupErrors).length > 0)) {
+    return <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-800"><p>{accessDenied ? 'Patient access is unavailable. Sign in again or contact your administrator.' : 'Patient records could not be loaded. This is not an empty search result.'}</p><button type="button" className="mt-3 rounded-lg border border-rose-300 px-3 py-2 font-semibold" onClick={() => setRetryAttempt(value => value + 1)}>Retry loading</button></div>;
+  }
 
   if (loadingPatients || loadingUsers || loadingBranches || loadingAppointments || loadingVisits) {
     return (
@@ -192,7 +217,7 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
 
   const normalizedSearch = searchTerm.trim().toLowerCase();
   const filteredPatients = enrichedPatients.filter(p => 
-    ([p.name, p.contactNumber, p.email, p.id].filter(Boolean).join(' ').toLowerCase().includes(normalizedSearch)) &&
+    matchesPatientLookup(p, normalizedSearch) &&
     (filterStatus === 'All' || p.status === filterStatus) &&
     (filterBranch === 'All' || p.homeBranchId === filterBranch)
   ).sort((a, b) => {
@@ -238,6 +263,7 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
   
   return (
     <div className="space-y-5">
+      {Object.keys(lookupErrors).length > 0 && <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><p>Some patient-directory data could not refresh. Previously loaded records are shown and may be out of date.</p><button type="button" className="mt-2 font-semibold underline" onClick={() => setRetryAttempt(value => value + 1)}>Retry loading</button></div>}
       {saveNotice && (
         <div role="status" className="flex items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
           <span>{saveNotice}</span>
@@ -389,7 +415,7 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
           ) : (
             <div className="rounded-xl border border-dashed border-slate-200 px-5 py-14 text-center">
               <Inbox className="mx-auto h-9 w-9 text-slate-300" />
-              <h3 className="mt-3 text-sm font-semibold text-slate-800">No patient records found</h3>
+              <h3 className="mt-3 text-sm font-semibold text-slate-800">{lookupErrors.patients ? 'Patient results could not refresh' : 'No patient records found'}</h3>
               <p className="mt-1 text-xs text-slate-500">Try changing the search or filters.</p>
               {hasActiveFilters && (
                 <button type="button" onClick={clearFilters} className="mt-4 inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-900">
@@ -422,7 +448,7 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
                         <div className="min-w-0"><p className="max-w-52 truncate font-semibold text-slate-950">{p.name || 'Unnamed patient'}</p><p className="mt-0.5 max-w-52 truncate text-xs text-slate-400">{p.email || `ID ${String(p.id || '').slice(0, 8).toUpperCase()}`}</p></div>
                       </div>
                     </td>
-                    <td className="px-5 py-4"><p className="font-medium text-slate-700">{p.contactNumber || 'Not provided'}</p><p className="mt-0.5 text-xs text-slate-400">{p.age ? `${p.age} years old` : 'Age not provided'}</p></td>
+                    <td className="px-5 py-4"><p className="font-medium text-slate-700">{p.contactNumber || 'Not provided'}</p><p className="mt-0.5 text-xs text-slate-400">{birthMode(p) === 'exact' && p.age !== null && p.age !== undefined && p.age !== '' ? `${p.age} years old` : patientBirthLabel(p)}</p></td>
                     <td className="px-5 py-4">
                       <p className="font-medium text-slate-700">{p.mostRecentDate ? formatDateTime(p.mostRecentDate) : 'No activity yet'}</p>
                       <p className="mt-0.5 text-xs text-slate-400">{p.mostRecentType || 'New patient record'}</p>
@@ -450,7 +476,7 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
                 <tr>
                   <td colSpan={5} className="py-14 text-center">
                     <Inbox className="mx-auto h-8 w-8 text-slate-300" />
-                    <p className="mt-3 text-sm font-semibold text-slate-700">No patient records found</p>
+                    <p className="mt-3 text-sm font-semibold text-slate-700">{lookupErrors.patients ? 'Patient results could not refresh' : 'No patient records found'}</p>
                     <p className="mt-1 text-xs text-slate-400">Try changing the search or filters.</p>
                     {hasActiveFilters && (
                       <button type="button" onClick={clearFilters} className="mt-4 inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-900">
@@ -480,7 +506,7 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
       </div>
       </section>
   
-      {showAddForm && <PatientForm db={db} user={user} users={users} patients={patients} branches={accessibleBranches} userProfile={userProfile} defaultBranchId={activeBranchId !== 'All' ? activeBranchId : undefined} onClose={() => setShowAddForm(false)} onSave={() => { setShowAddForm(false); setSaveNotice('Patient registered successfully. The shared record is available to both clinics.'); }} />}
+      {showAddForm && <PatientForm db={db} user={user} users={users} patients={patients} branches={accessibleBranches} userProfile={userProfile} defaultBranchId={activeBranchId !== 'All' ? activeBranchId : undefined} lookupWarning={lookupErrors.patients} onOpenExisting={existing => { setShowAddForm(false); setSelectedPatient(existing); }} onClose={() => setShowAddForm(false)} onSave={() => { setShowAddForm(false); setSaveNotice('Patient registered successfully. The shared record is available to both clinics.'); }} />}
       {editingPatient && <PatientForm db={db} user={user} users={users} patients={patients} branches={branches.filter(branch => branch.status === 'Active' || branch.id === editingPatient.homeBranchId)} userProfile={userProfile} patient={editingPatient} defaultBranchId={activeBranchId !== 'All' ? activeBranchId : undefined} onClose={() => setEditingPatient(null)} onSave={() => { setEditingPatient(null); setSaveNotice('Patient changes saved successfully.'); }} />}
       {selectedPatient && <PatientProfile patient={selectedPatient} onClose={() => setSelectedPatient(null)} userRole={role ?? undefined} users={users} branches={branches} visits={visits} appointments={appointments} />}
     </div>

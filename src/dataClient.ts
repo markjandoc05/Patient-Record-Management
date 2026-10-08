@@ -1,3 +1,5 @@
+import { currentPermissionProfile } from './permissionState';
+import { hasCapability, type PermissionId } from './permissions';
 // Compatibility API for existing screens. All persistence is server-side PostgreSQL.
 import { auth } from './session';
 export type Database = typeof db;
@@ -21,10 +23,16 @@ function hydrate(value: any): any {
   return value;
 }
 async function request(endpoint: string, payload: any) {
+  const identityOnly = endpoint === '/api/data/query' && payload.kind === 'document' && (payload.path.startsWith('settings/') || payload.path === `users/${auth.currentUser?.uid}`);
+  const lifetime = captureProtectedRequestScope(identityOnly);
   await auth.ready;
+  lifetime();
   const token = auth.currentUser ? await auth.currentUser.getRequestToken() : '';
+  lifetime();
   const response = await fetch(endpoint, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(payload) });
+  lifetime();
   const body = await response.json();
+  lifetime();
   if (!response.ok) { const error = Object.assign(new Error(body.error || 'Data request failed'), { status: response.status, code: response.status === 403 ? 'permission-denied' : 'unavailable' }); throw error; }
   return body;
 }
@@ -33,6 +41,33 @@ export async function getDoc(ref: Reference) { const result = await request('/ap
 export async function getDocs(ref: Reference) { const result = await request('/api/data/query', ref); const docs = result.documents.map(snapshot); return { docs, size: docs.length, empty: !docs.length, forEach: (callback: any) => docs.forEach(callback) }; }
 let protectedGeneration = 0;
 const protectedSubscriptions = new Set<() => void>();
+export function captureProtectedRequestScope(identityOnly = false) {
+  const uid = auth.currentUser?.uid, generation = protectedGeneration;
+  return () => {
+    if (auth.currentUser?.uid !== uid || !identityOnly && generation !== protectedGeneration) throw new DOMException('Protected request is no longer current.', 'AbortError');
+  };
+}
+export async function protectedFetch(input: RequestInfo | URL, init: RequestInit = {}, current = captureProtectedRequestScope()) {
+  current();
+  let response: Response;
+  try { response = await fetch(input, init); } catch (error) { current(); throw error; }
+  current();
+  // Body consumption is asynchronous too. Guard both successful bodies and errors.
+  for (const method of ['json', 'blob', 'text'] as const) {
+    const read = response[method].bind(response);
+    Object.defineProperty(response, method, { value: async () => { try { const body = await read(); current(); return body; } catch (error) { current(); throw error; } } });
+  }
+  return response;
+}
+const collectionPermissions: Record<string, PermissionId> = { patients: 'patients.view', appointments: 'appointments.view', visits: 'visits.view', branches: 'branches.view', users: 'users.view', audit_logs: 'audit.view', inventory_items: 'inventory.view', inventory_stocks: 'inventory.view', suppliers: 'inventory.view', stock_transfers: 'inventory.view' };
+function canSubscribe(ref: Reference) {
+  const profile = currentPermissionProfile();
+  if (!profile || ref.kind === 'document' && ref.path === `users/${auth.currentUser?.uid}`) return true;
+  if (ref.path.includes('/privateNotes')) return hasCapability(profile, 'patients.view') && hasCapability(profile, 'clinical.view') && hasCapability(profile, 'clinical.private_notes.view');
+  const permission = collectionPermissions[ref.path.split('/')[0]];
+  return !permission || hasCapability(profile, permission);
+}
+
 function invokeSubscriber(callback: () => void, phase: string) {
   try { callback(); }
   catch { console.error(`Protected-data subscriber failed during ${phase}`); }
@@ -62,6 +97,7 @@ export function onSnapshot(ref: Reference, callback: (value: any) => void, onErr
   if (protectedQuery) protectedSubscriptions.add(clear);
   const poll = async () => {
     const generation = protectedGeneration;
+    if (!canSubscribe(ref)) { if (!invalidated) clear(); if (!cancelled) timer = setTimeout(poll, 5000); return; }
     try {
       const value: any = ref.kind === 'document' ? await getDoc(ref) : await getDocs(ref);
       const key = JSON.stringify(ref.kind === 'document' ? value.data() : value.docs.map((d: any) => ({ id: d.id, data: d.data() })));
@@ -70,6 +106,7 @@ export function onSnapshot(ref: Reference, callback: (value: any) => void, onErr
         invokeSubscriber(() => callback(value), 'data delivery');
       }
     } catch (error) {
+      if ((error as Error)?.name === 'AbortError') { if (!cancelled) timer = setTimeout(poll, 5000); return; }
       const failure = error as { status?: number; code?: string };
       const kind = failure?.status === 401 || failure?.status === 403 || failure?.code === 'permission-denied' ? 'authorization' : 'transient';
       if (!cancelled && (!protectedQuery || generation === protectedGeneration) && errorReported !== kind) {

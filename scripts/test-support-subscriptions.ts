@@ -17,6 +17,7 @@ const response = (id: string, branchId = 'demo-branch') => new Response(JSON.str
 let checks = 0;
 try {
   const { onSnapshot, collection, db, invalidateProtectedData } = await import('../src/dataClient');
+  const { subscribeAppointmentData } = await import('../src/utils/appointmentSubscriptions');
   const { subscribeToBranchScopedCollection } = await import('../src/utils/branchAccess');
   const rows: any[] = [], errors: any[] = [];
   const stop = onSnapshot(collection(db, 'appointments'), snapshot => rows.push(snapshot.docs.map((doc: any) => doc.data())), error => errors.push(error));
@@ -30,6 +31,17 @@ try {
   timers.shift()!(); await flush(); pending.shift()!.resolve(response('current')); await flush();
   assert.equal(rows.length, 2); checks++;
   stop(); timers.length = 0;
+
+  const callbacks = new Map<string, { ok: (rows: any[]) => void; fail: (error: any) => void }>();
+  let state: any;
+  const stopLoad = subscribeAppointmentData((source, ok, fail) => { callbacks.set(source, { ok, fail }); return () => undefined; }, value => { state = value; });
+  stops.push(stopLoad);
+  for (const [source, { ok }] of callbacks) ok([{ id: `cached-${source}` }]);
+  assert.equal(state.ready, true);
+  callbacks.get('appointments')!.fail({ status: 403 });
+  assert.equal(state.ready, false);
+  for (const data of Object.values(state.data)) assert.deepEqual(data, []);
+  checks++;
 
   const allRows: Record<string, any[]> = {}, allErrors: string[] = [];
   for (const source of ['patients', 'appointments']) stops.push(onSnapshot(collection(db, source), snapshot => { allRows[source] = snapshot.docs; }, () => { allRows[source] = []; allErrors.push(source); }));
@@ -45,7 +57,7 @@ try {
   for (const stop of stops) stop(); timers.length = 0;
 
   const merged: any[] = [], mergeErrors: any[] = [];
-  const stopMerge = subscribeToBranchScopedCollection(db, 'appointments', 'branchId', { role: 'staff', assignedBranches: Array.from({ length: 31 }, (_, i) => `branch-${i}`) }, rows => merged.push(rows), error => mergeErrors.push(error), [], true);
+  const stopMerge = subscribeToBranchScopedCollection(db, 'appointments', 'branchId', { role: 'staff', assignedBranches: Array.from({ length: 31 }, (_, i) => `branch-${i}`) }, rows => merged.push(rows), error => mergeErrors.push(error), [], true, true);
   stops.push(stopMerge);
   await flush();
   pending.shift()!.resolve(response('chunk-a', 'branch-0'));

@@ -1,0 +1,8 @@
+{
+  "postgresId": "6Xrat6Vg4cW2StPgmo745",
+  "appName": "vine-development-postgres-dwyhse",
+  "environmentId": "0mijCPNMDLSQbuSl-q8zu",
+  "databaseName": "vine_development",
+  "databaseUser": "vine_dev",
+  "dockerImage": "postgres:17-alpine"
+}

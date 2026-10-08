@@ -8,9 +8,11 @@ interface ConfirmationModalProps {
   onConfirm: () => void;
   onCancel: () => void;
   confirmLabel?: string;
+  isSubmitting?: boolean;
+  error?: string;
 }
 
-export default function ConfirmationModal({ isOpen, title, message, onConfirm, onCancel, confirmLabel }: ConfirmationModalProps) {
+export default function ConfirmationModal({ isOpen, title, message, onConfirm, onCancel, confirmLabel, isSubmitting = false, error }: ConfirmationModalProps) {
   if (!isOpen) return null;
 
   return (
@@ -24,18 +26,21 @@ export default function ConfirmationModal({ isOpen, title, message, onConfirm, o
             <h3 className="text-lg font-bold text-slate-800">{title}</h3>
           </div>
           <p className="text-sm text-slate-600 mb-6">{message}</p>
+          {error && <p role="alert" className="mb-4 text-sm text-red-700">{error}</p>}
           <div className="flex justify-end gap-3">
             <button 
               onClick={onCancel}
+              disabled={isSubmitting}
               className="px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
             >
               Cancel
             </button>
             <button 
               onClick={onConfirm}
-              className="px-4 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors"
+              disabled={isSubmitting}
+              className="px-4 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors disabled:cursor-wait disabled:opacity-60"
             >
-              {confirmLabel || 'Confirm'}
+              {isSubmitting ? 'Saving…' : error ? 'Retry action' : confirmLabel || 'Confirm'}
             </button>
           </div>
         </div>

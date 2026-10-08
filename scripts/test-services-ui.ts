@@ -21,7 +21,7 @@ globals.servicesTestInvalidations = 0;
 await writeFile(path.join(temporary, 'react.mjs'), `import actual from ${JSON.stringify(require.resolve('react'))};\nexport default actual;\n${['useState','useRef','useEffect','useLayoutEffect'].map(name => `export const ${name}=(...args)=>globalThis.servicesTestHooks.${name}(...args);`).join('\n')}`);
 await writeFile(path.join(temporary, 'api.mjs'), 'export const servicesRequest=(...args)=>globalThis.servicesTestRequest(...args);');
 await writeFile(path.join(temporary, 'platform.mjs'), 'export const auth=globalThis.servicesTestAuth;');
-await writeFile(path.join(temporary, 'data.mjs'), 'import {invalidateProtectedData as clear} from "./foundation.mjs"; export const invalidateProtectedData=(reason)=>{globalThis.servicesTestInvalidations++;clear(reason);};');
+await writeFile(path.join(temporary, 'data.mjs'), 'export {captureProtectedRequestScope,protectedFetch} from "./foundation.mjs"; import {invalidateProtectedData as clear} from "./foundation.mjs"; export const invalidateProtectedData=(reason)=>{globalThis.servicesTestInvalidations++;clear(reason);};');
 const plugins = [{ name: 'controlled-services', setup(b: any) {
   b.onResolve({ filter: /^react$/ }, () => ({ path: path.join(temporary, 'react.mjs') }));
   b.onResolve({ filter: /^lucide-react$/ }, () => ({ path: require.resolve('lucide-react'), external: true }));

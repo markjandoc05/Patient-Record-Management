@@ -1,3 +1,4 @@
+import { uiCan } from '../permissionState';
 import { transferRequest } from '../utils/inventoryApi';
 import React, { useState, useEffect } from 'react';
 import { 
@@ -128,12 +129,14 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
       return;
     }
 
+    if (!uiCan(userProfile, 'inventory.transfer')) return;
     try { await transferRequest('create', transferData); }
     catch (error) { alert(error instanceof Error ? error.message : 'Transfer failed'); return; }
     setIsTransferring(false);
   };
 
   const handleCompleteTransfer = async (transfer: StockTransfer) => {
+    if (!uiCan(userProfile, 'inventory.transfer')) return;
     try { await transferRequest('complete', { id: transfer.id }); }
     catch (error) { alert(error instanceof Error ? error.message : 'Transfer failed'); }
   };
@@ -146,7 +149,7 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
           <p className="text-slate-500">Track stocks, manage suppliers, and handle branch transfers.</p>
         </div>
         <div className="flex gap-2">
-          {activeTab === 'stocks' && (
+          {activeTab === 'stocks' && uiCan(userProfile, 'inventory.manage') && (
             <button 
               onClick={() => setIsAddingItem(true)}
               className="flex items-center gap-2 bg-teal-600 text-white px-4 py-2 rounded-lg hover:bg-teal-700 transition-colors shadow-sm"
@@ -154,7 +157,7 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
               <Plus className="w-4 h-4" /> Add Item
             </button>
           )}
-          {activeTab === 'suppliers' && (
+          {activeTab === 'suppliers' && uiCan(userProfile, 'inventory.manage') && (
             <button 
               onClick={() => setIsAddingSupplier(true)}
               className="flex items-center gap-2 bg-teal-600 text-white px-4 py-2 rounded-lg hover:bg-teal-700 transition-colors shadow-sm"
@@ -162,7 +165,7 @@ export default function InventoryDashboard({ userProfile }: { userProfile: any }
               <Plus className="w-4 h-4" /> Add Supplier
             </button>
           )}
-          {activeTab === 'transfers' && (
+          {activeTab === 'transfers' && uiCan(userProfile, 'inventory.transfer') && (
             <button 
               onClick={() => setIsTransferring(true)}
               className="flex items-center gap-2 bg-teal-600 text-white px-4 py-2 rounded-lg hover:bg-teal-700 transition-colors shadow-sm"

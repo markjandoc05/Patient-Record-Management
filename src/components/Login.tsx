@@ -9,6 +9,7 @@ interface LoginProps {
   authError: string | null;
   successMessage: string | null;
   accountMissingProfile: boolean;
+  pendingActivation?: boolean;
 }
 
 export default function Login({ 
@@ -18,7 +19,8 @@ export default function Login({
   isAuthenticating, 
   authError,
   successMessage,
-  accountMissingProfile
+  accountMissingProfile,
+  pendingActivation = false
 }: LoginProps) {
   const versionAsset = (url: string) => {
     if (!url) return '';
@@ -50,8 +52,8 @@ export default function Login({
 
         {/* Inline notification for errors or missing profile, but NOT for success (which is now in a modal) */}
         {(authError || accountMissingProfile) && (
-          <div className="p-3 bg-red-50 border border-red-100 rounded-xl text-red-700 text-xs text-left leading-relaxed animate-fade-in/70">
-            <p className="font-bold">Notice:</p>
+          <div role={pendingActivation ? 'status' : 'alert'} className={`p-3 border rounded-xl text-xs text-left leading-relaxed ${pendingActivation ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-red-50 border-red-100 text-red-700'}`}>
+            <p className="font-bold">{pendingActivation ? 'Awaiting administrator approval' : 'Notice'}</p>
             <p>{authError || "Your account is not yet configured. Please contact the administrator."}</p>
           </div>
         )}
@@ -60,7 +62,7 @@ export default function Login({
         {successMessage && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
             <div className="bg-white p-6 rounded-2xl shadow-xl w-full max-w-sm text-center">
-              <h2 className="text-lg font-bold text-slate-900 mb-2">Registration Successful</h2>
+              <h2 className="text-lg font-bold text-slate-900 mb-2">{pendingActivation ? 'Awaiting administrator approval' : 'Registration Successful'}</h2>
               <p className="text-sm text-slate-600 mb-6">{successMessage}</p>
               <button 
                 onClick={() => window.location.reload()}

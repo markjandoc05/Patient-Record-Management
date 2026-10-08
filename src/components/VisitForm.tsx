@@ -1,5 +1,8 @@
+import { uiRecordPermission } from '../permissionState';
+import { uiCan, uiPermissionScope } from '../permissionState';
 import AppointmentServicePicker, { type AppointmentServiceChoice } from './AppointmentServicePicker';
 import { isVisitClinicallySealed } from '../utils/visitServicePolicy';
+import { matchesPatientLookup } from '../utils/patientLookup';
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { collection, getDocs, limit, orderBy, query, subscribeProtectedDataInvalidation, where } from '../dataClient';
 import { CheckCircle2, Clock3, Search } from 'lucide-react';
@@ -104,7 +107,7 @@ function VisitFormWorkspace({
     const needle = patientSearch.trim().toLowerCase();
     if (!needle || patientId) return [];
     return patients.filter(patient => patient.isArchived !== true)
-      .filter(patient => [patient.name, patient.patientID, patient.contactNumber].filter(Boolean).join(' ').toLowerCase().includes(needle))
+      .filter(patient => matchesPatientLookup(patient, needle))
       .slice(0, 8);
   }, [patientId, patientSearch, patients]);
 
@@ -155,7 +158,7 @@ function VisitFormWorkspace({
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (isSaving || sealed) return;
-    if (userRole && !hasPermission(userRole as Role, 'visitHistory', visit ? 'update' : 'create')) {
+    if (userRole && !uiRecordPermission(userRole as Role, 'visitHistory', visit ? 'update' : 'create')) {
       setSaveError('You are not authorized to save this visit.');
       return;
     }
@@ -270,7 +273,7 @@ export default function VisitForm(props: VisitFormProps) {
   const user = auth.currentUser;
   const profile = user ? props.users.find(value => value.id === user.uid || value.email === user.email) : undefined;
   const branches = props.branches.filter(branch => hasAdministrativeAccess(profile?.role) || profile?.assignedBranches?.includes(branch.id));
-  const scope = JSON.stringify([user?.uid ?? null, profile?.role, props.userRole, profile?.active === true,
+  const scope = JSON.stringify([uiPermissionScope(profile), user?.uid ?? null, profile?.role, props.userRole, profile?.active === true,
     [...(profile?.assignedBranches || [])].sort(), branches.map(branch => [branch.id, branch.status]).sort(), props.visit?.id, props.appointment?.id]);
   const [invalidatedScope, setInvalidatedScope] = useState<string | null>(null);
   useLayoutEffect(() => subscribeProtectedDataInvalidation(() => setInvalidatedScope(scope)), [scope]);

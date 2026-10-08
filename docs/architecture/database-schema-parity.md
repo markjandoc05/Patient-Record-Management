@@ -1,26 +1,34 @@
 # Standing Vine database architecture rule
 
-Adopted October 2, 2026 from the user's explicit instruction.
+Adopted and refined October 2, 2026 from the user's explicit instructions.
 
 ## Latest direct verification — October 2, 2026
 
-**Not at parity:** local PostgreSQL 17.11 has committed migrations 001–004;
-production PostgreSQL 17.11 has 001–002. Shared checksums and platform/auth schema
-match. Production is missing Services tables/constraints/indexes and the 004 name
-normalization function. This is a known pending migration gap, with no unexplained
-manual structural drift found in the inspected scope. Neither database was modified.
+**Expected pending release gap:** local PostgreSQL 17.11 is at migration 004;
+production PostgreSQL 17.11 is at migration 002. The committed chain is
+001 → 002 → 003 → 004. All shared/applied checksums match committed source.
+Migrations 003 and 004 are pending the Services 1A production release. Production
+Services tables and name-normalization structures are not yet available. No
+unexplained/manual structural drift was found in the inspected scope.
+Neither database was modified. This is a verified version baseline, not a claim
+that both environments currently have identical applied schemas.
 See [the factual read-only report and evidence](schema-parity-2026-10-02.md).
-Do not mark full parity verified or apply production migrations automatically.
+The release gap does not block Services 1B-A or other local development against
+the committed target schema. Production compatibility still requires assessment;
+production migration remains separately reviewed and authorized.
 
 Apply this rule to all future Vine development.
 
 ## Permanent database rule
 
-Local development and production must always use the **same database schema and the same committed migration history**.
-
-Local PostgreSQL must accurately represent the production schema structure.
-
-The databases may contain different data, but they must not evolve into different database designs.
+Vine local development and production must share one immutable, ordered migration
+history. Local development represents the target schema of the application version
+currently being developed. Production represents the schema of the application
+version currently deployed. Local may therefore be ahead of production while an
+unreleased feature is under development. Production catches up only through the
+exact same committed migrations, in order, during a separately reviewed and
+authorized deployment. Different current applied migration numbers are allowed;
+different migration histories or unexplained schema changes are not.
 
 ## Environment model
 
@@ -65,9 +73,13 @@ Whenever a feature requires a database change:
 
 Example:
 
-Current production/local history:
+Committed history:
 
 `001 → 002 → 003 → 004`
+
+During Services development, local is 001 → 002 → 003 → 004 while production is
+001 → 002. This is an expected pending release gap. After the authorized Services
+release, both may be at 001 → 002 → 003 → 004.
 
 If a new feature needs schema changes:
 
@@ -75,11 +87,17 @@ Create:
 
 `005_feature_name.sql`
 
-Both environments eventually become:
+Local may reach 001 → 002 → 003 → 004 → 005 while production remains at 002.
+When an approved compatible application release and migration/recovery plan are
+deployed, production must apply every missing committed migration in order:
+
+`003 → 004 → 005`
+
+Both environments then reach:
 
 `001 → 002 → 003 → 004 → 005`
 
-Do not create one schema for local and another for production.
+Do not construct a final schema manually or skip intermediate migrations.
 
 ## Never do these
 
@@ -88,8 +106,10 @@ Do not:
 - manually add a local column/table without a migration;
 - manually modify production schema without recording the change in migrations;
 - edit migration 001/002/003/etc. after it has been applied and checksummed;
-- maintain local-only production-schema changes;
-- maintain production-only schema changes;
+- use different migration files or histories for local and production;
+- skip or reorder migrations;
+- create fake catch-up migrations duplicating existing committed migrations;
+- silently resolve unexplained schema drift;
 - copy local synthetic records into production;
 - use production patient/clinical data for normal local development;
 - synchronize databases by copying full database contents;
@@ -143,6 +163,10 @@ Expected:
 ### Upgrade database
 Start from the previous committed schema and apply only the new migration(s).
 
+When production is further behind, also plan/validate its complete ordered catch-up
+path using disposable synthetic data before the authorized release. For example,
+production 002 to target 005 must use committed 003 → 004 → 005, not a fake shortcut.
+
 Expected:
 - existing records remain;
 - migration succeeds;
@@ -161,7 +185,7 @@ Before production:
 - review migration;
 - check backup/recovery implications;
 - confirm current production migration version;
-- apply only missing committed migrations;
+- apply every missing committed migration in order, only with the approved compatible application release and migration/recovery plan;
 - deploy compatible application version;
 - verify production health;
 - verify affected workflow.
@@ -179,7 +203,11 @@ Whenever practical, provide a schema-parity check that confirms:
 
 Do not modify production merely to perform the check.
 
-If production inspection is not authorized or available, state that parity is expected from committed migration history but remains unverified.
+Distinguish an expected pending release gap (different deployed/development
+versions on one immutable chain) from unexplained schema drift (objects or
+definitions not accounted for by that chain). When inspection is unavailable,
+report the applied versions and structural status as unverified; never infer
+production catch-up from committed source files alone.
 
 ## Synthetic data
 
@@ -222,15 +250,20 @@ When a new high-integrity workflow requires relational structures:
 Whenever a feature is implemented, report:
 
 1. Schema change required: YES / NO
-2. Current migration baseline
-3. New migration(s), if any
-4. Fresh-database migration result
-5. Upgrade-from-previous-schema result
-6. Existing-record compatibility
-7. Local schema status
-8. Production schema compatibility assessment
-9. Whether production migration is required
-10. Rollback/recovery implications
-11. Confirmation local and production still share one migration history
+2. Committed migration chain
+3. Local applied migration
+4. Production applied migration
+5. New migration(s), if any
+6. Fresh-database validation
+7. Upgrade-path validation
+8. Existing-record compatibility
+9. Production catch-up migrations required
+10. Recovery/rollback implications
+11. Whether any unexplained schema divergence exists
+
+Use N/A for inapplicable checks and UNVERIFIED for checks not performed. Do not
+present the expected pending release gap as unexplained drift. Services 1B and
+other local features may proceed against the committed local target schema;
+consider the deployed production baseline and upgrade path for every release.
 
 Treat this as a standing architecture rule for all Vine development.

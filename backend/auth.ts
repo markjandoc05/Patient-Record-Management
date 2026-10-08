@@ -1,7 +1,8 @@
 import type express from 'express';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { OAuth2Client } from 'google-auth-library';
-import { db, pool } from './database';
+import { db, pool, type RecordTransaction } from './database';
+import { findApprovedDevelopmentAccount } from './developmentAccountActivation';
 export interface SessionIdentity { uid: string; email: string; name: string; googleSubject: string; provider: 'google'; }
 const appOrigin = new URL(process.env.APP_URL || 'http://localhost:3000').origin;
 const secure = appOrigin.startsWith('https://');
@@ -17,13 +18,14 @@ function setCookie(res: express.Response, key: string, value: string, maxAge: nu
   res.cookie(key, value, { httpOnly: true, secure, sameSite: 'lax', path: '/', maxAge });
 }
 export function trustedWriteOrigin(req: express.Request) { return req.headers.origin === appOrigin; }
-export async function sessionIdentity(req: express.Request): Promise<SessionIdentity> {
+export async function sessionIdentity(req: express.Request, transaction?: RecordTransaction): Promise<SessionIdentity> {
   const token = cookie(req, sessionCookie);
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('Unauthorized');
-  const result = await pool.query(`SELECT s.user_id, s.csrf_token, i.email, i.google_subject, r.data FROM auth_sessions s
+  const query = transaction ? transaction.sql.bind(transaction) : pool.query.bind(pool);
+  const result = await query(`SELECT s.user_id, s.csrf_token, i.email, i.google_subject, r.data FROM auth_sessions s
     JOIN auth_identities i ON i.user_id = s.user_id
     LEFT JOIN app_records r ON r.collection_path = 'users' AND r.id = s.user_id
-    WHERE s.token_hash = $1 AND s.expires_at > now()`, [hash(token)]);
+    WHERE s.token_hash = $1 AND s.expires_at > clock_timestamp()`, [hash(token)]);
   const record = result.rows[0];
   if (!record) throw new Error('Unauthorized');
   if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
@@ -33,7 +35,7 @@ export async function sessionIdentity(req: express.Request): Promise<SessionIden
   }
   return { uid: record.user_id, email: record.email, name: record.data?.fullName || '', googleSubject: record.google_subject, provider: 'google' };
 }
-export async function revokeSessions(userId: string) { await pool.query('DELETE FROM auth_sessions WHERE user_id = $1', [userId]); }
+export async function revokeSessions(userId: string) { await db.runTransaction(async tx => { await tx.sql('DELETE FROM auth_sessions WHERE user_id = $1', [userId]); }); }
 export function mountAuth(app: express.Express) {
   const oauth = new OAuth2Client(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, `${appOrigin}/api/auth/google/callback`);
   app.get('/api/auth/google', async (_req, res) => {
@@ -62,16 +64,25 @@ export function mountAuth(app: express.Express) {
         // Uses the same transaction client as the record mutation.
         const existing = await tx.sql('SELECT user_id FROM auth_identities WHERE google_subject = $1', [payload.sub]);
         if (existing.rows[0]) return existing.rows[0].user_id as string;
-        const userId = randomUUID();
+        const approved = await findApprovedDevelopmentAccount(tx, payload.email);
+        const userId = approved?.ref.id || randomUUID();
         await tx.sql('INSERT INTO auth_identities (google_subject, user_id, email) VALUES ($1, $2, $3)', [payload.sub, userId, payload.email]);
-        tx.create(db.collection('users').doc(userId), { email: payload.email, fullName: payload.name || payload.email, role: 'staff', active: false, accountStatus: 'pending_activation', assignedBranches: [], assignedBranchNames: [], defaultBranchId: null, defaultBranchName: null, createdAt: new Date().toISOString() });
+        if (approved) {
+          const now = new Date().toISOString();
+          tx.update(approved.ref, { active: true, accountStatus: 'active', developmentActivationApproved: false, activatedAt: now, activationSource: 'preapproved_development_google_sign_in' });
+          tx.create(db.collection('audit_logs').doc(), { action: 'UPDATE', resource: 'User', resourceId: userId, timestamp: now, source: 'trusted_server', eventType: 'user_activated', details: 'Verified Google sign-in completed previously approved development activation' });
+        } else {
+          tx.create(db.collection('users').doc(userId), { email: payload.email, fullName: payload.name || payload.email, role: 'staff', active: false, accountStatus: 'pending_activation', assignedBranches: [], assignedBranchNames: [], defaultBranchId: null, defaultBranchName: null, createdAt: new Date().toISOString() });
+        }
         return userId;
       });
-      const profile = (await db.collection('users').doc(identity).get()).data();
-      if (!profile || profile.isArchived || profile.accountStatus === 'inactive') throw new Error('Account unavailable');
       const token = random(); const csrf = random();
-      await pool.query('DELETE FROM auth_sessions WHERE expires_at < now()');
-      await pool.query(`INSERT INTO auth_sessions (token_hash, user_id, csrf_token, expires_at) VALUES ($1, $2, $3, now() + interval '12 hours')`, [hash(token), identity, csrf]);
+      await db.runTransaction(async tx => {
+        const profile = (await tx.get(db.collection('users').doc(identity))).data();
+        if (!profile || profile.isArchived || profile.accountStatus === 'inactive') throw new Error('Account unavailable');
+        await tx.sql('DELETE FROM auth_sessions WHERE expires_at < now()', []);
+        await tx.sql(`INSERT INTO auth_sessions (token_hash, user_id, csrf_token, expires_at) VALUES ($1, $2, $3, now() + interval '12 hours')`, [hash(token), identity, csrf]);
+      });
       setCookie(res, sessionCookie, token, 12 * 60 * 60 * 1000);
       res.redirect(appOrigin + '/');
     } catch { res.redirect(appOrigin + '/?auth_error=google_sign_in_failed'); }
@@ -86,8 +97,10 @@ export function mountAuth(app: express.Express) {
   });
   app.post('/api/auth/logout', async (req, res) => {
     try {
-      await sessionIdentity(req);
-      await pool.query('DELETE FROM auth_sessions WHERE token_hash = $1', [hash(cookie(req, sessionCookie))]);
+      await db.runTransaction(async tx => {
+        await sessionIdentity(req, tx);
+        await tx.sql('DELETE FROM auth_sessions WHERE token_hash = $1', [hash(cookie(req, sessionCookie))]);
+      });
       setCookie(res, sessionCookie, '', 0); res.json({ ok: true });
     } catch { res.status(401).json({ error: 'Unauthorized' }); }
   });

@@ -2,6 +2,17 @@
 
 Target domain: https://app.vineaesthetics.com
 
+## Standing schema and release rule
+
+Follow [the permanent database rule](docs/architecture/database-schema-parity.md).
+Deploy the exact reviewed, committed migration files used in local fresh/upgrade
+validation. Never edit applied checksummed migrations; correct them with a new
+numbered forward migration. Inspect production's actual version and checksums,
+assess backup/recovery, apply only missing migrations, deploy compatible code and
+verify health plus the affected workflow. This is a separately authorized release
+step. No production change is permitted merely to inspect schema parity; report
+parity as unverified when inspection is unavailable.
+
 ## What changed
 
 The existing React UI now reads through authenticated backend APIs. Express
@@ -178,3 +189,10 @@ profiles, 8 Google identities, and 22 private/branding files. Per-collection cou
 identity count and all imported file checksums match the export. Production import
 is still pending a final write freeze and fresh export. Exported data and migration
 credentials are private and are excluded from Git and deployment images.
+
+Production import completed October 1, 2026: 497 records, 15 patient profiles,
+8 identities and 22 files. All collection counts and file hashes match the final
+export. The temporary post-deployment sign-in profile was backed up and replaced
+with its matching original Google-linked profile. DNS now routes to Dokploy;
+trusted HTTPS and the PostgreSQL health endpoint pass. User login validation,
+backup restore testing and private-file backup scheduling remain outstanding.

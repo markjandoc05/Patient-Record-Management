@@ -1,3 +1,5 @@
+import { publishPermissionProfile } from './permissionState';
+import { canOpenView, permissionScopeKey } from './permissions';
 import ServicesDashboard from './components/ServicesDashboard';
 /**
  * @license
@@ -24,9 +26,12 @@ import DeveloperDashboard, { DevTab } from './components/DeveloperDashboard';
 import { RBAC, canAccessView, roleLabel, isSupportDeveloper, hasAdministrativeAccess } from './rbac';
 import { recordLoginActivity } from './utils/loginActivityApi';
 import { registerPendingGoogleAccount } from './utils/pendingActivationApi';
+import { accountAccessMessage, PENDING_APPROVAL_MESSAGE } from './utils/userActivation';
 import { Users, Settings, UserCircle, Calendar, Clock, Menu, X, Shield, PanelLeftClose, PanelLeftOpen, Cpu, Zap, Package, LayoutDashboard, MapPin, LogOut } from 'lucide-react';
 import { TimezoneProvider } from './contexts/TimezoneContext';
 import { setActiveTimezoneSettings } from './utils/timezone';
+import { useWorkspaceOverview } from './hooks/useWorkspaceOverview';
+import { workspaceAccessScope } from './utils/workspaceOverview';
 
 const defaultBranding = {
   // Application Branding
@@ -132,7 +137,8 @@ export default function App() {
   const [protectedScopeGeneration, setProtectedScopeGeneration] = useState(0);
   const [user, setUser] = useState<any>(null);
   const [userRole, setUserRole] = useState<string|null>(null);
-  const [userProfile, setUserProfile] = useState<any>(null);
+  const [userProfile, setUserProfileState] = useState<any>(null);
+  const setUserProfile = (value: any) => { publishPermissionProfile(value); setUserProfileState(value); };
   const [loading, setLoading] = useState(true);
   const [brandingLoaded, setBrandingLoaded] = useState(false);
   const [activeView, setActiveView] = useState('Records');
@@ -150,9 +156,12 @@ export default function App() {
   const [footer, setFooter] = useState<any>(null);
   const [timezone, setTimezone] = useState<any>(defaultTimezone);
   const [branches, setBranches] = useState<any[]>([]);
+  const [branchRefreshError, setBranchRefreshError] = useState(false);
+  const [settingsRefreshErrors, setSettingsRefreshErrors] = useState<Record<string, boolean>>({});
   const [activeBranchId, setActiveBranchId] = useState('');
-  const accessScope = JSON.stringify([user?.uid, userProfile?.role, userProfile?.active, userProfile?.assignedBranches]);
   const recordedLoginActivityRef = useRef<string | null>(null);
+  const accessScope = workspaceAccessScope(user?.uid, userProfile);
+  const overview = useWorkspaceOverview(user?.uid, userProfile);
 
   useEffect(() => {
     try {
@@ -176,6 +185,7 @@ export default function App() {
 
     // Initial Branding Subscription
     const unsubBranding = onSnapshot(doc(db, 'settings', 'branding'), (snapshot) => {
+      setSettingsRefreshErrors(current => ({ ...current, branding: false }));
       if (snapshot.exists()) {
         setBranding(normalizeBranding(snapshot.data()));
       } else {
@@ -184,7 +194,9 @@ export default function App() {
       setBrandingLoaded(true);
     }, (err) => {
       console.error("Failed to load branding:", err);
-      setBranding(normalizeBranding(defaultBranding));
+      // Initial defaults already exist; a failed poll must not replace a
+      // previously validated theme or maintenance setting.
+      setSettingsRefreshErrors(current => ({ ...current, branding: true }));
       setBrandingLoaded(true);
       try {
         handleDataError(err, OperationType.GET, 'settings/branding', auth);
@@ -195,6 +207,7 @@ export default function App() {
 
     // Footer Settings Subscription
     const unsubFooter = onSnapshot(doc(db, 'settings', 'footer'), (snapshot) => {
+      setSettingsRefreshErrors(current => ({ ...current, footer: false }));
       if (snapshot.exists()) {
         setFooter(snapshot.data());
       } else {
@@ -205,11 +218,13 @@ export default function App() {
       if (err.code !== 'permission-denied') {
         console.error("Failed to load footer:", err);
       }
-      setFooter(null);
+      setSettingsRefreshErrors(current => ({ ...current, footer: true }));
+      if (err.code === 'permission-denied' || err.status === 401 || err.status === 403) setFooter(null);
     });
 
     // Initial Timezone Subscription
     const unsubTimezone = onSnapshot(doc(db, 'settings', 'timezone'), (snapshot) => {
+      setSettingsRefreshErrors(current => ({ ...current, timezone: false }));
       if (snapshot.exists()) {
         const nextTimezone = { ...defaultTimezone, ...snapshot.data() };
         setActiveTimezoneSettings(nextTimezone);
@@ -220,8 +235,7 @@ export default function App() {
       }
     }, (err) => {
       console.error("Failed to load timezone:", err);
-      setActiveTimezoneSettings(defaultTimezone);
-      setTimezone(defaultTimezone);
+      setSettingsRefreshErrors(current => ({ ...current, timezone: true }));
     });
 
     return () => {
@@ -318,11 +332,13 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(() => new URLSearchParams(window.location.search).has('auth_error') ? 'Google sign-in failed. Please try again or contact an administrator.' : null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [accountMissingProfile, setAccountMissingProfile] = useState(false);
+  const [pendingActivation, setPendingActivation] = useState(false);
 
   const handleSignIn = async () => {
     setIsAuthenticating(true);
     setAuthError(null);
     setAccountMissingProfile(false);
+    setPendingActivation(false);
     try {
         await signInWithGoogle();
     } catch (e: any) {
@@ -404,7 +420,8 @@ export default function App() {
           if (userDoc && userDoc.exists()) {
              const data = userDoc.data();
              if (!data.active) {
-                setAuthError(data.accountStatus === 'pending_activation' ? 'Your account is pending activation. An administrator must approve your access.' : 'Your account is inactive. Please contact an administrator.');
+                setPendingActivation(data.accountStatus === 'pending_activation' && !data.isArchived);
+                setAuthError(accountAccessMessage(data));
                 await signOut(auth);
                 setUser(null);
              } else if (!approvedRoles.has(data.role)) {
@@ -422,7 +439,8 @@ export default function App() {
              // Admin SDK tooling, never by browser-side email checks.
              await registerPendingGoogleAccount();
              setAccountMissingProfile(true);
-             setSuccessMessage("Your account has been created and is pending activation. An administrator will review your access shortly.");
+             setPendingActivation(true);
+             setSuccessMessage(PENDING_APPROVAL_MESSAGE);
              await signOut(auth);
              setUser(null);
           }
@@ -442,6 +460,7 @@ export default function App() {
   }, []);
 
   const profileScopeRef = useRef('');
+  const viewScope = JSON.stringify([user?.uid, userProfile?.role, userProfile?.active, userProfile?.assignedBranches || [], permissionScopeKey(userProfile), activeBranchId]);
 
   // Keep the signed-in user's role, approval status, name, and clinic access in
   // sync. Administrative changes now take effect without asking the user to
@@ -452,7 +471,9 @@ export default function App() {
       if (!snapshot.exists()) { invalidateProtectedData(); setUserRole(null); setUserProfile(null); void signOut(auth); return; }
       const nextProfile = snapshot.data();
       if (!nextProfile.active) {
-        setAuthError('Your account is inactive. Please contact an administrator.');
+        invalidateProtectedData(); setUserRole(null); setUserProfile(null);
+        setPendingActivation(nextProfile.accountStatus === 'pending_activation' && !nextProfile.isArchived);
+        setAuthError(accountAccessMessage(nextProfile));
         void signOut(auth);
         return;
       }
@@ -462,7 +483,8 @@ export default function App() {
         void signOut(auth);
         return;
       }
-      const scope = JSON.stringify([user.uid, nextProfile.role, nextProfile.active, nextProfile.assignedBranches || []]);
+      const scope = JSON.stringify([user.uid, nextProfile.role, nextProfile.active, nextProfile.assignedBranches || [], permissionScopeKey(nextProfile)]);
+      publishPermissionProfile(nextProfile);
       if (profileScopeRef.current && profileScopeRef.current !== scope) invalidateProtectedData();
       profileScopeRef.current = scope;
       setUserProfile(nextProfile);
@@ -476,15 +498,18 @@ export default function App() {
   useEffect(() => {
     if (!user || !userProfile) {
       setBranches([]);
+      setBranchRefreshError(false);
       setActiveBranchId('');
       return;
     }
 
     return onSnapshot(collection(db, 'branches'), snapshot => {
       if (snapshot.invalidated) setProtectedScopeGeneration(snapshot.invalidationGeneration);
+      setBranchRefreshError(false);
       setBranches(snapshot.docs.map(branch => ({ id: branch.id, ...branch.data() })));
     }, error => {
       console.error('Failed to load clinic branches:', error);
+      setBranchRefreshError(true);
     });
   }, [user?.uid, accessScope]);
 
@@ -525,14 +550,14 @@ export default function App() {
   };
 
   const navigateTo = (view: string) => {
-    if (!canAccessView(userRole, view)) return;
+    if (!canOpenView(userProfile, view)) return;
     setActiveView(view);
     setIsMobileMenuOpen(false);
   };
 
   useEffect(() => {
-    if (!canAccessView(userRole, activeView)) setActiveView('BranchDashboard');
-  }, [userRole, activeView]);
+    if (userProfile && !canOpenView(userProfile, activeView)) setActiveView(['BranchDashboard', 'Records', 'Appointments', 'VisitHistory', 'Services', 'Insights', 'Inventory', 'Settings', 'AuditTrail', 'DeveloperTools', 'Profile'].find(view => canOpenView(userProfile, view)) || 'NoAccess');
+  }, [userProfile, activeView]);
 
   const currentPageTitle = pageTitles[activeView] || activeView;
   const effectiveFooter = {
@@ -546,8 +571,9 @@ export default function App() {
   };
 
   if (loading || !brandingLoaded) return (
-    <div className="flex justify-center items-center h-screen bg-white">
+    <div role="status" className="flex flex-col gap-3 justify-center items-center h-screen bg-white">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-600"></div>
+        <p className="text-sm text-slate-500">Loading workspace...</p>
     </div>
   );
 
@@ -560,6 +586,7 @@ export default function App() {
           authError={authError}
           successMessage={successMessage}
           accountMissingProfile={accountMissingProfile}
+          pendingActivation={pendingActivation}
       />
    );
 
@@ -645,26 +672,27 @@ export default function App() {
 
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2 pb-3">
           <nav aria-label="Main navigation" className="space-y-1">
-            <SidebarNavButton label="Overview" icon={LayoutDashboard} active={activeView === 'BranchDashboard'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('BranchDashboard')} />
-            <SidebarNavButton label="Patients" icon={Users} active={activeView === 'Records'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Records')} />
-            <SidebarNavButton label="Appointments" icon={Clock} active={activeView === 'Appointments'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Appointments')} />
-            {canAccessView(userRole, 'VisitHistory') && (<SidebarNavButton label="Visits" icon={Calendar} active={activeView === 'VisitHistory'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('VisitHistory')} />)}
-            <SidebarNavButton label="Services" icon={Package} active={activeView === 'Services'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Services')} />
+            {canOpenView(userProfile, 'BranchDashboard') && (<SidebarNavButton label="Overview" icon={LayoutDashboard} active={activeView === 'BranchDashboard'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('BranchDashboard')} />)}
+            {canOpenView(userProfile, 'Records') && (<SidebarNavButton label="Patients" icon={Users} active={activeView === 'Records'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Records')} />)}
+            {canOpenView(userProfile, 'Appointments') && (<SidebarNavButton label="Appointments" icon={Clock} active={activeView === 'Appointments'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Appointments')} />)}
+            {canOpenView(userProfile, 'VisitHistory') && (<SidebarNavButton label="Visits" icon={Calendar} active={activeView === 'VisitHistory'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('VisitHistory')} />)}
 
-            {(hasAdministrativeAccess(userRole)) && (
+            {canOpenView(userProfile, 'Services') && (<SidebarNavButton label="Services" icon={Package} active={activeView === 'Services'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Services')} />)}
+
+            {canOpenView(userProfile, 'Inventory') && (
               <SidebarNavButton label="Inventory" icon={Package} active={activeView === 'Inventory'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Inventory')} />
             )}
 
-            {canAccessView(userRole, 'Insights') && (<SidebarNavButton label="Insights" icon={Zap} active={activeView === 'Insights'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Insights')} />)}
+            {canOpenView(userProfile, 'Insights') && (<SidebarNavButton label="Insights" icon={Zap} active={activeView === 'Insights'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Insights')} />)}
 
-            {(hasAdministrativeAccess(userRole)) && (
+            {(canOpenView(userProfile, 'Settings') || canOpenView(userProfile, 'AuditTrail')) && (
               <>
-                <SidebarNavButton label="Settings" icon={Settings} active={activeView === 'Settings'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Settings')} />
-                <SidebarNavButton label="Audit log" icon={Shield} active={activeView === 'AuditTrail'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('AuditTrail')} />
+                {canOpenView(userProfile, 'Settings') && (<SidebarNavButton label="Settings" icon={Settings} active={activeView === 'Settings'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Settings')} />)}
+                {canOpenView(userProfile, 'AuditTrail') && (<SidebarNavButton label="Audit log" icon={Shield} active={activeView === 'AuditTrail'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('AuditTrail')} />)}
               </>
             )}
 
-            {isSupportDeveloper(userRole) && (
+            {canOpenView(userProfile, 'DeveloperTools') && (
               <div className="mt-4 pt-4 border-t border-white/[0.08] space-y-1">
                 <span className={`px-3 text-[10px] font-semibold text-slate-500 uppercase tracking-[0.14em] block mb-2 ${isSidebarCollapsed ? 'md:hidden' : ''}`}>
                   Developer tools
@@ -788,24 +816,26 @@ export default function App() {
         </header>
         
         <div className="flex-grow overflow-auto flex flex-col">
-            <div key={protectedScopeGeneration} className="flex-1 p-4 sm:p-6 lg:p-8">
-                {activeView === 'BranchDashboard' && <BranchDashboard activeBranchId={activeBranchId} branches={branches} onNavigate={setActiveView} />}
-                {activeView === 'Records' && <PatientDashboard db={db} user={user} role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
-                {activeView === 'Appointments' && <AppointmentsDashboard role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
-                {activeView === 'VisitHistory' && <VisitHistoryDashboard db={db} role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
-                {activeView === 'Insights' && <InsightsAnalyticsDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
-                {activeView === 'Services' && <ServicesDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
-                {activeView === 'Inventory' && (hasAdministrativeAccess(userRole)) && <InventoryDashboard userProfile={userProfile} />}
-                {activeView === 'Inventory' && !hasAdministrativeAccess(userRole) && (
+            {Object.values(settingsRefreshErrors).some(Boolean) && <p role="status" className="px-4 pt-3 text-sm text-amber-700">Workspace settings could not refresh. Retrying automatically.</p>}
+            {branchRefreshError && <p role="status" className="px-4 pt-3 text-sm text-amber-700">Clinic branches could not refresh. Retrying automatically.</p>}
+            <div key={`${viewScope}:${protectedScopeGeneration}`} className="flex-1 p-4 sm:p-6 lg:p-8">
+                {activeView === 'BranchDashboard' && canOpenView(userProfile, 'BranchDashboard') && <BranchDashboard userProfile={userProfile} activeBranchId={activeBranchId} branches={availableBranches} onNavigate={navigateTo} overview={overview} />}
+                {activeView === 'Records' && canOpenView(userProfile, 'Records') && <PatientDashboard db={db} user={user} role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
+                {activeView === 'Appointments' && canOpenView(userProfile, 'Appointments') && <AppointmentsDashboard role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
+                {activeView === 'VisitHistory' && canOpenView(userProfile, 'VisitHistory') && <VisitHistoryDashboard db={db} role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
+                {activeView === 'Services' && canOpenView(userProfile, 'Services') && <ServicesDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
+                {activeView === 'Insights' && canOpenView(userProfile, 'Insights') && <InsightsAnalyticsDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
+                {activeView === 'Inventory' && canOpenView(userProfile, 'Inventory') && <InventoryDashboard userProfile={userProfile} />}
+                {activeView === 'Inventory' && !canOpenView(userProfile, 'Inventory') && (
                   <div className="p-8 text-center"><p className="text-slate-500 font-medium">Access Denied: Inventory controls are restricted to administrators.</p></div>
                 )}
                 {activeView === 'Profile' && <ProfileView db={db} />}
                 {activeView === 'AccountSettings' && <UserSettings db={db} />}
-                {activeView === 'Settings' && (hasAdministrativeAccess(userRole)) && <AdminSettings db={db} userRole={userRole} branding={branding} timezone={timezone} footer={footer} userProfile={userProfile} />}
-                {activeView === 'Settings' && !hasAdministrativeAccess(userRole) && (
+                {activeView === 'Settings' && canOpenView(userProfile, 'Settings') && <AdminSettings db={db} userRole={userRole} branding={branding} timezone={timezone} footer={footer} userProfile={userProfile} />}
+                {activeView === 'Settings' && !canOpenView(userProfile, 'Settings') && (
                     <div className="p-8"><p>Access Denied: Administrative controls are restricted to administrators.</p></div>
                 )}
-                {activeView === 'DeveloperTools' && isSupportDeveloper(userRole) && (
+                {activeView === 'DeveloperTools' && canOpenView(userProfile, 'DeveloperTools') && (
                   <DeveloperDashboard 
                     currentTab={devTab} 
                     onTabChange={setDevTab} 
@@ -813,7 +843,7 @@ export default function App() {
                     onRefreshBranding={refreshBranding}
                   />
                 )}
-                {activeView === 'AuditTrail' && (hasAdministrativeAccess(userRole)) && <AuditTrailDashboard role={userRole} />}
+                {activeView === 'AuditTrail' && canOpenView(userProfile, 'AuditTrail') && <AuditTrailDashboard role={userRole} />}
             </div>
 
             {/* Dynamic White-Label Footer */}

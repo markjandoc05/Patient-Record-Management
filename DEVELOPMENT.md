@@ -1,22 +1,34 @@
 # Vine development
 
+## Hybrid access-control local checks — October 3
+
+Read [the capability/default map](docs/architecture/hybrid-access-control.md) before changing authorization. `users.manage` edits operational user details; `access.manage` governs security policy and remains Administrator/guarded Support only. Clinical redaction is server-side; initial Staff/Manager clinical-view defaults are preserved. Own-profile polling discovers changed access, then clears protected data and rejects old responses.
+
+Run `npm run test:permissions` and `npm run test:permissions-scope` for policy/redaction and controlled client races. `npm run test:permissions-api` requires an existing empty disposable loopback database named `vine_permissions_test`, `ALLOW_TEST_DATABASE=yes`, temporary `STORAGE_DIR`, production-mode middleware and a synthetic `.invalid` `APP_URL`; never point it at `vine_development` or production. The suite migrates only that guarded database and uses synthetic identities/records. Preserve the main development `.env`; use process-local test configuration without printing credentials. Existing Services, patient/Visit, Support/RBAC and audit suites remain required. See [release evidence](docs/releases/2026-10-03-hybrid-access-control.md) for actual results and browser limitations. No new migration or production action.
+
+
 Read-only schema inspection on October 2, 2026 directly observed local migrations
 001–004 and production 001–002. Shared platform/auth definitions and checksums match,
-but production lacks the committed Services structures. **Full parity is not yet
-verified/equal.** See [parity baseline](docs/architecture/schema-parity-2026-10-02.md).
-Keep this pending release gap explicit in feature planning; no schema was corrected.
+and no unexplained manual schema drift was found. Migrations 003/004 are an
+**expected pending release gap** because Services 1A has not been deployed.
+Production Services tables are not yet available. See
+[verified baseline](docs/architecture/schema-parity-2026-10-02.md).
+Services 1B-A and other local development may proceed against target schema 004;
+keep production compatibility explicit. No schema was corrected.
 
 ## Standing architecture rule
 
 Follow [the permanent database rule](docs/architecture/database-schema-parity.md)
 and [repository instructions](AGENTS.md) for every feature. Both environments share
-one committed, immutable migration chain and database design; records remain
-separate. Every feature report includes schema need/baseline, new migrations,
-fresh/upgrade results, record compatibility, local/production status, production
-migration need and recovery. Report uninspected database versions/parity as
-UNVERIFIED, not inferred from source files. Local-first validation may be ahead of
-the deployed production version pending an authorized release; no separate schema
-design or automatic production update is permitted.
+one immutable, ordered migration history; records remain separate. Local represents
+the target schema of the version being developed, production the schema of the
+version deployed. Different applied versions can be an expected pending release
+gap, not unexplained drift. Every feature report includes schema need, committed
+chain, local and production applied migrations, new migrations, fresh/upgrade
+validation, record compatibility, catch-up migrations, recovery and unexplained
+divergence. Report uninspected versions as UNVERIFIED. Production catches up only
+through every missing committed migration in order with an approved compatible
+release and recovery plan; no manual final-schema construction or automatic update.
 
 Use the same application code and numbered migrations locally and in production,
 with separate databases, credentials, records and private files. Local development
@@ -132,12 +144,14 @@ Both environments use `NODE_ENV`, `APP_URL`, `PORT`, `DATABASE_URL`,
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `STORAGE_DIR`, with separate values.
 `LOCAL_POSTGRES_PASSWORD` is exclusively for local Docker.
 
-**Local migration baseline verified; production parity pending direct read-only
-verification.** Do not infer the deployed schema version from local migrations.
+**Directly verified baseline: local 004; production 002.** Shared checksums match;
+003/004 remain pending the authorized Services release. This expected gap does not
+block local development and does not mean Services is available in production.
 
 Production preparation/deployment is a separate, explicitly authorized task:
 review the migration and recovery plan, back up before risky schema/data changes,
-deploy the reviewed version, run the same committed migration sequence, and check
+deploy the compatible reviewed version, apply every missing committed migration in
+order (currently 003 then 004), and check
 health plus the affected workflow. Never connect local development to production
 or automatically run destructive production migrations.
 

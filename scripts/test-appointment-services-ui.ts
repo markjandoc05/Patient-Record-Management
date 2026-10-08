@@ -19,7 +19,7 @@ globals.window = { addEventListener() {}, removeEventListener() {}, requestAnima
 globals.document = { querySelector() { return null; } };
 await writeFile(path.join(temporary, 'react.mjs'), `import actual from ${JSON.stringify(require.resolve('react'))};\nexport default actual;\n${['useState','useRef','useEffect','useLayoutEffect','useMemo'].map(name => `export const ${name}=(...args)=>globalThis.servicesTestHooks.${name}(...args);`).join('\n')}`);
 await writeFile(path.join(temporary, 'platform.mjs'), 'export const auth=globalThis.servicesTestAuth; export const db={};');
-await writeFile(path.join(temporary, 'data.mjs'), `export function invalidateProtectedData(){globalThis.servicesTestInvalidations++;for(const f of globalThis.appointmentInvalidationListeners)f();}
+await writeFile(path.join(temporary, 'data.mjs'), `export {captureProtectedRequestScope,protectedFetch} from "./foundation.mjs"; export function invalidateProtectedData(){globalThis.servicesTestInvalidations++;for(const f of globalThis.appointmentInvalidationListeners)f();}
 export function subscribeProtectedDataInvalidation(f){globalThis.appointmentInvalidationListeners.add(f);return()=>globalThis.appointmentInvalidationListeners.delete(f);}
 export const collection=()=>({}),query=()=>({}),limit=()=>({}),orderBy=()=>({}),where=()=>({}),getDocs=async()=>({docs:[]});`);
 await writeFile(path.join(temporary, 'time.mjs'), "export const getActiveDatePrefix=()=> '2028-01-01';export const getActiveDateTimeInput=()=> '2028-01-01T09:00';");
@@ -27,12 +27,15 @@ await writeFile(path.join(temporary, 'utils.mjs'), 'export const formatDateTime=
 await writeFile(path.join(temporary, 'date.mjs'), 'export const CustomDatePicker=()=>null;');
 const plugins = [{ name: 'controlled-appointments', setup(b: any) {
   b.onResolve({ filter: /^react$/ }, () => ({ path: path.join(temporary, 'react.mjs') }));
+  b.onResolve({ filter: /session$/ }, () => ({ path: path.join(temporary, 'platform.mjs') }));
+  b.onResolve({ filter: /foundation\.mjs$/ }, () => ({ path: path.join(temporary, 'foundation.mjs'), external: true }));
   b.onResolve({ filter: /platform$/ }, () => ({ path: path.join(temporary, 'platform.mjs') }));
   b.onResolve({ filter: /dataClient$/ }, () => ({ path: path.join(temporary, 'data.mjs') }));
   b.onResolve({ filter: /utils\/timezone$/ }, () => ({ path: path.join(temporary, 'time.mjs') }));
   b.onResolve({ filter: /^\.\.\/utils$/ }, () => ({ path: path.join(temporary, 'utils.mjs') }));
   b.onResolve({ filter: /CustomDatePicker$/ }, () => ({ path: path.join(temporary, 'date.mjs') }));
 } }];
+await build({ entryPoints: [path.join(target, 'src/dataClient.ts')], outfile: path.join(temporary, 'foundation.mjs'), bundle: true, platform: 'node', format: 'esm', packages: 'external', plugins });
 await build({ entryPoints: [path.join(target, 'src/components/AppointmentForm.tsx')], outfile: path.join(temporary, 'form.mjs'), bundle: true, platform: 'node', format: 'esm', jsx: 'transform', packages: 'external', plugins });
 const { default: Form } = await import(pathToFileURL(path.join(temporary, 'form.mjs')).href);
 const flush = async () => { for (let i=0;i<40;i++) await Promise.resolve(); };

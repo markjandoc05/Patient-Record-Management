@@ -45,14 +45,17 @@ export class RecordQuery {
   filters: Filter[] = [];
   ordering?: [string, string];
   maximum?: number;
+  ids?: string[];
   constructor(public collectionPath: string, protected client?: PoolClient) {}
   where(field: string, operator: string, value: any) { const q = this.copy(); q.filters.push([field, operator, value]); return q; }
   orderBy(field: string, direction = 'asc') { const q = this.copy(); q.ordering = [field, direction]; return q; }
   limit(maximum: number) { const q = this.copy(); q.maximum = maximum; return q; }
-  private copy() { const q = new RecordQuery(this.collectionPath, this.client); q.filters = [...this.filters]; q.ordering = this.ordering; q.maximum = this.maximum; return q; }
+  withIds(ids: string[]) { const q = this.copy(); q.ids = ids; return q; }
+  private copy() { const q = new RecordQuery(this.collectionPath, this.client); q.filters = [...this.filters]; q.ordering = this.ordering; q.maximum = this.maximum; q.ids = this.ids; return q; }
   async get(client = this.client): Promise<QuerySnapshot> {
     const values: any[] = [this.collectionPath];
     const clauses = ['collection_path = $1'];
+    if (this.ids) { values.push(this.ids); clauses.push(`id = ANY($${values.length}::text[])`); }
     for (const [field, operator, value] of this.filters) {
       if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(field)) throw new Error('Invalid query field');
       values.push(field); const expression = `(data -> $${values.length}::text)`;
@@ -133,6 +136,9 @@ export const db = {
   collection: (collectionPath: string) => new RecordCollection(collectionPath),
   async runTransaction<T>(callback: (tx: RecordTransaction) => Promise<T>): Promise<T> {
     const client = await pool.connect();
+    let connectionError: Error | undefined;
+    const onConnectionError = (error: Error) => { connectionError = error; };
+    client.on('error', onConnectionError);
     try {
       await client.query('BEGIN');
       // Compatibility migration: serialize legacy multi-record mutations to
@@ -141,7 +147,16 @@ export const db = {
       await client.query('SELECT pg_advisory_xact_lock(78194602)');
       const tx = new RecordTransaction(client); const result = await callback(tx);
       await tx.flush(); await client.query('COMMIT'); return result;
-    } catch (error) { await client.query('ROLLBACK'); throw error; }
-    finally { client.release(); }
+    } catch (error) {
+      if (!connectionError) {
+        try { await client.query('ROLLBACK'); }
+        catch (rollbackError) { connectionError = rollbackError instanceof Error ? rollbackError : new Error('Rollback failed'); }
+      }
+      throw error;
+    } finally {
+      // release reinstalls the pool's idle error handler before ours is removed.
+      client.release(connectionError);
+      client.removeListener('error', onConnectionError);
+    }
   },
 };

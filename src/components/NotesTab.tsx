@@ -1,10 +1,11 @@
+import { uiCan } from '../permissionState';
 import { clinicalPatientRoles } from '../rbac';
 import React, { useState } from 'react';
 import PrivateNotesList from './PrivateNotesList';
 
 export default function NotesTab({ patient, userRole }: { patient: any; userRole?: string }) {
   const [subTab, setSubTab] = useState<'general' | 'private'>('general');
-  const canViewPrivateNotes = (clinicalPatientRoles as readonly string[]).includes(userRole || '');
+  const canViewPrivateNotes = uiCan(userRole, 'clinical.view') && uiCan(userRole, 'clinical.private_notes.view');
 
   return (
     <div className="min-w-0 space-y-4">

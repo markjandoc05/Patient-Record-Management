@@ -98,12 +98,12 @@ try {
   const normalized = normalizeMediaSettings({ allowedExtensions: [' PNG ', 'JPG', '.pdf', '.PDF'], maxFileSizeMB: 1, maxFilesPerAppointment: 5, maxSizeMB: 3 });
   assert.deepEqual(normalized, policy); checks++;
   check((await request('/api/data/write', { operations: [{ path: 'settings/footer', mode: 'set', data: { footerText: 'Synthetic legal text' } }] }, 'support_developer')).status === 200, 'Legacy support settings mutation allowed');
-  check((await request('/api/data/write', { operations: [{ path: 'users/staff', mode: 'update', data: { assignedBranches: ['A', 'B'] } }] }, 'support_developer')).status === 200, 'Legacy support access administration allowed');
+  check((await request('/api/users/staff/access', { expectedAccessRevision: 0, assignedBranches: ['A', 'B'] }, 'support_developer', 'PATCH')).status === 200, 'Legacy support access administration allowed');
   check((await request('/api/data/write', { operations: [{ path: 'patients/patient-A/privateNotes', mode: 'create', data: { note: 'Synthetic private note' } }] }, 'support_developer')).status === 400, 'Malformed private-note document path rejected');
   check((await request('/api/data/write', { operations: [{ path: 'patients/patient-A/privateNotes/synthetic', mode: 'create', data: { note: 'Synthetic private note' } }] }, 'support_developer')).status === 200, 'Legacy support private note mutation allowed');
   const logs = (await db.collection('audit_logs').get()).docs.map(d => d.data()!);
   for (const event of ['record_archived', 'record_restored', 'attachment_uploaded', 'attachment_deleted']) check(logs.some(l => l.userRole === 'support_developer' && l.eventType === event), `${event} cannot disappear under legacy support exemption`);
-  for (const resource of ['User', 'Settings', 'Patient']) check(logs.some(l => l.userRole === 'support_developer' && l.resource === resource && l.eventType === 'configuration_or_note_changed'), `Legacy support ${resource} configuration/note mutation audited`);
+  for (const resource of ['User', 'Settings', 'Patient']) check(logs.some(l => l.userRole === 'support_developer' && l.resource === resource && l.eventType === (resource === 'User' ? 'access_policy_changed' : 'configuration_or_note_changed')), `Legacy support ${resource} configuration/note mutation audited`);
   for (const role of ['support_developer', 'SUPPORT_DEVELOPER']) {
     for (const resource of ['Patient', 'Appointment', 'Visit', 'Settings', 'User'] as const) for (const action of ['CREATE', 'UPDATE', 'DELETE'] as const) check(shouldRecordAuditEvent({ actorRole: role, resource, action }), `${role}: ${resource} ${action} not exempt`);
     check(!shouldRecordAuditEvent({ actorRole: role, resource: 'Patient', action: 'VIEW' }), 'Routine clinical view exemption shared across roles');

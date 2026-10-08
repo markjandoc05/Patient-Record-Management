@@ -1,3 +1,4 @@
+import { uiCan } from '../permissionState';
 import { hasAdministrativeAccess } from '../rbac';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { collection, getDocs, limit, orderBy, query } from '../dataClient';
@@ -88,7 +89,7 @@ export default function AuditTrailDashboard({ role }: AuditTrailDashboardProps) 
   const [currentPage, setCurrentPage] = useState(1);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
-  const canViewAuditTrail = hasAdministrativeAccess(role);
+  const canViewAuditTrail = uiCan(role, 'audit.view');
 
   const loadLogs = useCallback(async (isRefresh = false) => {
     if (!canViewAuditTrail) {
@@ -157,6 +158,7 @@ export default function AuditTrailDashboard({ role }: AuditTrailDashboardProps) 
   };
 
   const performExport = () => {
+    if (!uiCan(role, 'audit.export')) return;
     setIsExportModalOpen(false);
     const headers = ['Timestamp', 'Actor', 'Actor email', 'Role', 'Action', 'Resource', 'Resource ID', 'Resource identifier', 'Details'];
     const rows = filteredLogs.map(log => [
@@ -280,7 +282,7 @@ export default function AuditTrailDashboard({ role }: AuditTrailDashboardProps) 
           <label className="relative lg:col-span-2"><CalendarDays className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input aria-label="End date" type="date" value={endDate} onChange={event => { setEndDate(event.target.value); setCurrentPage(1); }} className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-2 text-sm text-slate-700 outline-none focus:border-teal-500" /></label>
         </div>
         <div className="mt-4 flex justify-end">
-          <button type="button" onClick={() => setIsExportModalOpen(true)} disabled={filteredLogs.length === 0} className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"><Download className="h-4 w-4" /> Export filtered CSV</button>
+          <button type="button" onClick={() => setIsExportModalOpen(true)} disabled={!uiCan(role, 'audit.export') || filteredLogs.length === 0} className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"><Download className="h-4 w-4" /> Export filtered CSV</button>
         </div>
       </section>
 

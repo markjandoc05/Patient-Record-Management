@@ -1,7 +1,14 @@
+import { activeAccount, hasCapability, type PermissionId } from './src/permissions';
+import { assertCapability, currentActor } from './backend/permissions';
+import { redactClinicalData, protectClinicalWrite, clinicalWriteFields } from './backend/clinicalRedaction';
+import { mountAccessApi } from './backend/accessApi';
 import { applyVisitServiceSelection } from './backend/visitServices';
 import { isVisitClinicallySealed } from './src/utils/visitServicePolicy';
 import { AppointmentServiceError, parseAppointmentServiceSelection, appointmentServiceSnapshot } from './backend/appointmentServices';
 import { mountServices } from './backend/services';
+import { parseEmergencyContact } from './src/utils/emergencyContact';
+import { parseClinicalFindings } from './src/utils/clinicalFindings';
+import { parsePatientBirth } from './src/utils/patientBirth';
 import express from "express";
 import { mountHttpSecurity } from "./backend/httpSecurity";
 import path from "path";
@@ -14,6 +21,7 @@ import { mountInventory } from "./backend/inventory";
 import { mountDataApi } from "./backend/dataApi";
 import { assertAppointmentRead } from "./backend/appointmentReadAccess";
 import { assertDevelopmentRole } from "./backend/developmentAccess";
+import { activationIssues } from "./src/utils/userActivation";
 import multer from "multer";
 import { createHash, randomUUID } from "crypto";
 import { readFile } from "fs/promises";
@@ -54,6 +62,7 @@ const uploadSingleFile: express.RequestHandler = async (req, res, next) => {
 mountAuth(app);
 mountMaintenanceGate(app);
 mountDataApi(app);
+mountAccessApi(app);
 mountInventory(app);
 mountServices(app);
 app.get("/api/health", async (_req, res) => {
@@ -217,8 +226,9 @@ function canAccessBranch(userProfile: Record<string, any>, branchId: unknown) {
 }
 
 function canWriteAttachments(userProfile: Record<string, any>, resourceType: ResourceType) {
-    return typeof userProfile.role === 'string'
-        && attachmentWriteRoles[resourceType].includes(userProfile.role);
+    return hasCapability(userProfile, 'clinical.view')
+        && hasCapability(userProfile, `${resourceCollections[resourceType]}.view` as PermissionId)
+        && hasCapability(userProfile, `${resourceCollections[resourceType]}.attachments.manage` as PermissionId);
 }
 
 async function authorizeAttachmentResource(
@@ -228,6 +238,7 @@ async function authorizeAttachmentResource(
     resourceId: string,
     requireWrite: boolean
 ) {
+    if (!hasCapability(userProfile, 'clinical.view') || !hasCapability(userProfile, `${resourceCollections[resourceType]}.view` as PermissionId)) return null;
     if (requireWrite && !canWriteAttachments(userProfile, resourceType)) return null;
 
     const patientRef = db.collection('patients').doc(patientId);
@@ -322,7 +333,8 @@ const patientStatuses = new Set(['Active', 'Ongoing Treatment', 'Completed', 'In
 const visitTypes = new Set(['Initial Consultation', 'Follow-up', 'Treatment Session', 'Assessment']);
 const demographicPatientFields = new Set([
     'name', 'contactNumber', 'email', 'birthday', 'gender', 'address', 'emergencyContact',
-    'expectedLastUpdatedAt'
+    'emergencyContactName', 'emergencyContactRelationship', 'emergencyContactNumber',
+    'birthDateStatus', 'estimatedAge', 'estimatedAgeAsOf', 'estimatedBirthYear', 'expectedLastUpdatedAt'
 ]);
 const operationalPatientFields = new Set([
     ...demographicPatientFields, 'homeBranchId', 'status'
@@ -376,7 +388,7 @@ function patientIdentityKey(patient: Record<string, any>) {
     const normalizedContact = String(patient.contactNumber || '').replace(/\D/g, '')
         || String(patient.contactNumber || '').trim().toLowerCase();
     const normalizedEmail = String(patient.email || '').trim().toLowerCase();
-    const birthday = String(patient.birthday || '');
+    const birthday = patient.birthday ? String(patient.birthday) : JSON.stringify([patient.birthDateStatus || 'unknown', patient.estimatedAge ?? null, patient.estimatedAgeAsOf || '', patient.estimatedBirthYear ?? null]);
     return createHash('sha256')
         .update([normalizedName, normalizedContact, normalizedEmail, birthday].join('\u001f'))
         .digest('hex');
@@ -392,10 +404,27 @@ function trustedUserName(authorization: { decodedToken: SessionIdentity, userPro
         : authorization.decodedToken.email || 'Unknown User';
 }
 
-function requireRole(userProfile: Record<string, any>, allowedRoles: readonly string[]) {
-    if (typeof userProfile.role !== 'string' || !allowedRoles.includes(userProfile.role)) {
-        throw new RequestError(403, 'Insufficient permissions');
+function capabilityForRoles(allowedRoles: readonly string[]): PermissionId | undefined {
+    for (const [resource, prefix] of [['Patient', 'patients'], ['Appointment', 'appointments'], ['Visit', 'visits']] as const) {
+        for (const [action, verb] of [['CREATE', 'create'], ['UPDATE', 'edit'], ['DELETE', 'archive'], ['VIEW', 'view']] as const) {
+            if (auditActionRoles[resource][action] === allowedRoles) return `${prefix}.${verb}` as PermissionId;
+        }
     }
+}
+function requireRole(userProfile: Record<string, any>, allowedRoles: readonly string[]) {
+    const permission = capabilityForRoles(allowedRoles);
+    if (permission) { assertCapability(userProfile, permission); return; }
+    if (!activeAccount(userProfile) || !allowedRoles.includes(userProfile.role)) throw new RequestError(403, 'Insufficient permissions');
+}
+function requestPermission(req: express.Request): PermissionId | undefined {
+    if (req.path === '/api/patients') return 'patients.view';
+    const record = /^\/api\/records\/(patients|appointments|visits)(?:\/[^/]+)?(\/restore)?$/.exec(req.path);
+    if (record) return `${record[1]}.${req.method === 'DELETE' || record[2] ? 'archive' : req.method === 'POST' ? 'create' : 'edit'}` as PermissionId;
+    if (req.path.startsWith('/api/developer/')) return 'developer.access';
+    if (req.path.startsWith('/api/users/')) return 'access.manage';
+    if (req.path === '/api/login-activity') return 'audit.view';
+    if (req.path === '/api/branding/upload') return 'settings.manage';
+    if (req.path.startsWith('/api/attachments')) return 'clinical.view';
 }
 
 async function assertDoctorAvailability(
@@ -436,8 +465,10 @@ async function assertDoctorAvailability(
 }
 
 function sendRecordError(res: express.Response, error: unknown, operation: string) {
+    if (error instanceof Error && error.message === 'Unauthorized') return res.status(401).json({ error: 'Unauthorized' });
     if (error instanceof AppointmentServiceError) return res.status(error.status).json({ error: error.message, code: error.code });
     if (error instanceof RequestError) return res.status(error.status).json({ error: error.message });
+    if (error instanceof Error && (error as any).status === 403) return res.status(403).json({ error: error.message });
     console.error(`${operation} failed`, error);
     return res.status(500).json({ error: `${operation} failed` });
 }
@@ -449,22 +480,31 @@ function requestPayload(req: express.Request) {
     return req.body as Record<string, unknown>;
 }
 
-function parsePatientPayload(payload: Record<string, unknown>): Record<string, any> {
+function parsePatientPayload(payload: Record<string, unknown>, operationalOnly = false): Record<string, any> {
     const data = cleanRecordText(payload, patientTextLimits);
-    requireRecordFields(data, ['name', 'contactNumber', 'email', 'gender', 'address', 'mainConcern']);
+    requireRecordFields(data, ['name', 'contactNumber', 'gender', ...(operationalOnly ? [] : ['mainConcern'])]);
     if (!isValidDocumentId(payload.homeBranchId)) throw new RequestError(400, 'homeBranchId is required');
-    if (!isValidDate(payload.birthday)) throw new RequestError(400, 'Invalid birthday');
+    let birth;
+    try { birth = parsePatientBirth(payload, new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' })); }
+    catch (error: any) { throw new RequestError(400, error.message); }
+    let emergency;
+    try { emergency = parseEmergencyContact(payload); }
+    catch (error: any) { throw new RequestError(400, error.message); }
+    let findings;
+    try { findings = parseClinicalFindings({ ...payload, ...data }); }
+    catch (error: any) { throw new RequestError(400, error.message); }
     if (data.name.length < 2) throw new RequestError(400, 'Patient name is too short');
     const contactDigits = data.contactNumber.replace(/\D/g, '');
     if (contactDigits.length < 7 || contactDigits.length > 15) throw new RequestError(400, 'Invalid contact number');
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) throw new RequestError(400, 'Invalid email address');
+    if (data.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) throw new RequestError(400, 'Invalid email address');
     if (!['Male', 'Female', 'Other'].includes(data.gender)) throw new RequestError(400, 'Invalid gender');
     if (!patientStatuses.has(data.status || 'Active')) throw new RequestError(400, 'Invalid patient status');
     return {
         ...data,
         email: data.email.toLowerCase(),
-        birthday: payload.birthday,
-        age: calculateAge(payload.birthday),
+        ...birth,
+        ...findings,
+        ...emergency,
         status: data.status || 'Active',
         homeBranchId: payload.homeBranchId
     };
@@ -483,16 +523,23 @@ function parseLimitedPatientPayload(
     const allowedFields = role === 'staff' ? demographicPatientFields : operationalPatientFields;
     assertOnlyAllowedPatientFields(payload, allowedFields);
     const mergedPayload = { ...patientData, ...payload };
-    const parsed = parsePatientPayload(mergedPayload);
+    const parsed = parsePatientPayload(mergedPayload, true);
     const result: Record<string, any> = {
         name: parsed.name,
         contactNumber: parsed.contactNumber,
         email: parsed.email,
         birthday: parsed.birthday,
         age: parsed.age,
+        birthDateStatus: parsed.birthDateStatus,
+        estimatedAge: parsed.estimatedAge,
+        estimatedAgeAsOf: parsed.estimatedAgeAsOf,
+        estimatedBirthYear: parsed.estimatedBirthYear,
         gender: parsed.gender,
         address: parsed.address,
-        emergencyContact: parsed.emergencyContact
+        emergencyContact: parsed.emergencyContact,
+        emergencyContactName: parsed.emergencyContactName,
+        emergencyContactRelationship: parsed.emergencyContactRelationship,
+        emergencyContactNumber: parsed.emergencyContactNumber
     };
     if (role === 'manager') {
         result.homeBranchId = parsed.homeBranchId;
@@ -602,15 +649,17 @@ function parseVisitPayload(payload: Record<string, unknown>, previous?: Record<s
 }
 
 async function refreshSupportAuthorization(transaction: RecordTransaction, authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> }) {
-    if (authorization.userProfile.role !== SUPPORT_DEVELOPER) return;
-    const profile = (await transaction.get(db.collection('users').doc(authorization.decodedToken.uid))).data();
-    assertDevelopmentRole(profile?.role);
-    if (profile?.active !== true || profile.role !== SUPPORT_DEVELOPER) throw new RequestError(403, 'Account scope changed');
+    const request = (authorization as any).request as express.Request;
+    const { identity, profile } = await currentActor(request, transaction);
+    if (identity.uid !== authorization.decodedToken.uid || authorization.userProfile.role === SUPPORT_DEVELOPER && profile.role !== SUPPORT_DEVELOPER) throw new RequestError(403, 'Account scope changed');
+    const permission = requestPermission(request);
+    if (permission) assertCapability(profile, permission);
     authorization.userProfile = profile;
 }
 
 async function refreshAppointmentAuthorization(transaction: RecordTransaction, authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> }, permission: 'CREATE' | 'UPDATE') {
-    const profile = (await transaction.get(db.collection('users').doc(authorization.decodedToken.uid))).data();
+    await refreshSupportAuthorization(transaction, authorization);
+    const profile = authorization.userProfile;
     assertDevelopmentRole(profile?.role);
     if (profile?.active !== true) throw new RequestError(403, 'Account scope changed');
     requireRole(profile, auditActionRoles.Appointment[permission]);
@@ -618,10 +667,13 @@ async function refreshAppointmentAuthorization(transaction: RecordTransaction, a
 }
 
 async function refreshVisitAuthorization(transaction: RecordTransaction, authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> }, permission: 'CREATE' | 'UPDATE', doctorId: string) {
-    const profile = (await transaction.get(db.collection('users').doc(authorization.decodedToken.uid))).data();
+    await refreshSupportAuthorization(transaction, authorization);
+    const profile = authorization.userProfile;
     assertDevelopmentRole(profile?.role);
     if (profile?.active !== true) throw new RequestError(403, 'Account scope changed');
     requireRole(profile, auditActionRoles.Visit[permission]);
+    assertCapability(profile, 'clinical.view');
+    assertCapability(profile, 'clinical.edit_draft');
     if (profile.role === 'doctor' && doctorId !== authorization.decodedToken.uid) throw new RequestError(403, 'Doctors can only write their own visit records');
     authorization.userProfile = profile;
 }
@@ -772,7 +824,7 @@ async function authorizeAuditResource(
     }
 
     if (action === 'AUTH' || !auditActionRoles[resource].hasOwnProperty(action)
-        || !auditActionRoles[resource][action as Exclude<AuditAction, 'AUTH'>].includes(role)) {
+        || !hasCapability(authorization.userProfile, capabilityForRoles(auditActionRoles[resource][action as Exclude<AuditAction, 'AUTH'>])!)) {
         return null;
     }
 
@@ -818,18 +870,20 @@ async function authorizeRequest(
         const userSnapshot = await db.collection("users").doc(decodedToken.uid).get();
         const userProfile = userSnapshot.data();
 
-        if (!userSnapshot.exists || userProfile?.active !== true) {
+        if (!userSnapshot.exists || !activeAccount(userProfile)) {
             res.status(403).json({ error: "Account is not approved or active" });
             return null;
         }
 
         assertDevelopmentRole(userProfile.role);
-        if (typeof userProfile.role !== 'string' || !allowedRoles.includes(userProfile.role)) {
+        const permission = requestPermission(req);
+        if (permission) assertCapability(userProfile, permission);
+        if (!permission && (typeof userProfile.role !== 'string' || !allowedRoles.includes(userProfile.role))) {
             res.status(403).json({ error: "Insufficient permissions" });
             return null;
         }
 
-        return { decodedToken, userProfile };
+        return { decodedToken, userProfile, request: req };
     } catch (error) {
         console.error("Request authentication failed", error);
         res.status((error as any)?.status || 401).json({ error: (error as any)?.status ? (error as Error).message : "Unauthorized" });
@@ -1045,8 +1099,10 @@ async function getManagedUser(
 ) {
     if (!isValidDocumentId(userId)) throw new RequestError(400, 'Invalid user ID');
     if (transaction) {
-        const actor = (await transaction.get(db.collection('users').doc(authorization.decodedToken.uid))).data();
-        if (!actor?.active || !administrativeRoles.includes(actor.role)) throw new RequestError(403, 'Account is not approved or authorized');
+        await refreshSupportAuthorization(transaction, authorization);
+        const actor = authorization.userProfile;
+        assertCapability(actor, 'access.manage');
+        assertCapability(actor, 'users.manage');
         assertDevelopmentRole(actor.role);
         authorization = { ...authorization, userProfile: actor };
     }
@@ -1060,14 +1116,19 @@ async function getManagedUser(
 
 async function validateUserActivationTarget(targetProfile: Record<string, any>, userId: string, transaction: RecordTransaction) {
     const role = targetProfile.role;
-    if (typeof role !== 'string' || !applicationRoles.includes(role as Role)) throw new RequestError(400, 'Assign a valid role before activating this user');
     assertDevelopmentRole(role);
-    if (role === SUPPORT_DEVELOPER && !(await transaction.sql('SELECT 1 FROM auth_identities WHERE user_id = $1', [userId])).rows.length) throw new RequestError(400, 'Sign in with a dedicated Google test identity before activation');
-    if (globalBranchRoles.has(role)) return;
+    if (role === SUPPORT_DEVELOPER) {
+        const identity = await transaction.sql('SELECT 1 FROM auth_identities WHERE user_id = $1', [userId]);
+        if (!identity.rows.length) throw new RequestError(400, 'Sign in with a dedicated Google test identity before activation');
+    }
     const branchIds = getAssignedBranchIds(targetProfile);
-    if (branchIds.length === 0) throw new RequestError(400, 'Assign at least one active clinic before activating this user');
-    const branches = await Promise.all(branchIds.map(branchId => transaction.get(db.collection('branches').doc(branchId))));
-    if (branches.some(branch => !branch.exists || branch.data()?.status !== 'Active')) throw new RequestError(400, 'All assigned clinics must be active before activating this user');
+    const branches = [];
+    for (const id of branchIds) {
+        const branch = await transaction.get(db.collection('branches').doc(id));
+        if (branch.exists) branches.push({ ...branch.data(), id });
+    }
+    const issues = activationIssues(targetProfile, branches);
+    if (issues.length) throw new RequestError(400, issues[0]);
 }
 
 // User archive/delete operations intentionally never touch clinical records or
@@ -1304,6 +1365,7 @@ app.post('/api/developer/maintenance', async (req, res) => {
         }
         const brandingRef = db.collection('settings').doc('branding');
         await db.runTransaction(async transaction => {
+            await refreshSupportAuthorization(transaction, authorization);
             transaction.set(brandingRef, { maintenanceMode: payload.maintenanceMode }, { merge: true });
             stageAuditLog(transaction, {
                 authorization,
@@ -1460,6 +1522,8 @@ app.post("/api/attachments/upload", uploadSingleFile, async (req, res) => {
         });
 
         await db.runTransaction(async transaction => {
+            await refreshSupportAuthorization(transaction, authorization);
+            if (!canWriteAttachments(authorization.userProfile, typedResource)) throw new RequestError(403, 'Attachment access changed');
             const snapshot = await transaction.get(context.resourceRef);
             if (!snapshot.exists) throw new Error('Attachment resource no longer exists');
             const data = snapshot.data() || {};
@@ -1486,7 +1550,7 @@ app.post("/api/attachments/upload", uploadSingleFile, async (req, res) => {
     } catch (error: any) {
         if (storedFile) await storedFile.delete({ ignoreNotFound: true }).catch(() => undefined);
         console.error("Attachment upload failed", error);
-        res.status(error instanceof RequestError ? error.status : 500).json({
+        res.status(error.status || (error instanceof RequestError ? error.status : 500)).json({
             error: error instanceof RequestError ? error.message : "Attachment upload failed"
         });
     }
@@ -1562,6 +1626,8 @@ app.delete("/api/attachments", async (req, res) => {
 
     try {
         await db.runTransaction(async transaction => {
+            await refreshSupportAuthorization(transaction, authorization);
+            if (!canWriteAttachments(authorization.userProfile, parsed.resourceType)) throw new RequestError(403, 'Attachment access changed');
             const snapshot = await transaction.get(context.resourceRef);
             if (!snapshot.exists) throw new Error('Attachment resource no longer exists');
             const data = snapshot.data() || {};
@@ -1591,7 +1657,7 @@ app.delete("/api/attachments", async (req, res) => {
         res.status(204).send();
     } catch (error) {
         console.error("Attachment deletion failed", error);
-        res.status(500).json({ error: "Attachment deletion failed" });
+        res.status((error as any)?.status || 500).json({ error: (error as any)?.status ? (error as Error).message : 'Attachment deletion failed' });
     }
 });
 
@@ -1601,7 +1667,7 @@ app.post("/api/records/patients", async (req, res) => {
 
     try {
         requireRole(authorization.userProfile, auditActionRoles.Patient.CREATE);
-        const patient = parsePatientPayload(requestPayload(req));
+        const patient = parsePatientPayload(requestPayload(req), !hasCapability(authorization.userProfile, 'clinical.view'));
         const branchSnapshot = await db.collection('branches').doc(patient.homeBranchId).get();
         const branchData = branchSnapshot.data() || {};
         if (!branchSnapshot.exists || branchData.status !== 'Active') throw new RequestError(400, 'Branch is not active');
@@ -1612,7 +1678,7 @@ app.post("/api/records/patients", async (req, res) => {
             const data = document.data();
             return String(data.name || '').trim().toLowerCase() === patient.name.toLowerCase()
                 && String(data.contactNumber || '').trim() === patient.contactNumber
-                && data.birthday === patient.birthday;
+                && patientIdentityKey(data) === patientIdentityKey(patient);
         });
         if (duplicate) throw new RequestError(409, 'A patient with these details already exists');
 
@@ -1636,6 +1702,9 @@ app.post("/api/records/patients", async (req, res) => {
         let patientID = '';
 
         await db.runTransaction(async transaction => {
+            await refreshSupportAuthorization(transaction, authorization);
+            if (!canAccessBranch(authorization.userProfile, patient.homeBranchId)) throw new RequestError(403, 'Branch access denied');
+            protectClinicalWrite(authorization.userProfile, patient, {}, false);
             const [counterSnapshot, latestBranchSnapshot, identitySnapshot] = await Promise.all([
                 transaction.get(counterRef),
                 transaction.get(db.collection('branches').doc(patient.homeBranchId)),
@@ -1697,22 +1766,34 @@ app.patch("/api/records/patients/:patientId", async (req, res) => {
         const expectedLastUpdatedAt = typeof payload.expectedLastUpdatedAt === 'string'
             ? payload.expectedLastUpdatedAt
             : null;
-        const role = authorization.userProfile.role as string;
-        const fullUpdates = role === 'staff' || role === 'manager' ? null : parsePatientPayload(payload);
+
         const patientRef = db.collection('patients').doc(req.params.patientId);
         const now = new Date().toISOString();
         const actorName = trustedUserName(authorization);
 
         await db.runTransaction(async transaction => {
+            await refreshSupportAuthorization(transaction, authorization);
+            const role = authorization.userProfile.role as string;
+            const fullUpdates = role === 'staff' || role === 'manager' ? null : parsePatientPayload(payload, !hasCapability(authorization.userProfile, 'clinical.view') || !hasCapability(authorization.userProfile, 'clinical.edit_draft'));
             const patientSnapshot = await transaction.get(patientRef);
             if (!patientSnapshot.exists) throw new RequestError(404, 'Patient not found');
             const patientData = patientSnapshot.data() || {};
             if (patientData.isArchived === true) throw new RequestError(409, 'Archived patients must be restored before editing');
-            const updates = fullUpdates || parseLimitedPatientPayload(
+            const updates = fullUpdates ? { ...fullUpdates } : parseLimitedPatientPayload(
                 payload,
                 patientData,
                 role as 'staff' | 'manager'
             );
+            // Earlier clients do not send structured emergency contacts. Omission
+            // preserves the current values; explicit empty values still clear them.
+            if (fullUpdates) {
+                for (const field of ['emergencyContactName', 'emergencyContactRelationship', 'emergencyContactNumber']) {
+                    if (!Object.prototype.hasOwnProperty.call(payload, field)) {
+                        delete updates[field];
+                    }
+                }
+            }
+            protectClinicalWrite(authorization.userProfile, updates, patientData);
             const targetPatientData = { ...patientData, ...updates };
             const branchRef = db.collection('branches').doc(targetPatientData.homeBranchId);
             const branchSnapshot = await transaction.get(branchRef);
@@ -1794,6 +1875,8 @@ app.post("/api/records/appointments", async (req, res) => {
 
         await db.runTransaction(async transaction => {
             await refreshAppointmentAuthorization(transaction, authorization, 'CREATE');
+            protectClinicalWrite(authorization.userProfile, appointment, {}, false);
+            if (selection) assertCapability(authorization.userProfile, 'services.view');
             const context = await transactionRecordContext(
                 transaction,
                 authorization,
@@ -1836,7 +1919,7 @@ app.patch("/api/records/appointments/:appointmentId", async (req, res) => {
         requireRole(authorization.userProfile, auditActionRoles.Appointment.UPDATE);
         if (!isValidDocumentId(req.params.appointmentId)) throw new RequestError(400, 'Invalid appointment ID');
         const payload = requestPayload(req);
-        const updates = parseAppointmentPayload(payload);
+
         const selection = parseAppointmentServiceSelection(payload);
         const appointmentRef = db.collection('appointments').doc(req.params.appointmentId);
         const now = new Date().toISOString();
@@ -1847,11 +1930,20 @@ app.patch("/api/records/appointments/:appointmentId", async (req, res) => {
             const appointmentSnapshot = await transaction.get(appointmentRef);
             if (!appointmentSnapshot.exists) throw new RequestError(404, 'Appointment not found');
             const appointmentData = appointmentSnapshot.data() || {};
+            const permittedPayload = { ...payload };
+            protectClinicalWrite(authorization.userProfile, permittedPayload, appointmentData, false);
+            const retainedClinical = hasCapability(authorization.userProfile, 'clinical.view') ? {} : Object.fromEntries([...clinicalWriteFields].filter(field => Object.hasOwn(appointmentData, field)).map(field => [field, appointmentData[field]]));
+            const updates = parseAppointmentPayload({ ...retainedClinical, ...permittedPayload });
             if (appointmentData.isArchived === true) throw new RequestError(409, 'Archived appointments must be restored before editing');
             if (!canAccessBranch(authorization.userProfile, appointmentData.branchId)) {
                 throw new RequestError(403, 'Branch access denied');
             }
             if (appointmentData.visitHistoryCreated === true) throw new RequestError(409, 'Appointment is sealed by a visit record');
+            protectClinicalWrite(authorization.userProfile, updates, appointmentData, false);
+            if (!hasCapability(authorization.userProfile, 'clinical.view')) {
+                updates.mainConcern = appointmentData.mainConcern || ''; updates.notes = appointmentData.notes || '';
+            }
+            if (selection) assertCapability(authorization.userProfile, 'services.view');
             if (authorization.userProfile.role === 'staff') {
                 if (updates.status === 'Completed') {
                     throw new RequestError(403, 'Only clinical or administrative roles can complete appointments');
@@ -1925,6 +2017,7 @@ app.post("/api/records/visits", async (req, res) => {
 
         await db.runTransaction(async transaction => {
             await refreshVisitAuthorization(transaction, authorization, 'CREATE', visit.doctorId);
+            if (selection) assertCapability(authorization.userProfile, 'services.view');
             const context = await transactionRecordContext(
                 transaction,
                 authorization,
@@ -2039,6 +2132,7 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
 
         await db.runTransaction(async transaction => {
             await refreshVisitAuthorization(transaction, authorization, 'UPDATE', String(payload.doctorId || ''));
+            if (selection) assertCapability(authorization.userProfile, 'services.view');
             const visitSnapshot = await transaction.get(visitRef);
             if (!visitSnapshot.exists) throw new RequestError(404, 'Visit not found');
             const visitData = visitSnapshot.data() || {};
@@ -2160,6 +2254,7 @@ app.delete("/api/records/:kind/:recordId", async (req, res) => {
             const recordSnapshot = await transaction.get(recordRef);
             if (!recordSnapshot.exists) throw new RequestError(404, `${config.resource} not found`);
             const recordData = recordSnapshot.data() || {};
+            if (!canAccessBranch(authorization.userProfile, recordData[config.branchField])) throw new RequestError(403, 'Branch access denied');
             if (recordData.isArchived === true) throw new RequestError(409, `${config.resource} is already archived`);
 
             if (req.params.kind === 'patients') {
@@ -2237,6 +2332,7 @@ app.post("/api/records/:kind/:recordId/restore", async (req, res) => {
             const recordSnapshot = await transaction.get(recordRef);
             if (!recordSnapshot.exists) throw new RequestError(404, `${config.resource} not found`);
             const recordData = recordSnapshot.data() || {};
+            if (!canAccessBranch(authorization.userProfile, recordData[config.branchField])) throw new RequestError(403, 'Branch access denied');
             if (recordData.isArchived !== true) throw new RequestError(409, `${config.resource} is not archived`);
 
             if (req.params.kind === 'appointments') {
@@ -2305,16 +2401,16 @@ app.get("/api/patients", async (req, res) => {
 
     try {
         console.log("Fetching patients");
-        const snapshot = authorization.userProfile.role === SUPPORT_DEVELOPER
-            ? await db.runTransaction(async transaction => {
-                await refreshSupportAuthorization(transaction, authorization);
-                return transaction.get(db.collection('patients'));
-            }) : await db.collection("patients").get();
+        const snapshot = await db.runTransaction(async transaction => {
+            await refreshSupportAuthorization(transaction, authorization);
+            return transaction.get(db.collection('patients'));
+        });
         const patients = snapshot.docs
             .map(doc => ({ id: doc.id, ...doc.data() }) as Record<string, any> & { id: string })
             .filter(patient => patient.isArchived !== true);
 
-        res.json(patients);
+        res.setHeader('Cache-Control', 'no-store');
+        res.json(patients.map(patient => redactClinicalData('patients', patient, authorization.userProfile)));
     } catch (error) {
         return sendRecordError(res, error, 'Patient directory');
     }

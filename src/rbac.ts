@@ -74,3 +74,4 @@ export const canEditPatient = (role: Role): boolean => getPatientEditScope(role)
 // Both support identifiers now expose the full existing feature set. Server-side
 // authorization keeps SUPPORT_DEVELOPER limited to isolated development.
 export function canAccessView(_role: string | null, _view: string): boolean { return true; }
+export const canReadPatientClinicalData = (role?: string) => !!role;

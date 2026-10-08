@@ -180,7 +180,7 @@ try {
   check((await request(`/api/records/appointments/${created.id}/restore`, {}, 'admin')).status === 200, 'Administrator restore still allowed');
 
   // Same session observes assignment changes on the next request/poll.
-  check((await request('/api/data/write', { operations: [{ path: 'users/staff', mode: 'update', data: { assignedBranches: ['B'] } }] }, 'admin')).status === 200, 'Existing admin assignment update succeeds');
+  check((await request('/api/users/staff/access', { expectedAccessRevision: 0, assignedBranches: ['B'] }, 'admin', 'PATCH')).status === 200, 'Existing admin assignment update succeeds');
   await expectList([], [appointmentB]); check((await direct(appointmentA)).status === 403, 'Removed assignment no longer reads old branch');
   check((await direct(appointmentB)).status === 200, 'New assignment reads new branch');
   await db.collection('users').doc('staff').update({ assignedBranches: [] });

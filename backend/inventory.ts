@@ -1,3 +1,4 @@
+import { currentActor, assertCapability } from './permissions';
 import type express from 'express';
 import { db } from './database';
 import { sessionIdentity } from './auth';
@@ -9,16 +10,18 @@ export function mountInventory(app: express.Express) {
       try {
         const identity = await sessionIdentity(req);
         const result = await db.runTransaction(async tx => {
-          const profile = (await tx.get(db.collection('users').doc(identity.uid))).data();
-          assertDevelopmentRole(profile?.role);
-          if (!profile?.active || !hasAdministrativeAccess(profile.role)) throw Object.assign(new Error('Insufficient permissions'), { status: 403 });
+          const { profile } = await currentActor(req, tx);
+          assertCapability(profile, 'inventory.transfer');
           const ref = db.collection('stock_transfers').doc(action === 'complete' ? String(req.body.id) : undefined);
           const existing = action === 'complete' ? (await tx.get(ref)).data() : undefined;
           if (action === 'complete' && !existing) throw new Error('Transfer not found');
-          if (existing?.status === 'completed') return { id: ref.id, alreadyCompleted: true };
-          if (existing && existing.status !== 'pending') throw new Error('Transfer is not pending');
+
           const transfer = existing || req.body;
           const { itemId, fromBranchId, toBranchId, quantity } = transfer;
+          assertCapability(profile, 'inventory.transfer', { branchId: fromBranchId });
+          assertCapability(profile, 'inventory.transfer', { branchId: toBranchId });
+          if (existing?.status === 'completed') return { id: ref.id, alreadyCompleted: true };
+          if (existing && existing.status !== 'pending') throw new Error('Transfer is not pending');
           if (![itemId, fromBranchId, toBranchId].every(id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id)) || fromBranchId === toBranchId || !Number.isFinite(quantity) || quantity <= 0) throw new Error('Invalid transfer');
           if (!(await tx.get(db.collection('inventory_items').doc(itemId))).exists) throw new Error('Item not found');
           for (const branchId of [fromBranchId, toBranchId]) {

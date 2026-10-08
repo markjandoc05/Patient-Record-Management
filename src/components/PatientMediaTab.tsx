@@ -29,12 +29,13 @@ const formatDate = (dateString: string) => {
         Promise.all(attachments.filter(file => file?.storagePath && isImageAttachment(file)).map(async file => {
             try {
                 const blob = await fetchAttachmentBlob(file.storagePath);
+                if (!active) return null;
                 const objectUrl = URL.createObjectURL(blob);
                 createdUrls.push(objectUrl);
                 return [file.storagePath, objectUrl] as const;
             } catch (error) {
                 console.error('Failed to load protected media preview:', error);
-                setFailedLoadFiles(previous => new Set(previous).add(file.id));
+                if (active) setFailedLoadFiles(previous => new Set(previous).add(file.id));
                 return null;
             }
         })).then(entries => {

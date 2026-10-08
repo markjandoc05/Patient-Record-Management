@@ -1,3 +1,4 @@
+import { captureProtectedRequestScope, protectedFetch } from '../dataClient';
 import { auth } from '../platform';
 import { invalidateProtectedData } from '../dataClient';
 
@@ -13,17 +14,20 @@ async function recordRequest(
   action?: 'restore',
   scope?: RecordRequestScope
 ) {
+  const lifetime = captureProtectedRequestScope();
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Please sign in again before saving this record.');
   const assertCurrent = () => {
+    lifetime();
     if (!scope) return;
     scope.signal.throwIfAborted();
     if (!scope.current() || auth.currentUser?.uid !== currentUser.uid) throw new DOMException('Protected record request is no longer current.', 'AbortError');
   };
   const token = await currentUser.getRequestToken();
+  lifetime();
   assertCurrent();
   const path = `/api/records/${kind}${recordId ? `/${encodeURIComponent(recordId)}` : ''}${action ? `/${action}` : ''}`;
-  const response = await fetch(path, {
+  const response = await protectedFetch(path, {
     method,
     signal: scope?.signal,
     headers: {
@@ -34,6 +38,7 @@ async function recordRequest(
   });
   const body = await response.json().catch(() => null);
   assertCurrent();
+  lifetime();
   if (!response.ok) {
     const error = Object.assign(new Error(body?.error || `Failed to save ${kind.slice(0, -1)} record.`), { status: response.status, code: body?.code });
     if (response.status === 401 || response.status === 403) invalidateProtectedData(error);

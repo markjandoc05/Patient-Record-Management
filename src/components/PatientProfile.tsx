@@ -1,3 +1,6 @@
+import { uiCan } from '../permissionState';
+import { clinicalFindingLabel } from '../utils/clinicalFindings';
+import { birthMode, patientBirthLabel } from '../utils/patientBirth';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
@@ -66,7 +69,8 @@ export default function PatientProfile({
   appointments: any[];
 }) {
   const [showAddAppointment, setShowAddAppointment] = useState(false);
-  const [activeTab, setActiveTab] = useState<ProfileTab>('visits');
+  const clinicalAccess = uiCan(userRole, 'clinical.view');
+  const [activeTab, setActiveTab] = useState<ProfileTab>(clinicalAccess ? 'visits' : 'appointments');
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -122,7 +126,7 @@ export default function PatientProfile({
     { id: 'appointments', label: 'Appointments', count: patientAppointments.length, icon: CalendarDays },
     { id: 'notes', label: 'Notes', icon: StickyNote },
     { id: 'media', label: 'Media', icon: Images },
-  ];
+  ].filter(tab => clinicalAccess || tab.id === 'appointments') as typeof tabs;
 
   return (
     <>
@@ -186,7 +190,7 @@ export default function PatientProfile({
 
           <div className="flex-1 overflow-y-auto overscroll-contain">
             <main className="space-y-5 p-4 sm:space-y-6 sm:p-6 lg:p-8">
-              <section aria-label="Patient activity summary" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+              {clinicalAccess && <section aria-label="Patient activity summary" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
                 {summary.map(item => {
                   const Icon = item.icon;
                   return (
@@ -202,7 +206,7 @@ export default function PatientProfile({
                     </div>
                   );
                 })}
-              </section>
+              </section>}
 
               <div className="grid gap-5 xl:grid-cols-2">
                 <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
@@ -210,10 +214,13 @@ export default function PatientProfile({
                   <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <DetailItem label="Mobile number" value={patient.contactNumber} />
                     <DetailItem label="Email address" value={patient.email} />
-                    <DetailItem label="Date of birth" value={patient.birthday ? formatDateTime(patient.birthday) : null} />
-                    <DetailItem label="Age / Gender" value={[patient.age, patient.gender].filter(value => value !== null && value !== undefined && value !== '').join(' • ')} />
+                    <DetailItem label="Date of birth" value={patientBirthLabel(patient)} />
+                    <DetailItem label="Age / Gender" value={[birthMode(patient) === 'exact' ? patient.age : null, patient.gender].filter(value => value !== null && value !== undefined && value !== '').join(' • ')} />
                     <DetailItem label="Address" value={patient.address} className="sm:col-span-2" />
-                    <DetailItem label="Emergency contact" value={patient.emergencyContact} className="sm:col-span-2" />
+                    <DetailItem label="Emergency contact name" value={patient.emergencyContactName} />
+                    <DetailItem label="Relationship" value={patient.emergencyContactRelationship} />
+                    <DetailItem label="Emergency contact number" value={patient.emergencyContactNumber} />
+                    {patient.emergencyContact && <DetailItem label="Previous emergency contact" value={patient.emergencyContact} className="sm:col-span-2" />}
                   </dl>
                 </section>
 
@@ -241,7 +248,7 @@ export default function PatientProfile({
                 </section>
               </div>
 
-              <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+              {clinicalAccess && <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
                 <SectionHeading title="Medical overview" description="High-level clinical information available to authorized clinic users." />
                 <div className="rounded-2xl border border-teal-100 bg-teal-50/70 p-4">
                   <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-teal-700">Main concern</p>
@@ -250,12 +257,12 @@ export default function PatientProfile({
                   </p>
                 </div>
                 <dl className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <DetailItem label="Skin type" value={patient.skinType} />
-                  <DetailItem label="Allergies" value={patient.allergies} />
-                  <DetailItem label="Current medications" value={patient.medications} />
-                  <DetailItem label="Medical conditions" value={patient.medicalConditions} />
+                  <DetailItem label="Skin type" value={patient.skinType || 'Not assessed'} />
+                  <DetailItem label="Allergies" value={clinicalFindingLabel(patient, 'allergies')} />
+                  <DetailItem label="Current medications" value={clinicalFindingLabel(patient, 'medications')} />
+                  <DetailItem label="Medical conditions" value={clinicalFindingLabel(patient, 'medicalConditions')} />
                 </dl>
-              </section>
+              </section>}
 
               <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                 <div className="border-b border-slate-200 p-3 sm:p-4">

@@ -1,3 +1,5 @@
+import { currentPermissionProfile } from '../permissionState';
+import { hasCapability } from '../permissions';
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { servicesRequest } from '../utils/servicesApi';
 import { priceLabel } from '../servicesPolicy';
@@ -26,6 +28,8 @@ export default function AppointmentServicePicker({ branchId, readOnly, recorded,
   onChange: (choice: AppointmentServiceChoice) => void; onReviewRequired: () => void;
   unresolved: boolean; error?: string; fieldId?: string; label?: string;
 }) {
+  const principal = currentPermissionProfile();
+  readOnly = readOnly || !!principal && !hasCapability(principal, 'services.view');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [retry, setRetry] = useState(0);
