@@ -106,7 +106,7 @@ class Fixture {
   button(label:string){const node=find(this.renderer.tree,(n:any)=>n.type==='button'&&text(n).trim()===label);assert.ok(node,'missing '+label);return node;}
   latestGet(){return this.requests.filter(r=>r.init.method==='GET').at(-1)!;}
   latestSave(){return this.requests.filter(r=>r.init.method==='PATCH'||r.init.method==='POST').at(-1)!;}
-  async loaded(rows=[service(),service('free','free'),service('unpriced','unpriced')],total=rows.length){this.latestGet().deliver({services:rows,total});await this.settle();}
+  async loaded(rows=[service(),service('free','free'),service('unpriced','unpriced')],total=rows.length){this.requests.filter(r=>r.init.method==='GET'&&r.url.startsWith('/api/services?')).at(-1)!.deliver({services:rows,total});await this.settle();}
   async select(id='priced'){this.node('visit-service').props.onChange({target:{value:id}});await this.settle();}
   async branch(id='B'){this.node('visit-branch').props.onChange({target:{value:id}});this.render();await this.settle();}
   async save(){find(this.renderer.tree,(n:any)=>n.type==='form').props.onSubmit({preventDefault(){}});await this.settle();}
@@ -231,6 +231,7 @@ try {
     const original = f.props.visit; f.props.visit = undefined; f.props.defaultBranchId = 'A';
     if (linked) f.props.appointment = { ...original, id: 'booking', appointmentDate: original.visitDate };
     await f.start(); await f.loaded();
+    assert.ok(!find(f.renderer.tree, (n: any) => n.props?.id === 'visit-legacy-service'));
     if (!linked) {
       f.node('visit-patient').props.onChange({ target: { value: 'Synthetic patient' } }); await f.settle();
       find(f.renderer.tree, (n: any) => n.type === 'button' && text(n).includes('Synthetic patient')).props.onClick();
@@ -243,7 +244,9 @@ try {
     assert.ok(text(f.renderer.tree).includes('Your newer Service choice is still unsaved'));
     f.props.visits = [{ ...JSON.parse(old.init.body), id: 'created-visit', status: 'Completed' }];
     if (linked) f.props.appointment = { ...f.props.appointment, visitHistoryCreated: true };
-    f.render(); await f.settle(); await f.save();
+    f.render(); await f.settle();
+    assert.ok(!find(f.renderer.tree, (n: any) => n.props?.id === 'visit-legacy-service'));
+    await f.save();
     assert.equal(f.latestSave().url, '/api/records/visits/created-visit'); assert.equal(f.latestSave().init.method, 'PATCH');
     assert.deepEqual(JSON.parse(f.latestSave().init.body).serviceSelection, { serviceId: 'free', expectedVersion: 1 });
     f.latestSave().deliver({ id: 'created-visit' }); await f.settle(); assert.equal(f.saves, 1); assert.equal(f.closes, 1);
@@ -296,7 +299,102 @@ try {
   for(const status of [401,403])await test(`current targeted review denial ${status} invalidates normally`,async f=>{await f.start();await f.loaded();await f.select();await reload(f);f.latestGet().deliver({error:'Current review denial'},status);await f.settle();assert.equal(globals.servicesTestInvalidations,1);assert.ok(text(f.renderer.tree).includes('Visit access changed'));});
   await test('legacy arbitrary text stays visible and submitted exactly',async f=>{await f.start();await f.loaded([]);assert.equal(f.node('visit-legacy-service').props.value,'  Legacy custom care  ');await f.save();assert.equal(JSON.parse(f.latestSave().init.body).treatmentService,'  Legacy custom care  ');});
   await test('Completed remains editable; explicit finalization blocks even forced submit',async f=>{f.props.visit={...f.props.visit,isFinalized:true,serviceId:'sealed',serviceNameSnapshot:'Signed historical fact'};await f.start();assert.equal(f.requests.length,0);assert.equal(f.button('Save changes').props.disabled,true);assert.ok(text(f.renderer.tree).includes('Signed historical fact'));await f.save();assert.equal(f.requests.length,0);});
-  await test('booked snapshot proposes performed Service; confirmation is mandatory',async f=>{const v=f.props.visit;f.props.visit=undefined;f.props.appointment={...v,id:'booking',appointmentDate:v.visitDate,serviceId:'priced',serviceNameSnapshot:'Booked old name',serviceDurationMinutesSnapshot:30,serviceCatalogueVersion:1};await f.start();await f.loaded();assert.ok(text(f.renderer.tree).includes('Booked Service:')&&text(f.renderer.tree).includes('Booked old name'));assert.equal(f.button('Save visit').props.disabled,true);await f.save();assert.ok(!f.latestSave());await reload(f);f.latestGet().deliver({...service('priced','priced',2),name:'Current performed name'});await f.settle();f.button('Use reviewed Service').props.onClick();await f.settle();assert.equal(f.button('Save visit').props.disabled,false);await f.save();assert.deepEqual(JSON.parse(f.latestSave().init.body).serviceSelection,{serviceId:'priced',expectedVersion:2});assert.equal(f.props.appointment.serviceNameSnapshot,'Booked old name');});
+  const booked = (f: Fixture, id = 'priced') => {
+    const v = f.props.visit; f.props.visit = undefined;
+    f.props.appointment = { ...v, id: 'booking', appointmentDate: v.visitDate, serviceId: id,
+      serviceNameSnapshot: 'Booked old name', serviceDurationMinutesSnapshot: 30, serviceCatalogueVersion: 1 };
+  };
+  for (const mode of ['priced', 'free']) await test(`unchanged booked ${mode} Service is checked and carried automatically`, async f => {
+    booked(f, mode); await f.start(); await f.loaded();
+    assert.equal(f.node('visit-service').props.value, mode);
+    assert.ok(text(f.renderer.tree).includes('Checking booked Service') && !text(f.renderer.tree).includes('This selection needs review'));
+    assert.equal(f.button('Save visit').props.disabled, true); await f.save(); assert.ok(!f.latestSave());
+    assert.equal(f.latestGet().url, `/api/services/${mode}?branchId=A`);
+    f.latestGet().deliver(service(mode, mode)); await f.settle();
+    assert.equal(f.node('visit-service').props.value, mode); assert.equal(f.button('Save visit').props.disabled, false);
+    assert.ok(!text(f.renderer.tree).includes('(needs review)') && !hasButton(f, 'Use reviewed Service'));
+    await f.save(); const payload = JSON.parse(f.latestSave().init.body);
+    assert.deepEqual(payload.serviceSelection, { serviceId: mode, expectedVersion: 1 });
+    for (const field of ['serviceNameSnapshot', 'serviceDurationMinutesSnapshot', 'serviceCatalogueVersion', 'chargedPrice']) assert.ok(!Object.hasOwn(payload, field));
+    assert.equal(f.props.appointment.serviceNameSnapshot, 'Booked old name');
+    f.latestSave().deliver({ id: 'created-visit' }); await f.settle(); assert.equal(f.saves, 1); assert.equal(f.closes, 1);
+  });
+  await test('off-page booked Service verifies through detail rather than list membership', async f => {
+    booked(f, 'off-page'); await f.start(); await f.loaded([]); f.latestGet().deliver(service('off-page')); await f.settle();
+    assert.equal(f.node('visit-service').props.value, 'off-page'); await f.save();
+    assert.deepEqual(JSON.parse(f.latestSave().init.body).serviceSelection, { serviceId: 'off-page', expectedVersion: 1 });
+  });
+  await test('changed booked version still requires confirmation and leaves booking snapshot intact', async f => {
+    booked(f); await f.start(); await f.loaded(); f.latestGet().deliver({ ...service('priced', 'priced', 2), name: 'Current performed name' }); await f.settle();
+    assert.equal(f.button('Save visit').props.disabled, true); assert.ok(text(f.renderer.tree).includes('(needs review)'));
+    await f.save(); assert.ok(!f.latestSave()); f.button('Use reviewed Service').props.onClick(); await f.settle(); await f.save();
+    assert.deepEqual(JSON.parse(f.latestSave().init.body).serviceSelection, { serviceId: 'priced', expectedVersion: 2 });
+    assert.equal(f.props.appointment.serviceNameSnapshot, 'Booked old name');
+  });
+  for (const eligibility of ['inactive', 'unavailable', 'unpriced']) await test(`booked ${eligibility} Service is never auto-confirmed`, async f => {
+    booked(f); await f.start(); await f.loaded(); const latest = service('priced', eligibility === 'unpriced' ? 'unpriced' : 'priced');
+    if (eligibility === 'inactive') latest.active = false; if (eligibility === 'unavailable') latest.branches[0].operationallyAvailable = false;
+    f.latestGet().deliver(latest); await f.settle(); assert.equal(f.button('Save visit').props.disabled, true);
+    assert.ok(text(f.renderer.tree).includes('no longer eligible') && !hasButton(f, 'Use reviewed Service')); await f.save(); assert.ok(!f.latestSave());
+    f.button('Remove Service').props.onClick(); await f.settle(); await f.save(); assert.equal(JSON.parse(f.latestSave().init.body).serviceSelection, null);
+  });
+  for (const failure of [404, 503, 'network'] as const) await test(`booked verification ${failure} preserves choice and allows explicit retry`, async f => {
+    booked(f); await f.start(); await f.loaded();
+    if (failure === 'network') f.latestGet().fail(); else f.latestGet().deliver({ error: 'Verification unavailable' }, failure);
+    await f.settle(); assert.equal(f.node('visit-service').props.value, 'priced'); assert.equal(f.button('Save visit').props.disabled, true);
+    await reload(f); f.latestGet().deliver(service()); await f.settle();
+    assert.equal(f.button('Save visit').props.disabled, true); f.button('Use reviewed Service').props.onClick(); await f.settle();
+    await f.save(); assert.deepEqual(JSON.parse(f.latestSave().init.body).serviceSelection, { serviceId: 'priced', expectedVersion: 1 });
+  });
+  for (const response of [200, 401, 403]) for (const change of ['remove', 'different', 'same', 'manual-review']) await test(`booked verification ${response} discarded after ${change} intent`, async f => {
+    booked(f); await f.start(); const old = f.latestGet(); await f.loaded();
+    if (change === 'remove') { f.button('Remove Service').props.onClick(); await f.settle(); }
+    if (change === 'different') await f.select('free');
+    if (change === 'same') await f.select('priced');
+    if (change === 'manual-review') await reload(f);
+    old.deliver(response === 200 ? { ...service(), name: 'OBSOLETE_BOOKED_DETAIL' } : { error: 'OBSOLETE_BOOKED_DENIAL' }, response); await f.settle();
+    assert.equal(globals.servicesTestInvalidations, 0); assert.ok(!text(f.renderer.tree).includes('OBSOLETE_BOOKED_DETAIL') && !text(f.renderer.tree).includes('OBSOLETE_BOOKED_DENIAL'));
+    if (change === 'manual-review') {
+      assert.equal(f.latestGet().init.signal.aborted, false); assert.equal(f.button('Save visit').props.disabled, true);
+      f.latestGet().deliver(service('priced', 'priced', 2)); await f.settle(); f.button('Use reviewed Service').props.onClick(); await f.settle();
+    }
+    await f.save(); const payload = JSON.parse(f.latestSave().init.body);
+    assert.deepEqual(payload.serviceSelection, change === 'remove' ? null : { serviceId: change === 'different' ? 'free' : 'priced', expectedVersion: change === 'manual-review' ? 2 : 1 });
+  });
+  for (const response of [200, 401, 403]) for (const change of ['branch', 'ABA', 'scope', 'logout', 'invalidate', 'unmount']) await test(`booked verification ${response} discarded after ${change}`, async f => {
+    booked(f); await f.start(); const old = f.latestGet();
+    if (change === 'branch' || change === 'ABA') { await f.branch('B'); if (change === 'ABA') await f.branch('A'); }
+    if (change === 'scope') f.scope();
+    if (change === 'logout') { globals.servicesTestAuth.currentUser = null; f.render(); }
+    if (change === 'invalidate') { for (const listener of globals.appointmentInvalidationListeners) listener(); f.render(); }
+    if (change === 'unmount') f.stop();
+    old.deliver(response === 200 ? { ...service(), name: 'OBSOLETE_BOOKED_DETAIL' } : { error: 'OBSOLETE_BOOKED_DENIAL' }, response); await flush();
+    assert.equal(globals.servicesTestInvalidations, 0); assert.equal(f.renderer.lateSetters, 0);
+    if (change !== 'unmount') { await f.settle(); assert.ok(!text(f.renderer.tree).includes('OBSOLETE_BOOKED_DETAIL') && !text(f.renderer.tree).includes('OBSOLETE_BOOKED_DENIAL')); }
+  });
+  for (const response of [200, 401, 403]) for (const change of ['same', 'remove']) await test(`booked verification ${response} discarded before passive cleanup after ${change}`, async f => {
+    booked(f); await f.start(); const old = f.latestGet(); await f.loaded();
+    f.node('visit-service').props.onChange({ target: { value: change === 'same' ? 'priced' : '__none' } }); f.render();
+    // Same ID/version leaves the detail transport alive until passive cleanup;
+    // the layout-updated choice identity must reject it in that interval.
+    if (change === 'same') assert.equal(old.init.signal.aborted, false);
+    old.deliver(response === 200 ? { ...service(), name: 'OBSOLETE_BOOKED_DETAIL' } : { error: 'OBSOLETE_BOOKED_DENIAL' }, response); await flush();
+    assert.equal(globals.servicesTestInvalidations, 0); assert.equal(f.renderer.lateSetters, 0); await f.settle();
+    assert.ok(!text(f.renderer.tree).includes('OBSOLETE_BOOKED_DETAIL') && !text(f.renderer.tree).includes('OBSOLETE_BOOKED_DENIAL'));
+    await f.save(); assert.deepEqual(JSON.parse(f.latestSave().init.body).serviceSelection, change === 'remove' ? null : { serviceId: 'priced', expectedVersion: 1 });
+  });
+  for (const status of [401, 403]) await test(`current booked verification ${status} still invalidates normally`, async f => {
+    booked(f); await f.start(); f.latestGet().deliver({ error: 'Current verification denial' }, status); await f.settle();
+    assert.equal(globals.servicesTestInvalidations, 1); assert.ok(text(f.renderer.tree).includes('Visit access changed'));
+  });
+  await test('server version conflict after automatic carryover still requires manual review', async f => {
+    booked(f); await f.start(); await f.loaded(); f.latestGet().deliver(service()); await f.settle(); await f.save();
+    f.latestSave().deliver({ error: 'Service changed', code: 'SERVICE_VERSION_CHANGED' }, 409); await f.settle();
+    assert.equal(f.button('Save visit').props.disabled, true); assert.ok(text(f.renderer.tree).includes('(needs review)'));
+    const count = f.requests.length; await f.save(); assert.equal(f.requests.length, count);
+    await reload(f); f.latestGet().deliver(service('priced', 'priced', 2)); await f.settle(); f.button('Use reviewed Service').props.onClick(); await f.settle();
+    await f.save(); assert.deepEqual(JSON.parse(f.latestSave().init.body).serviceSelection, { serviceId: 'priced', expectedVersion: 2 });
+  });
   await test('booked Service can differ from performed; booking display stays historical',async f=>{const v=f.props.visit;f.props.visit=undefined;f.props.appointment={...v,id:'booking',appointmentDate:v.visitDate,serviceId:'old',serviceNameSnapshot:'Historical booked',serviceCatalogueVersion:1};await f.start();await f.loaded();await f.select('free');await f.save();assert.deepEqual(JSON.parse(f.latestSave().init.body).serviceSelection,{serviceId:'free',expectedVersion:1});assert.ok(text(f.renderer.tree).includes('Historical booked'));});
   await test('legacy linked Visit does not adopt canonical booked Service on edit',async f=>{f.props.visit={...f.props.visit,appointmentId:'booking'};f.props.appointments=[{id:'booking',branchId:'A',serviceId:'priced',serviceNameSnapshot:'Booked only'}];await f.start();await f.loaded();assert.ok(text(f.renderer.tree).includes('Booked only'));await f.save();assert.ok(!Object.hasOwn(JSON.parse(f.latestSave().init.body),'serviceSelection'));});
   await test('follow-up response after access loss cannot invalidate new scope or close',async f=>{f.props.visit={...f.props.visit,followUpRequired:true};globals.confirm=()=>true;await f.start();await f.loaded();await f.save();f.latestSave().deliver({id:'visit'});await f.settle();const followUp=f.latestSave();assert.ok(followUp.url.endsWith('/appointments'));f.scope();followUp.deliver({error:'OLD_FOLLOWUP_DENIAL'},403);await f.settle();assert.equal(globals.servicesTestInvalidations,0);assert.equal(f.saves,0);assert.equal(f.renderer.lateSetters,0);});
@@ -310,8 +408,8 @@ try {
     try{r.render(props);assert.ok(text(r.tree).includes('Historical canonical')&&!text(r.tree).includes('Outdated mirror'));assert.ok(text(r.tree).includes('  Unchanged legacy label  ')&&text(r.tree).includes('Imported performed label')&&text(r.tree).includes('Consultation'));find(r.tree,(n:any)=>n.props?.onClick&&text(n).includes('Historical canonical')).props.onClick();r.render(props);assert.ok(text(r.tree).split('Historical canonical').length>=3);assert.equal(f.requests.length,0);}finally{r.unmount();}
   });
   await test('actual Visit history searches snapshot names and hides sealed edit actions',async f=>{
-    const r=new Renderer(History);globals.historyRows={visits:[{...f.props.visit,patientName:'Synthetic patient',serviceId:'gone',serviceNameSnapshot:'Historical canonical',treatmentService:'Outdated mirror',isSigned:true}],patients:f.props.patients,users:f.props.users,branches:f.props.branches};const props={db:{},role:'doctor',userProfile:f.props.users[0]};
-    try{r.render(props);for(let i=0;i<6;i++){r.passives.splice(0).forEach(run=>run());await flush();if(r.dirty)r.render(props);}assert.ok(text(r.tree).includes('Historical canonical')&&!text(r.tree).includes('Outdated mirror'));assert.ok(!find(r.tree,(n:any)=>n.props?.['aria-label']==='Edit visit for Synthetic patient'));assert.equal(f.requests.length,0);}finally{r.unmount();globals.historyRows=undefined;}
+    const r=new Renderer(History);globals.historyRows={visits:[{...f.props.visit,patientName:'Synthetic patient',serviceId:'gone',serviceNameSnapshot:'Historical canonical',treatmentService:'Outdated mirror',isSigned:true},{...f.props.visit,id:'legacy-text',patientName:'Synthetic patient',treatmentService:'  Historical free-text care  ',isSigned:true}],patients:f.props.patients,users:f.props.users,branches:f.props.branches};const props={db:{},role:'doctor',userProfile:f.props.users[0]};
+    try{r.render(props);for(let i=0;i<6;i++){r.passives.splice(0).forEach(run=>run());await flush();if(r.dirty)r.render(props);}assert.ok(text(r.tree).includes('Historical canonical')&&!text(r.tree).includes('Outdated mirror'));assert.ok(text(r.tree).includes('  Historical free-text care  '));assert.ok(!find(r.tree,(n:any)=>n.props?.['aria-label']==='Edit visit for Synthetic patient'));assert.equal(f.requests.length,0);}finally{r.unmount();globals.historyRows=undefined;}
   });
 
 } finally {

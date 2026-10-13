@@ -73,6 +73,28 @@ function nurseResponse(signed = false) {
   return value;
 }
 try {
+  await check('loaded chart escapes parent modal into body portal', async f => {
+    await f.loaded(chartResponse());
+    assert.equal(f.renderer.portals.length, 1);
+    assert.equal(f.renderer.portals[0].container, globals.document.body);
+    assert.ok(chartDialog(f).props.className.includes('z-[11000]'));
+  });
+  await check('chart access-loss message retains foreground body portal', async f => {
+    await f.loaded(chartResponse());
+    for (const listener of globals.appointmentInvalidationListeners) listener();
+    await f.settle();
+    assert.equal(f.renderer.portals.length, 1);
+    assert.equal(f.renderer.portals[0].container, globals.document.body);
+    assert.match(text(f.renderer.tree), /access changed/);
+    assert.ok(chartDialog(f).props.className.includes('z-[11000]'));
+  });
+  await check('unsaved Visit chart warning retains foreground body portal', async f => {
+    f.props.visit = {}; await f.start();
+    assert.equal(f.renderer.portals.length, 1);
+    assert.equal(f.renderer.portals[0].container, globals.document.body);
+    assert.equal(f.requests.length, 0);
+    assert.match(text(f.renderer.tree), /Save the Visit/);
+  });
   await check('persisted Visit is required before any chart fetch', async f => { f.props.visit = {}; await f.start(); assert.equal(f.requests.length, 0); assert.match(text(f.renderer.tree), /Save the Visit/); });
   for (const permission of ['clinical.view', 'visits.view']) await check(`${permission} denial hides chart and makes no request`, async f => { f.props.userProfile.permissionOverrides = { [permission]: 'deny' }; f.props.users = [f.props.userProfile]; await f.start(); assert.equal(f.requests.length, 0); assert.match(text(f.renderer.tree), /access changed/); });
   await check('empty chart offers all three maps, no dental and no default signing', async f => { await f.loaded(); for (const label of ['Face', 'Body — Front', 'Body — Back']) assert.ok(f.button(label)); assert.ok(!text(f.renderer.tree).toLowerCase().includes('dental')); assert.ok(!find(f.renderer.tree, node => node.type === 'button' && text(node).trim() === 'Sign saved chart')); assert.equal(f.button('Print / Save PDF').props.disabled, true); });

@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Download, MapPinned, Plus, Printer, RotateCcw, Save, Trash2, X } from 'lucide-react';
 import { auth } from '../platform';
 import { currentPermissionProfile, uiCan, uiPermissionScope } from '../permissionState';
@@ -126,7 +127,7 @@ function ChartWorkspace({ visit, userRole, userProfile, onClose }: Props) {
   const displayedContext = isDraft ? response?.visitContext : context;
   const performerName = (value: typeof context) => value?.performedByUserId
     ? value.performedByNameSnapshot || 'Recorded performer' : value?.doctorName || 'Not recorded';
-  return <div ref={dialog} data-clinical-chart-dialog className="clinical-chart-dialog fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/65 p-3 backdrop-blur-sm sm:p-5" role="dialog" aria-modal="true" aria-labelledby="clinical-chart-title">
+  return <div ref={dialog} data-clinical-chart-dialog className="clinical-chart-dialog fixed inset-0 z-[11000] flex items-center justify-center bg-slate-950/65 p-3 backdrop-blur-sm sm:p-5" role="dialog" aria-modal="true" aria-labelledby="clinical-chart-title">
     <div className="max-h-[94vh] w-full max-w-6xl overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl">
       <header className="clinical-chart-no-print flex items-start justify-between gap-4 border-b border-slate-200 p-5 sm:px-7">
         <div><h2 id="clinical-chart-title" className="flex items-center gap-2 text-lg font-bold text-slate-950"><MapPinned size={20} className="text-teal-700" />Clinical chart</h2><p className="mt-1 text-xs text-slate-500">{response?.visitContext.patientName || visit.patientName || 'Patient'} · {formatDateTime(response?.visitContext.visitDate || visit.visitDate)} · linked to this Visit</p></div>
@@ -200,9 +201,11 @@ export default function ClinicalChartModal(props: Props) {
   const scope = JSON.stringify([uiPermissionScope(profile), user?.uid, profile?.role, profile?.active, profile?.assignedBranches, props.visit?.id, props.visit?.branchId, props.visit?.doctorId, props.visit?.performedByUserId, props.visit?.performedByNameSnapshot, props.visit?.performedByRoleSnapshot, props.visit?.performedByDesignationSnapshot, props.visit?.isArchived]);
   const [invalidated, setInvalidated] = useState<string | null>(null);
   useLayoutEffect(() => subscribeProtectedDataInvalidation(() => setInvalidated(scope)), [scope]);
-  if (typeof props.visit?.id !== 'string' || !props.visit.id) return <div role="alert" className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/60 p-5"><div className="space-y-4 rounded-2xl bg-white p-6"><p>Save the Visit before opening its clinical chart.</p><button type="button" onClick={props.onClose}>Close</button></div></div>;
+  // Escape drawer/modal stacking contexts and clipping, above existing app overlays.
+  const overlay = (content: React.ReactNode) => createPortal(content, document.body);
+  if (typeof props.visit?.id !== 'string' || !props.visit.id) return overlay(<div role="alert" className="fixed inset-0 z-[11000] flex items-center justify-center bg-slate-950/60 p-5"><div className="space-y-4 rounded-2xl bg-white p-6"><p>Save the Visit before opening its clinical chart.</p><button type="button" onClick={props.onClose}>Close</button></div></div>);
   if (!user || !profile?.active || invalidated === scope || !uiCan(profile, 'clinical.view') || !uiCan(profile, 'visits.view')) {
-    return <div data-clinical-chart-dialog className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/60 p-5"><div role="alert" className="space-y-4 rounded-2xl bg-white p-6"><p>Clinical chart access changed. Close and reopen after access is refreshed.</p><button type="button" onClick={props.onClose} className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">Close</button></div></div>;
+    return overlay(<div data-clinical-chart-dialog className="fixed inset-0 z-[11000] flex items-center justify-center bg-slate-950/60 p-5"><div role="alert" className="space-y-4 rounded-2xl bg-white p-6"><p>Clinical chart access changed. Close and reopen after access is refreshed.</p><button type="button" onClick={props.onClose} className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">Close</button></div></div>);
   }
-  return <ChartWorkspace key={scope} {...props} userRole={profile.role} userProfile={profile} />;
+  return overlay(<ChartWorkspace key={scope} {...props} userRole={profile.role} userProfile={profile} />);
 }

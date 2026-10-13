@@ -69,6 +69,7 @@
     "test:clinical-charts-transport": "node --import tsx scripts/test-clinical-charts-transport.ts",
     "test:clinical-charts-api": "node --import tsx scripts/test-clinical-charts-api.ts",
     "test:clinical-charts-ui": "node --import tsx scripts/test-clinical-charts-ui.ts",
+    "test:clinical-charts-print": "NODE_ENV=production node --import tsx scripts/test-clinical-charts-print.ts",
     "test:services-ui": "node --import tsx scripts/test-services-ui.ts"
   },
   "dependencies": {

@@ -12,6 +12,7 @@ export const globals = globalThis as any;
 export const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 type Frame = { hooks: any[]; cursor: number; mounted: boolean };
 export class Renderer {
+  portals: { container: any; children: any }[] = [];
   frames = new Map<string, Frame>(); visited = new Set<string>(); frame!: Frame;
   layouts: (() => void)[] = []; passives: (() => void)[] = []; dirty = false; lateSetters = 0; tree: any;
   constructor(private component: any) {
@@ -43,6 +44,11 @@ export class Renderer {
   }
   expand(node: any, location: string): any {
     if (Array.isArray(node)) return node.map((child, index) => this.expand(child, location + '/' + index));
+    if (node?.$$typeof === Symbol.for('react.portal')) {
+      const children = this.expand(node.children, location + '/portal');
+      this.portals.push({ container: node.containerInfo, children });
+      return children;
+    }
     if (!node || typeof node !== 'object' || !node.props) return node;
     if (typeof node.type === 'function') {
       const key = location + ':' + node.type.name + ':' + (node.key ?? ''); this.visited.add(key);
@@ -54,7 +60,7 @@ export class Renderer {
     return { ...node, props: { ...node.props, children: this.expand(node.props.children, location + '/children') } };
   }
   render(props: any) {
-    this.visited.clear(); this.dirty = false; this.tree = this.expand({ type: this.component, props }, 'root');
+    this.visited.clear(); this.portals = []; this.dirty = false; this.tree = this.expand({ type: this.component, props }, 'root');
     for (const [key, frame] of this.frames) if (!this.visited.has(key)) {
       frame.mounted = false;
       frame.hooks.forEach(hook => { if (hook?.cleanup) hook.layout ? hook.cleanup() : this.passives.push(hook.cleanup); });
@@ -79,7 +85,7 @@ export async function buildControlledForms(names: string[], target = process.cwd
   globals.servicesTestAuth = { currentUser: null };
   globals.servicesTestInvalidations = 0; globals.appointmentInvalidationListeners = new Set();
   globals.window = { addEventListener() {}, removeEventListener() {}, requestAnimationFrame(callback: any) { callback(); } };
-  globals.document = { querySelector() { return null; } };
+  globals.document = { body: { nodeType: 1 }, querySelector() { return null; } };
   globals.confirm = () => false; globals.alert = () => {};
   await writeFile(path.join(temporary, 'react.mjs'), `import actual from ${JSON.stringify(require.resolve('react'))};\n${['useState', 'useRef', 'useEffect', 'useLayoutEffect', 'useMemo'].map(name => `export const ${name}=(...args)=>globalThis.servicesTestHooks.${name}(...args);`).join('\n')}\nexport const createContext=actual.createContext,useContext=context=>context._currentValue;\nexport default {...actual,useState,useRef,useEffect,useLayoutEffect,useMemo,createContext,useContext};`);
   await writeFile(path.join(temporary, 'platform.mjs'), 'export const auth=globalThis.servicesTestAuth; export const db={};');

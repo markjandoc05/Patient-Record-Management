@@ -6,7 +6,7 @@ import { priceLabel } from '../servicesPolicy';
 
 export type SelectedAppointmentService = {
   kind: 'selected'; branchId: string; serviceId: string; expectedVersion: number;
-  name: string; duration: number; referencePrice: string; reviewRequired: boolean;
+  name: string; duration: number; referencePrice: string; reviewRequired: boolean; verificationPending?: boolean;
 };
 export type AppointmentServiceChoice = { kind: 'unchanged' } | { kind: 'removed' } | SelectedAppointmentService;
 
@@ -21,8 +21,9 @@ function eligibleChoice(service: any, branchId: string): SelectedAppointmentServ
 const choiceLabel = (choice: SelectedAppointmentService) => `${choice.name} · ${choice.duration} min · ${priceLabel(choice.referencePrice)} current catalogue price · v${choice.expectedVersion}`;
 
 // A historical snapshot is never resolved through the live catalogue. Editable
-// selection and an explicitly requested review are separate transitions; only
-// confirmation copies a reviewed version into the parent's submission state.
+// selection and an explicitly requested review are separate transitions. Only a
+// new Visit's booked proposal can be confirmed automatically, after checking its
+// unchanged version and current eligibility; historical Visit snapshots stay put.
 export default function AppointmentServicePicker({ branchId, readOnly, recorded, choice, onChange, onReviewRequired, unresolved, error, fieldId = 'appointment-service', label = 'Service (optional)' }: {
   branchId: string; readOnly: boolean; recorded?: any; choice: AppointmentServiceChoice;
   onChange: (choice: AppointmentServiceChoice) => void; onReviewRequired: () => void;
@@ -61,6 +62,8 @@ export default function AppointmentServicePicker({ branchId, readOnly, recorded,
   }, [key, readOnly]);
   const visible = load.key === key ? load : { rows: [], total: 0, ready: false, error: '' };
   const selected = choice.kind === 'selected' && choice.branchId === branchId ? choice : null;
+  const currentChoice = useRef(choice);
+  useLayoutEffect(() => { currentChoice.current = choice; }, [choice]);
   const selectionKey = selected ? JSON.stringify([selected.serviceId, selected.expectedVersion, branchId]) : '';
   const reviewLifetime = useRef({ key: selectionKey, generation: 0, request: null as AbortController | null });
   const [review, setReview] = useState({ key: '', request: null as AbortController | null,
@@ -70,24 +73,38 @@ export default function AppointmentServicePicker({ branchId, readOnly, recorded,
     return () => { reviewLifetime.current.generation++; reviewLifetime.current.request?.abort(); };
   }, [selectionKey]);
   const reviewCurrent = review.key === selectionKey && review.request === reviewLifetime.current.request ? review : null;
-  const reloadSelection = async () => {
+  const reloadSelection = (verifyBooked = false) => {
     if (!selected || readOnly) return;
-    onReviewRequired();
+    if (!verifyBooked) onReviewRequired();
     reviewLifetime.current.request?.abort();
     const controller = new AbortController(), generation = reviewLifetime.current.generation, lifetimeGeneration = lifetime.current.generation;
     reviewLifetime.current.request = controller;
     setReview({ key: selectionKey, request: controller, candidate: null, name: '', duration: 0, version: 0, ready: false, error: '' });
     const current = () => lifetime.current.active && lifetime.current.generation === lifetimeGeneration
       && reviewLifetime.current.key === selectionKey && reviewLifetime.current.generation === generation
-      && reviewLifetime.current.request === controller && !controller.signal.aborted;
-    try {
-      const service = await servicesRequest(`/api/services/${encodeURIComponent(selected.serviceId)}?branchId=${encodeURIComponent(branchId)}`, 'GET', undefined, controller.signal, current);
-      if (current()) setReview({ key: selectionKey, request: controller, candidate: eligibleChoice(service, branchId),
-        name: service.name, duration: service.default_duration_minutes, version: service.version, ready: true, error: '' });
-    } catch (failure: any) {
-      if (current() && failure.name !== 'AbortError') setReview({ key: selectionKey, request: controller, candidate: null, name: '', duration: 0, version: 0, ready: true, error: failure.message });
-    }
+      && reviewLifetime.current.request === controller && !controller.signal.aborted
+      && (!verifyBooked || currentChoice.current === selected);
+    void (async () => {
+      try {
+        const service = await servicesRequest(`/api/services/${encodeURIComponent(selected.serviceId)}?branchId=${encodeURIComponent(branchId)}`, 'GET', undefined, controller.signal, current);
+        if (!current()) return;
+        const candidate = eligibleChoice(service, branchId);
+        setReview({ key: selectionKey, request: controller, candidate,
+          name: service.name, duration: service.default_duration_minutes, version: service.version, ready: true, error: '' });
+        if (verifyBooked) onChange(candidate?.serviceId === selected.serviceId && candidate.expectedVersion === selected.expectedVersion
+          ? candidate : { ...selected, verificationPending: false, reviewRequired: true });
+      } catch (failure: any) {
+        if (current() && failure.name !== 'AbortError') {
+          setReview({ key: selectionKey, request: controller, candidate: null, name: '', duration: 0, version: 0, ready: true, error: failure.message });
+          if (verifyBooked) onChange({ ...selected, verificationPending: false, reviewRequired: true });
+        }
+      }
+    })();
+    return () => controller.abort();
   };
+  useEffect(() => {
+    if (selected?.verificationPending && !readOnly) return reloadSelection(true);
+  }, [selectionKey, selected?.verificationPending, readOnly]);
   const canKeepRecorded = Boolean(recorded?.serviceId) && recorded.branchId === branchId;
   const retained = choice.kind === 'unchanged' && canKeepRecorded;
   const value = retained ? '__recorded' : selected?.serviceId || (unresolved ? '__review' : '__none');
@@ -95,7 +112,8 @@ export default function AppointmentServicePicker({ branchId, readOnly, recorded,
     <label htmlFor={fieldId} className="text-xs font-semibold text-slate-600">{label}</label>
     {recorded?.serviceId && <p className="text-xs text-slate-600">Recorded: {recorded.serviceNameSnapshot || 'Historical Service'} · {recorded.serviceDurationMinutesSnapshot ?? 'Unknown'} min</p>}
     {readOnly ? <p className="text-sm text-slate-700">{recorded?.serviceId ? 'Saved Service snapshot retained.' : 'No canonical Service selected.'}</p> : <>
-      {unresolved && <p role="alert" className="text-xs text-amber-700">{selected?.reviewRequired ? 'This selection needs review. Reload and confirm the current Service, choose another Service, or explicitly remove it before saving.' : 'Review the Service for the selected clinic. Choose an eligible Service or explicitly remove it before saving.'}</p>}
+      {selected?.verificationPending && <p role="status" className="text-xs text-slate-500">Checking booked Service…</p>}
+      {unresolved && !selected?.verificationPending && <p role="alert" className="text-xs text-amber-700">{selected?.reviewRequired ? 'This selection needs review. Reload and confirm the current Service, choose another Service, or explicitly remove it before saving.' : 'Review the Service for the selected clinic. Choose an eligible Service or explicitly remove it before saving.'}</p>}
       {branchId && <input aria-label={fieldId === 'visit-service' ? 'Search performed Services' : 'Search appointment Services'} type="search" maxLength={120} value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} placeholder="Search Services" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />}
       <select id={fieldId} data-appointment-field="serviceSelection" data-visit-field={fieldId === 'visit-service' ? 'serviceSelection' : undefined} aria-invalid={Boolean(error)} value={value} disabled={!branchId} onChange={event => {
         if (event.target.value === '__none') { onChange({ kind: 'removed' }); return; }
@@ -107,7 +125,7 @@ export default function AppointmentServicePicker({ branchId, readOnly, recorded,
         <option value="__none">{branchId ? 'No Service (explicit choice)' : 'Select a clinic first'}</option>
         {unresolved && !selected && <option value="__review" disabled>Service choice required for this clinic</option>}
         {canKeepRecorded && <option value="__recorded">Keep recorded Service: {recorded.serviceNameSnapshot || 'Historical Service'}</option>}
-        {selected && <option value={selected.serviceId}>{selected.reviewRequired ? `${selected.name} · ${selected.duration} min · v${selected.expectedVersion} (needs review)` : choiceLabel(selected)}</option>}
+        {selected && <option value={selected.serviceId}>{selected.verificationPending || selected.reviewRequired ? `${selected.name} · ${selected.duration} min · v${selected.expectedVersion}${selected.reviewRequired ? ' (needs review)' : ''}` : choiceLabel(selected)}</option>}
         {visible.rows.filter(row => row.id !== selected?.serviceId).map(row => <option key={row.id} value={row.id}>{choiceLabel(eligibleChoice(row, branchId)!)}</option>)}
       </select>
       {error && <p className="text-xs text-rose-700">{error}</p>}
@@ -118,7 +136,7 @@ export default function AppointmentServicePicker({ branchId, readOnly, recorded,
       {branchId && visible.ready && !visible.error && !visible.rows.length && <p className="text-xs text-slate-500">No selectable Services on this page.</p>}
       {visible.total > 25 && <div className="flex items-center gap-3 text-xs"><button type="button" disabled={page === 1} onClick={() => setPage(value => value - 1)}>Previous</button><span>Page {page}</span><button type="button" disabled={page * 25 >= visible.total} onClick={() => setPage(value => value + 1)}>Next</button></div>}
       {selected && <>
-        <p className="text-xs text-slate-600">{selected.reviewRequired ? `Previous selection: ${selected.name} · ${selected.duration} min · v${selected.expectedVersion}` : `Selected: ${choiceLabel(selected)}`}</p>
+        <p className="text-xs text-slate-600">{selected.verificationPending ? `Booked selection: ${selected.name} · ${selected.duration} min · v${selected.expectedVersion}` : selected.reviewRequired ? `Previous selection: ${selected.name} · ${selected.duration} min · v${selected.expectedVersion}` : `Selected: ${choiceLabel(selected)}`}</p>
         <button type="button" onClick={() => void reloadSelection()} className="text-xs font-semibold text-teal-700 underline">Reload Services to review changes</button>
         {reviewCurrent && !reviewCurrent.ready && <p role="status" className="text-xs text-slate-500">Loading current Service…</p>}
         {reviewCurrent?.error && <p role="alert" className="text-xs text-rose-700">{reviewCurrent.error} Reload to retry, choose another Service, or remove it.</p>}
