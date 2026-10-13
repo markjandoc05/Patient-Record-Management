@@ -4,6 +4,7 @@ import { currentActor, assertAccessTarget, stageAccessAudit } from './permission
 import { normalizePermissionOverrides, isPermissionId } from '../src/permissions';
 import { RBAC } from '../src/rbac';
 import { assignmentIssues } from '../src/utils/userActivation';
+import { isStaffDesignation } from '../src/staffDesignation';
 
 export function mountAccessApi(app: express.Express) {
   app.patch('/api/users/:id/access', async (req, res) => {
@@ -11,7 +12,7 @@ export function mountAccessApi(app: express.Express) {
     try {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(req.params.id)) throw Object.assign(new Error('Invalid user ID'), { status: 400 });
       const body = req.body;
-      if (!body || Array.isArray(body) || Object.keys(body).some(key => !['expectedAccessRevision', 'role', 'assignedBranches', 'defaultBranchId', 'permissionChanges'].includes(key))
+      if (!body || Array.isArray(body) || Object.keys(body).some(key => !['expectedAccessRevision', 'role', 'staffDesignation', 'assignedBranches', 'defaultBranchId', 'permissionChanges'].includes(key))
         || !Number.isSafeInteger(body.expectedAccessRevision) || body.expectedAccessRevision < 0) throw Object.assign(new Error('A valid access revision and access fields are required'), { status: 400 });
       const result = await db.runTransaction(async tx => {
         const { identity, profile } = await currentActor(req, tx);
@@ -24,7 +25,11 @@ export function mountAccessApi(app: express.Express) {
         if ((old.accessRevision ?? 0) !== body.expectedAccessRevision) throw Object.assign(new Error('Access changed. Reload the user and review again.'), { status: 409 });
         if (body.role !== undefined && (typeof body.role !== 'string' || !Object.hasOwn(RBAC, body.role))) throw Object.assign(new Error('Invalid role'), { status: 400 });
         const next = { ...old };
-        for (const key of ['role', 'assignedBranches', 'defaultBranchId']) if (Object.hasOwn(body, key)) next[key] = body[key];
+        for (const key of ['role', 'staffDesignation', 'assignedBranches', 'defaultBranchId']) if (Object.hasOwn(body, key)) next[key] = body[key];
+        if (Object.hasOwn(body, 'staffDesignation') && body.staffDesignation !== null
+          && (!isStaffDesignation(body.staffDesignation) || next.role !== 'staff')) {
+          throw Object.assign(new Error('Select a valid designation for a Staff account'), { status: 400 });
+        }
         if (body.permissionChanges !== undefined) {
           normalizePermissionOverrides(body.permissionChanges);
           const overrides = old.permissionOverrides === undefined ? {} : normalizePermissionOverrides(old.permissionOverrides);
@@ -48,8 +53,10 @@ export function mountAccessApi(app: express.Express) {
         next.accessRevision = stageAccessAudit(tx, identity, profile, ref.id, old, next);
         tx.update(ref, { role: next.role, assignedBranches: next.assignedBranches || [], assignedBranchNames: next.assignedBranchNames,
           defaultBranchId: next.defaultBranchId ?? null, defaultBranchName: next.defaultBranchName,
+          ...(Object.hasOwn(body, 'staffDesignation') ? { staffDesignation: next.staffDesignation } : {}),
           ...(body.permissionChanges !== undefined ? { permissionOverrides: next.permissionOverrides } : {}), accessRevision: next.accessRevision });
-        return { id: ref.id, accessRevision: next.accessRevision, permissionOverrides: next.permissionOverrides || {} };
+        return { id: ref.id, accessRevision: next.accessRevision, permissionOverrides: next.permissionOverrides || {},
+          ...(Object.hasOwn(body, 'staffDesignation') ? { staffDesignation: next.staffDesignation } : {}) };
       });
       res.json(result);
     } catch (error: any) {

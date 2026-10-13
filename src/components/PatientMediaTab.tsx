@@ -4,6 +4,7 @@ import Lightbox from './Lightbox';
 import { useTimezone } from '../contexts/TimezoneContext';
 import { downloadAttachment, fetchAttachmentBlob, isImageAttachment, openAttachment } from '../utils/attachmentApi';
 import { formatTimezone } from '../utils/timezone';
+import { visitPerformerName } from '../utils/visitPerformerPolicy';
 
 export default function PatientMediaTab({ patientId, users, branches, visits }: { patientId: string, users: any[], branches: any[], visits: any[] }) {
     const timezone = useTimezone();
@@ -96,7 +97,6 @@ const formatDate = (dateString: string) => {
                     {items.map(item => {
                         const isExpanded = expandedItems.has(item.id);
                         const date = item.data.visitDate;
-                        const doctor = users.find(u => u.id === item.data.doctorId);
                         const branch = branches.find(b => b.id === item.data.branchId);
                         
                         return (
@@ -116,7 +116,7 @@ const formatDate = (dateString: string) => {
                                     <div className="text-xs text-slate-500 grid grid-cols-2 gap-2 ml-6">
                                         <div><span className="font-semibold">Type:</span> {item.data.visitType}</div>
                                         <div><span className="font-semibold">Branch:</span> {branch?.branchName || 'N/A'}</div>
-                                        <div><span className="font-semibold">Doctor:</span> {doctor?.fullName || 'N/A'}</div>
+                                        <div><span className="font-semibold">{item.data.performedByUserId ? 'Performed by:' : 'Recorded doctor:'}</span> {visitPerformerName(item.data, users)}</div>
                                         <div><span className="font-semibold">Service:</span> {item.data.treatmentService || 'N/A'}</div>
                                     </div>
                                 </button>

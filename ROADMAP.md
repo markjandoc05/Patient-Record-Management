@@ -1,5 +1,58 @@
 # Vine incremental production roadmap
 
+## Nurse and Medical Staff Visit workflow — October 13 local
+
+User-approved follow-up gives active Staff designated Nurse or Medical Staff the
+existing Doctor Visit creation/editing, clinical draft/chart and Visit-file actions.
+Explicit denials, branch scope and existing workflow/resource checks remain.
+Signing still requires its separate grant. Reception keeps its existing defaults.
+Designation now affects permissions and is changed through audited, revisioned
+Module Access; generic/self/operational designation writes are blocked.
+No migration, commit, push, deployment, production or DARF action.
+See [local workflow validation](docs/releases/2026-10-13-medical-staff-workflow.md).
+This supersedes the earlier descriptive-only designation policy. The previously
+reviewed chart-only patch does not contain this follow-up and must not be treated
+as a review of the current combined permission/workflow changes. Next: new scoped
+review and interactive Nurse/Medical Staff workflow/print acceptance.
+
+## Face and body charts — October 13 local
+
+User-approved follow-up: nurse-led Visits can chart without an assigned Doctor.
+A recorded, active, branch-eligible Doctor/Nurse/Medical Staff performer supplies
+that relationship. Existing chart/clinical/branch permissions and explicit signing
+grants remain required; no role defaults are changed. Performer snapshots are frozen
+in saved chart context and performer changes end the previous request lifetime.
+See [nurse-led chart evidence](docs/releases/2026-10-13-nurse-led-charts.md).
+The earlier independent review covered the prior Doctor-required candidate; this
+updated code needs a new scoped review before staging or committing.
+
+Implemented locally as charts linked to persisted Visits. Face, body front and body
+back only; dental maps are excluded. Patient profile → Clinical Charts and saved
+Visit details → Open chart. Draft markers, undo, saved print/JSON export, immutable
+signed revisions and attributed amendments reuse existing clinical capabilities and
+Doctor ownership and branch write boundaries. No automatic finalization grants and no
+Visit completion changes. Existing JSONB storage is adequate; no SQL migration.
+Automated validation and the required schema report are recorded in
+[chart release evidence](docs/releases/2026-10-13-clinical-charts.md). Interactive
+browser/print walkthrough remains pending. The patient-view archive race is repaired;
+chart requests end when their Visit leaves the current list. Chart-only validation
+on committed HEAD now resolves the earlier performer/helper prerequisites without
+bundling their workflows. Local only; not staged or committed, and no push,
+production, DARF or deployment action. Next: independent review of the repaired
+standalone chart candidate.
+
+## Unassigned appointments and Visit attribution — October 13 local
+
+Implemented locally: optional Doctor booking with later assignment; authoritative
+Visit performer snapshots and descriptive assisting names; Staff designation in the
+existing user-details editor. Existing roles, branch/clinical permissions, doctor
+ownership, Services, booking/link and history rules remain. No SQL migration or
+backfill. Focused 180 API checks and 43 actual-component scenarios pass, alongside
+24 relevant regressions, TypeScript/build and local health. Interactive browser
+walkthrough remains pending. Not staged or committed; no push, production, DARF
+or deployment action. Next: scoped commit review. See
+[release and schema report](docs/releases/2026-10-13-appointment-performers.md).
+
 
 Hybrid access foundation repair: audit query inference blocked before predicates; all access-policy writes use the revisioned API; unchanged legacy clinical whitespace preserves stored text. Three defect regressions and prerequisite-only reconstruction are part of the new review evidence. No commit/deployment or Clinical R1 start.
 ## Hybrid access-control foundation — October 3 local

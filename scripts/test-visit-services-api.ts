@@ -23,7 +23,7 @@ async function request(path: string, method = 'GET', body?: any, role = 'admin',
 const read = async (id: string) => (await db.collection('visits').doc(id).get()).data()!;
 const readAppointment = async (id: string) => (await db.collection('appointments').doc(id).get()).data()!;
 const readPatient = async () => (await db.collection('patients').doc('patient').get()).data()!;
-const editPayload = (record: any) => Object.fromEntries(Object.entries(record).filter(([key]) => !['serviceId','serviceNameSnapshot','serviceDurationMinutesSnapshot','serviceCatalogueVersion'].includes(key)));
+const editPayload = (record: any) => Object.fromEntries(Object.entries(record).filter(([key]) => !['serviceId','serviceNameSnapshot','serviceDurationMinutesSnapshot','serviceCatalogueVersion','performedByNameSnapshot','performedByRoleSnapshot','performedByDesignationSnapshot'].includes(key)));
 const snapshot = (record: any) => Object.fromEntries(['serviceId', 'serviceNameSnapshot', 'serviceDurationMinutesSnapshot', 'serviceCatalogueVersion'].map(field => [field, record[field]]));
 let minute = 0;
 const booking = (extra = {}, branchId = 'A') => {

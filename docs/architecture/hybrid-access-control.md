@@ -3,12 +3,39 @@
 Local implementation, October 3, 2026. This document records the approved policy and
 implemented foundation. Clinical Records R1 workflows remain a separate release.
 
+## Medical Staff and Nurse workflow defaults — October 13 local
+
+The user's subsequent approved policy gives active Staff designated Nurse or
+Medical Staff inherited `visits.create`, `visits.edit`,
+`visits.attachments.manage` and `clinical.edit_draft`. These match the Doctor's
+existing Visit/chart-draft actions while retaining the Staff role. Reception and
+undesignated Staff keep their original defaults. Explicit DENY wins, malformed
+maps fail closed, and assigned branches/resource restrictions still apply.
+Signing remains a separate explicit `clinical.finalize` grant, as for Doctors;
+private notes, prescriptions, patient full-edit privileges, archive and access
+administration are not expanded by this policy.
+
+Designation now affects authority. `staffDesignation` is a protected access field
+changed through `PATCH /api/users/:id/access` with `access.manage`, a current
+access revision and an atomic audit event. Generic/self/operational user writes
+cannot change it. Module Access contains the designation selector; User details
+shows its current value. Another access administrator must change one's own
+designation. Designation changes increment access revision and participate in
+protected UI/cache/request scopes. Existing recorded Visit performer snapshots
+remain historical and are not rewritten when a designation changes.
+
+These rules supersede the earlier descriptive-only designation behavior and
+Staff's Visit/draft denials for these two designations. The initial matrix below
+still documents the original role-only defaults; `defaultAllows` adds this
+specific designation-based inheritance before explicit overrides are applied.
+See [workflow evidence](../releases/2026-10-13-medical-staff-workflow.md).
+
 ## Resolution and authority
 
 `src/permissions.ts` owns the stable capability registry and compatibility defaults.
 `hasCapability(actor, permission, context)` requires an active, approved, nonarchived
 account with a known role; reads the default; applies the user's explicit override;
-then applies independent branch context. DENY wins over the role default. Missing
+then applies independent branch context. DENY wins over the inherited default. Missing
 maps preserve legacy defaults; malformed stored maps fail closed.
 
 The authoritative map is the existing `users` JSONB profile:
@@ -37,7 +64,7 @@ turn a Manager into an access administrator or enable Developer tools.
 ## Operational management and security administration
 
 `users.manage` permits validated operational employee details (name, contact and
-existing demographic fields). It cannot change roles, authorization branches,
+existing demographic fields). It cannot change Staff designation, roles, authorization branches,
 overrides, account lifecycle, clinical authority or Developer authority.
 
 `access.manage` requires both effective capability and Administrator or guarded

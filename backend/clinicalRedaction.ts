@@ -14,7 +14,7 @@ const fields: Record<string, Set<string>> = {
     birthDateSource birthDatePrecision birthday birthDateStatus estimatedAge estimatedAgeAsOf estimatedBirthYear emergencyContact age ageAtRegistration recordedAge ageRecordedAt ageAsOfDate contactNumber email address
     emergencyContactName emergencyContactRelationship emergencyContactNumber referralSource occupation civilStatus nationality`).split(/\s+/)),
   appointments: new Set(common.split(/\s+/)),
-  visits: new Set(common.split(/\s+/)),
+  visits: new Set((common + ' performedByUserId performedByNameSnapshot performedByRoleSnapshot performedByDesignationSnapshot').split(/\s+/)),
 };
 export const safeAuditQueryFields = new Set(['action', 'resource', 'resourceId', 'branchId', 'timestamp', 'userId', 'userName', 'userRole', 'eventType', 'source']);
 function scalar(value: any): any {
@@ -45,7 +45,7 @@ export function assertClinicalQuery(actor: PermissionActor, collection: string, 
     throw Object.assign(new Error('Clinical query fields are not permitted'), { status: 403 });
   }
 }
-export const clinicalWriteFields = new Set(['skinType', 'followUpInstructions', 'diagnosis', 'notes', 'mainConcern', 'clinicalNotes', 'treatmentPlan', 'allergies', 'medications', 'medicalConditions', 'medicalHistory', 'healthConcerns', 'clinicalFindings', 'allergiesStatus', 'medicationsStatus', 'medicalConditionsStatus', 'medicalHistoryStatus', 'prescriptionDraft', 'prescriptions']);
+export const clinicalWriteFields = new Set(['skinType', 'followUpInstructions', 'diagnosis', 'notes', 'mainConcern', 'clinicalNotes', 'treatmentPlan', 'allergies', 'medications', 'medicalConditions', 'medicalHistory', 'healthConcerns', 'clinicalFindings', 'allergiesStatus', 'medicationsStatus', 'medicalConditionsStatus', 'medicalHistoryStatus', 'prescriptionDraft', 'prescriptions', 'assistingStaffText']);
 // Only surrounding whitespace is presentation-only; structured clinical values stay exact.
 export function sameClinicalRepresentation(submitted: unknown, stored: unknown) {
   return typeof submitted === 'string' && typeof stored === 'string'

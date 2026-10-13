@@ -54,9 +54,9 @@ export default function AppointmentsDashboard({ role, userProfile, activeBranchI
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [showArchived, setShowArchived] = useState(false);
   
-  const canCreate = role ? uiRecordPermission(role as Role, 'appointment', 'create') : false;
-  const canCreateVisit = role ? uiRecordPermission(role as Role, 'visitHistory', 'create') : false;
-  const canArchive = role ? uiRecordPermission(role as Role, 'appointment', 'delete') : false;
+  const canCreate = uiRecordPermission(userProfile || role, 'appointment', 'create');
+  const canCreateVisit = uiRecordPermission(userProfile || role, 'visitHistory', 'create');
+  const canArchive = uiRecordPermission(userProfile || role, 'appointment', 'delete');
 
   useEffect(() => {
     const previous = latestLoad.current.scope === scope ? latestLoad.current : emptyAppointmentState();
@@ -95,7 +95,7 @@ export default function AppointmentsDashboard({ role, userProfile, activeBranchI
   const doctorName = (appointment: any) => (
     users.find(user => user.id === appointment.doctorId)?.fullName
     || users.find(user => user.id === appointment.doctorId)?.name
-    || 'Not assigned'
+    || (appointment.doctorId ? appointment.doctorName || 'Doctor not available' : 'Unassigned')
   );
 
   const branchName = (appointment: any) => branches.find(branch => branch.id === appointment.branchId)?.branchName || appointment.branchName || 'Not assigned';
@@ -316,7 +316,7 @@ export default function AppointmentsDashboard({ role, userProfile, activeBranchI
                       <button onClick={() => { setSelectedAppointment(a); setFormMode('view'); setShowAddForm(true); }} className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-xs font-semibold text-white transition hover:bg-slate-800">
                         <Eye className="h-4 w-4" /> View details
                       </button>
-                      {!a.isArchived && (a.status === 'Arrived' || a.status === 'Completed') && !a.visitHistoryCreated && canCreateVisit && (role !== 'doctor' || a.doctorId === auth.currentUser?.uid) && (
+                      {!a.isArchived && (a.status === 'Arrived' || a.status === 'Completed') && !a.visitHistoryCreated && canCreateVisit && (role !== 'doctor' || !a.doctorId || a.doctorId === auth.currentUser?.uid) && (
                         <button onClick={() => handleCreateVisit(a)} className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-teal-50 px-3 text-xs font-semibold text-teal-700 transition hover:bg-teal-100">
                           <CalendarCheck2 className="h-4 w-4" /> Create visit
                         </button>
@@ -362,7 +362,7 @@ export default function AppointmentsDashboard({ role, userProfile, activeBranchI
                       <td className="px-5 py-4 text-right">
                         <div className="inline-flex items-center gap-1.5">
                           <button onClick={() => { setSelectedAppointment(a); setFormMode('view'); setShowAddForm(true); }} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-slate-900 px-3 text-xs font-semibold text-white transition hover:bg-slate-800"><Eye className="h-3.5 w-3.5" /> View</button>
-                          {!a.isArchived && (a.status === 'Arrived' || a.status === 'Completed') && !a.visitHistoryCreated && canCreateVisit && (role !== 'doctor' || a.doctorId === auth.currentUser?.uid) && (
+                          {!a.isArchived && (a.status === 'Arrived' || a.status === 'Completed') && !a.visitHistoryCreated && canCreateVisit && (role !== 'doctor' || !a.doctorId || a.doctorId === auth.currentUser?.uid) && (
                             <button onClick={() => handleCreateVisit(a)} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-teal-50 px-2.5 text-xs font-semibold text-teal-700 transition hover:bg-teal-100"><CalendarCheck2 className="h-3.5 w-3.5" /> Create visit</button>
                           )}
                           {canArchive && (a.isArchived ? (

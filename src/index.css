@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "react-big-calendar/lib/css/react-big-calendar.css";
+@import "./components/clinicalCharts.css";
 
 @theme {
   --color-teal-50: color-mix(in srgb, var(--primary-color) 10%, #ffffff);

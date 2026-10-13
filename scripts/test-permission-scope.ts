@@ -13,6 +13,26 @@ try {
   const { auth } = await import('../src/session'); await auth.ready;
   const { publishPermissionProfile } = await import('../src/permissionState');
   const access = await import('../src/utils/accessApi');
+  // A queued profile refresh can be newer than the editor's last rendered props.
+  const latestTarget = { id: 'nurse', role: 'staff', active: true, staffDesignation: 'Reception/Admin Staff',
+    accessRevision: 5, assignedBranches: ['B'], permissionOverrides: { 'visits.edit': 'deny' } as Record<string, 'allow' | 'deny'> };
+  const otherTarget = { ...latestTarget, id: 'other', assignedBranches: ['A'] };
+  const oldGrant = { id: 'nurse', accessRevision: 4, staffDesignation: 'Nurse',
+    assignedBranches: ['A'], permissionOverrides: { 'visits.edit': 'allow' as const } };
+  const staleMerge = access.mergeUserAccessResult([latestTarget, otherTarget], oldGrant);
+  check(staleMerge[0] === latestTarget && staleMerge[1] === otherTarget, 'queued older reply preserves exact latest target and unrelated profiles');
+  check(staleMerge[0].accessRevision === 5 && staleMerge[0].permissionOverrides['visits.edit'] === 'deny', 'old Allow cannot rewind the latest revision or Deny');
+  check(staleMerge[0].staffDesignation === 'Reception/Admin Staff' && staleMerge[0].assignedBranches[0] === 'B', 'old reply cannot restore removed designation or branch scope');
+  const newerMerge = access.mergeUserAccessResult(staleMerge, { ...oldGrant, accessRevision: 6 });
+  check(newerMerge[0].accessRevision === 6 && newerMerge[0].permissionOverrides['visits.edit'] === 'allow', 'genuinely newer authorized reply remains accepted');
+  check(newerMerge[0].role === 'staff' && newerMerge[0].active && newerMerge[1] === otherTarget, 'new partial reply preserves unrelated profile fields and accounts');
+  const echo = access.mergeUserAccessResult(newerMerge, { id: 'nurse', accessRevision: 6, permissionOverrides: { 'visits.edit': 'allow' } });
+  check(echo[0].accessRevision === 6 && echo[0].staffDesignation === 'Nurse', 'same-revision echo retains current metadata');
+  const legacyMerge = access.mergeUserAccessResult([{ id: 'legacy', role: 'staff', assignedBranches: ['A'] }],
+    { id: 'legacy', accessRevision: 1, permissionOverrides: { 'visits.edit': 'deny' } });
+  check((legacyMerge[0] as any).accessRevision === 1 && legacyMerge[0].assignedBranches[0] === 'A', 'legacy missing revision still accepts its first authorized result');
+  const missingMerge = access.mergeUserAccessResult(staleMerge, { ...oldGrant, id: 'removed', accessRevision: 6 });
+  check(missingMerge[0] === latestTarget && missingMerge[1] === otherTarget && missingMerge.length === 2, 'late result cannot recreate an absent target');
   const record = await import('../src/utils/recordApi');
   const services = await import('../src/utils/servicesApi');
   const account = await import('../src/utils/userAccountApi');
@@ -73,10 +93,10 @@ try {
   const render = (actor: any, t = target) => renderToStaticMarkup(React.createElement(Editor, { actor, target: t, onSaved: () => {} }));
   const html = render(admin);
   check(html.includes('Module Access') && html.includes('<details') && html.includes('<summary'), 'compact expandable module groups');
-  check(html.includes('Role default: Allowed') && html.includes('value="deny" selected=""') && html.includes('Inherited'), 'role default and explicit denial shown');
+  check(html.includes('Inherited default: Allowed') && html.includes('value="deny" selected=""') && html.includes('Inherited'), 'inherited default and explicit denial shown');
   check(html.includes('sm:flex-row') && html.includes('w-full') && html.includes('htmlFor') === false && html.includes('for="permission-'), 'responsive layout and linked native labels');
-  for (const actor of [{ role: 'manager', active: true, permissionOverrides: { 'users.manage': 'allow', 'access.manage': 'allow' } }, { ...admin, permissionOverrides: { 'access.manage': 'deny' } }]) check((render(actor).match(/<select[^>]*disabled/g) || []).length === 39, 'security selectors disabled without effective access.manage');
-  check((render(admin, { ...target, id: 'admin' }).match(/<select[^>]*disabled/g) || []).length === 39, 'own override UI cannot escalate');
+  for (const actor of [{ role: 'manager', active: true, permissionOverrides: { 'users.manage': 'allow', 'access.manage': 'allow' } }, { ...admin, permissionOverrides: { 'access.manage': 'deny' } }]) check((render(actor).match(/<select[^>]*disabled/g) || []).length === 40, 'security and designation selectors disabled without effective access.manage');
+  check((render(admin, { ...target, id: 'admin' }).match(/<select[^>]*disabled/g) || []).length === 40, 'own override/designation UI cannot escalate');
   check((render(admin, { ...target, role: 'support_developer' }).match(/<select[^>]*disabled/g) || []).length === 39, 'Support target protected');
   check(renderToStaticMarkup(React.createElement(Details, { actor: { role: 'manager', active: true, permissionOverrides: { 'users.manage': 'allow' } }, target })).includes('Save user details'), 'delegated operational details remain editable');
   stop(); console.log(`${checks} permission-scope adapter race, invalidation and Module Access rendering checks passed (controlled responses, not browser acceptance).`);

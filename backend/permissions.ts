@@ -19,14 +19,14 @@ export async function currentActor(req: express.Request, tx: RecordTransaction) 
 }
 export function assertAccessTarget(identity: SessionIdentity, profile: any, targetId: string, target: any, next: any) {
   assertCapability(profile, 'access.manage');
-  if (identity.uid === targetId && (Object.hasOwn(next, 'permissionOverrides') || next.role && next.role !== target.role)) permissionDenied('You cannot change your own role or permission overrides');
+  if (identity.uid === targetId && (Object.hasOwn(next, 'permissionOverrides') || Object.hasOwn(next, 'staffDesignation') || next.role && next.role !== target.role)) permissionDenied('You cannot change your own role, designation or permission overrides');
   if (!isSupportDeveloper(profile.role) && (isSupportDeveloper(target.role) || isSupportDeveloper(next.role))) permissionDenied('Administrators cannot manage Support / Developer access');
   assertDevelopmentRole(target.role);
   assertDevelopmentRole(next.role);
 }
 export function stageAccessAudit(tx: RecordTransaction, identity: SessionIdentity, profile: any, targetId: string, old: any, next: any) {
   const changes: any[] = [];
-  for (const field of ['role', 'assignedBranches', 'defaultBranchId']) {
+  for (const field of ['role', 'staffDesignation', 'assignedBranches', 'defaultBranchId']) {
     if (JSON.stringify(old?.[field] ?? null) !== JSON.stringify(next[field] ?? null)) changes.push({ field, before: old?.[field] ?? null, after: next[field] ?? null });
   }
   const before = old?.permissionOverrides === undefined ? {} : normalizePermissionOverrides(old.permissionOverrides);

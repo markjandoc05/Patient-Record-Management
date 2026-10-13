@@ -63,6 +63,12 @@
     "test:visit-services-ui": "tsx scripts/test-visit-services-ui.ts",
     "test:appointment-services-api": "node --import tsx scripts/test-appointment-services-api.ts",
     "test:appointment-services-ui": "node --import tsx scripts/test-appointment-services-ui.ts",
+    "test:appointment-performers": "node --import tsx scripts/test-appointment-performers.ts",
+    "test:appointment-performers-ui": "node --import tsx scripts/test-appointment-performers-component.tsx",
+    "test:clinical-charts-policy": "node --import tsx scripts/test-clinical-charts-policy.ts",
+    "test:clinical-charts-transport": "node --import tsx scripts/test-clinical-charts-transport.ts",
+    "test:clinical-charts-api": "node --import tsx scripts/test-clinical-charts-api.ts",
+    "test:clinical-charts-ui": "node --import tsx scripts/test-clinical-charts-ui.ts",
     "test:services-ui": "node --import tsx scripts/test-services-ui.ts"
   },
   "dependencies": {

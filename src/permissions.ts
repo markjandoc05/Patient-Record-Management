@@ -1,4 +1,5 @@
 import { administrativeRoles, clinicalPatientRoles, developerRoles, RBAC } from './rbac';
+import { isMedicalStaffDesignation } from './staffDesignation';
 
 const all = Object.keys(RBAC);
 const admin = administrativeRoles;
@@ -48,12 +49,21 @@ export const permissionDefinitions = [
 export type PermissionId = typeof permissionDefinitions[number][0];
 export type PermissionOverride = 'allow' | 'deny';
 export type PermissionOverrides = Partial<Record<PermissionId, PermissionOverride>>;
-export type PermissionActor = { role?: string; active?: boolean; accountStatus?: string; isArchived?: boolean; assignedBranches?: unknown; permissionOverrides?: unknown; accessRevision?: unknown };
+export type PermissionActor = { role?: string; active?: boolean; accountStatus?: string; isArchived?: boolean; assignedBranches?: unknown; staffDesignation?: unknown; permissionOverrides?: unknown; accessRevision?: unknown };
 export type PermissionContext = { branchId?: unknown };
 const definitions = new Map<string, typeof permissionDefinitions[number]>(permissionDefinitions.map(entry => [entry[0], entry]));
 export function isPermissionId(value: string): value is PermissionId { return definitions.has(value); }
 export function roleAllows(role: unknown, id: PermissionId): boolean {
   return typeof role === 'string' && (definitions.get(id)?.[3] as readonly string[] | undefined)?.includes(role) === true;
+}
+// Medical Staff and Nurses use the Doctor's Visit workflow, while retaining the
+// Staff role, explicit denials, assigned branches and separate signing authority.
+export const medicalStaffPermissions: readonly PermissionId[] = [
+  'visits.create', 'visits.edit', 'visits.attachments.manage', 'clinical.edit_draft',
+];
+export function defaultAllows(actor: PermissionActor | null | undefined, id: PermissionId): boolean {
+  return roleAllows(actor?.role, id) || actor?.role === 'staff'
+    && isMedicalStaffDesignation(actor.staffDesignation) && medicalStaffPermissions.includes(id);
 }
 export function activeAccount(actor?: PermissionActor | null): boolean {
   return !!actor && actor.active === true && !actor.isArchived && typeof actor.role === 'string' && Object.hasOwn(RBAC, actor.role)
@@ -81,7 +91,7 @@ export function hasCapability(actor: PermissionActor | null | undefined, id: Per
   try { overrides = actor!.permissionOverrides === undefined ? {} : normalizePermissionOverrides(actor!.permissionOverrides); }
   catch { return false; }
   if (overrides[id] === 'deny') return false;
-  if (overrides[id] !== 'allow' && !roleAllows(actor!.role, id)) return false;
+  if (overrides[id] !== 'allow' && !defaultAllows(actor, id)) return false;
   // Security administration and Developer safeguards are not delegable by a map.
   if (id === 'access.manage' && !(administrativeRoles as readonly string[]).includes(actor!.role!)) return false;
   if (id === 'developer.access' && !(developerRoles as readonly string[]).includes(actor!.role!)) return false;
@@ -89,7 +99,7 @@ export function hasCapability(actor: PermissionActor | null | undefined, id: Per
 }
 export function permissionScopeKey(actor?: PermissionActor | null): string {
   const overrides = actor?.permissionOverrides;
-  return JSON.stringify([actor?.accessRevision ?? 0, overrides && typeof overrides === 'object'
+  return JSON.stringify([actor?.accessRevision ?? 0, actor?.staffDesignation ?? null, overrides && typeof overrides === 'object'
     ? Object.entries(overrides).sort(([a], [b]) => a.localeCompare(b)) : overrides ?? null]);
 }
 

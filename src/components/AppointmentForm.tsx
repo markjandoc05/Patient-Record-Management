@@ -1,6 +1,7 @@
 import { uiCan, uiPermissionScope } from '../permissionState';
 import AppointmentServicePicker, { type AppointmentServiceChoice } from './AppointmentServicePicker';
 import { matchesPatientLookup } from '../utils/patientLookup';
+import { isEligibleVisitPerformer } from '../utils/visitPerformerPolicy';
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { collection, getDocs, limit, orderBy, query, subscribeProtectedDataInvalidation, where } from '../dataClient';
 import { CheckCircle2, Clock3, Search } from 'lucide-react';
@@ -85,10 +86,14 @@ function AppointmentFormWorkspace({
   const today = getActiveDatePrefix();
   const nowTime = getActiveDateTimeInput().slice(11, 16);
 
-  const doctors = useMemo(() => users.filter(user => user.role?.toLowerCase() === 'doctor' && user.active !== false), [users]);
+  const doctors = useMemo(() => users.filter(user => user.role === 'doctor'), [users]);
   const availableDoctors = useMemo(() => branchId
-    ? doctors.filter(doctor => doctor.assignedBranches?.includes(branchId) || doctor.id === appointment?.doctorId)
-    : [], [appointment?.doctorId, branchId, doctors]);
+    ? doctors.filter(doctor => isEligibleVisitPerformer(doctor, branchId))
+    : [], [branchId, doctors]);
+  const historicalDoctor = doctorId && doctorId === appointment?.doctorId
+    && !availableDoctors.some(doctor => doctor.id === doctorId);
+  const historicalDoctorName = appointment?.doctorName || users.find(user => user.id === appointment?.doctorId)?.fullName
+    || users.find(user => user.id === appointment?.doctorId)?.name || 'Recorded doctor';
   const selectedPatient = patients.find(patient => patient.id === patientId);
   const visiblePatients = useMemo(() => {
     const needle = patientSearch.trim().toLowerCase();
@@ -137,8 +142,10 @@ function AppointmentFormWorkspace({
   }, [activeTab, appointment?.id, canViewHistory]);
 
   const isSlotAvailable = (time: string) => {
-    if (!doctorId || !selectedDate) return false;
+    if (!branchId || !selectedDate) return false;
     if (!appointment && selectedDate === today && time <= nowTime) return false;
+    // An unassigned booking does not reserve an individual doctor's time.
+    if (!doctorId) return true;
     const appointmentDate = `${selectedDate}T${time}`;
     return !appointments.some(item =>
       item.id !== appointment?.id
@@ -165,7 +172,7 @@ function AppointmentFormWorkspace({
     }
     setBranchId(nextBranchId);
     clearError('branchId');
-    const doctorStillAvailable = doctors.some(doctor => doctor.id === doctorId && doctor.assignedBranches?.includes(nextBranchId));
+    const doctorStillAvailable = doctors.some(doctor => doctor.id === doctorId && isEligibleVisitPerformer(doctor, nextBranchId));
     if (!doctorStillAvailable) setDoctorId('');
   };
 
@@ -192,14 +199,13 @@ function AppointmentFormWorkspace({
     if (serviceUnresolved) validationErrors.serviceSelection = 'Choose an eligible Service, confirm the reviewed Service, or explicitly remove it before saving.';
     if (!patientId || !selectedPatient) validationErrors.patientId = 'Select a patient from the results.';
     if (!branchId) validationErrors.branchId = 'Select the clinic for this appointment.';
-    if (!doctorId) validationErrors.doctorId = 'Select an available doctor.';
     if (!selectedDate) validationErrors.appointmentDate = 'Select an appointment date.';
     if (!selectedTime) validationErrors.appointmentDate = 'Select an available time slot.';
     if (!visitType) validationErrors.visitType = 'Select the visit type.';
     if (!finalStatus) validationErrors.status = 'Select an appointment status.';
     if (uiCan(currentUserRole, 'clinical.view') && finalStatus === 'Completed' && !mainConcern.trim()) validationErrors.mainConcern = 'A main concern is required before completion.';
     if (uiCan(currentUserRole, 'clinical.view') && finalStatus === 'Completed' && !notes.trim()) validationErrors.notes = 'Clinical notes are required before completion.';
-    if (doctorId && selectedTime && !isSlotAvailable(selectedTime)) validationErrors.appointmentDate = 'This time slot is no longer available. Choose another slot.';
+    if (selectedTime && !isSlotAvailable(selectedTime)) validationErrors.appointmentDate = 'This time slot is no longer available. Choose another slot.';
 
     if (Object.keys(validationErrors).length > 0) {
       setErrors(validationErrors);
@@ -216,7 +222,7 @@ function AppointmentFormWorkspace({
       patientId,
       appointmentDate,
       branchId,
-      doctorId,
+      doctorId: doctorId || null,
       visitType,
       mainConcern: mainConcern.trim(),
       notes: notes.trim(),
@@ -293,11 +299,11 @@ function AppointmentFormWorkspace({
               {serviceBranchNotice && <p role="status" className="text-xs text-amber-700">Clinic changed. Choose a Service for this clinic, or continue without a Service.</p>}
               <AppointmentServicePicker key={branchId} branchId={branchId} readOnly={isReadOnly} recorded={appointment} choice={serviceChoice} onChange={changeService} onReviewRequired={requireServiceReview} unresolved={serviceUnresolved} error={errors.serviceSelection} />
 
-              <div className="space-y-1.5"><label htmlFor="appointment-doctor" className="text-xs font-semibold text-slate-600">Doctor <span className="text-rose-500">*</span></label><select id="appointment-doctor" data-appointment-field="doctorId" value={doctorId} onChange={event => { setDoctorId(event.target.value); clearError('doctorId'); }} disabled={isReadOnly || !branchId} className={fieldClass('doctorId', `h-[42px] ${(isReadOnly || !branchId) ? 'cursor-not-allowed bg-slate-50 text-slate-500' : ''}`)}><option value="">{branchId ? 'Select doctor' : 'Select a clinic first'}</option>{availableDoctors.map(doctor => <option key={doctor.id} value={doctor.id}>{doctor.fullName || doctor.name}</option>)}</select>{errors.doctorId && <p className="text-xs font-medium text-rose-600">{errors.doctorId}</p>}</div>
+              <div className="space-y-1.5"><label htmlFor="appointment-doctor" className="text-xs font-semibold text-slate-600">Doctor (optional)</label><select id="appointment-doctor" data-appointment-field="doctorId" aria-describedby="appointment-doctor-hint" value={doctorId} onChange={event => { setDoctorId(event.target.value); clearError('doctorId'); clearError('appointmentDate'); }} disabled={isReadOnly || !branchId} className={fieldClass('doctorId', `h-[42px] ${(isReadOnly || !branchId) ? 'cursor-not-allowed bg-slate-50 text-slate-500' : ''}`)}><option value="">Unassigned — assign later</option>{historicalDoctor && <option value={doctorId}>{historicalDoctorName} (recorded)</option>}{availableDoctors.map(doctor => <option key={doctor.id} value={doctor.id}>{doctor.fullName || doctor.name}</option>)}</select><p id="appointment-doctor-hint" className="text-xs text-slate-600">You can assign a doctor later through Edit appointment. Unassigned bookings do not reserve a doctor's time.</p>{errors.doctorId && <p className="text-xs font-medium text-rose-600">{errors.doctorId}</p>}</div>
 
-              <div className="space-y-1.5"><label className="text-xs font-semibold text-slate-600">Appointment date <span className="text-rose-500">*</span></label><div data-appointment-field="appointmentDate" tabIndex={-1}><CustomDatePicker min={appointment ? '' : today} value={selectedDate} onChange={selectDate} disabled={isReadOnly || !doctorId} className={errors.appointmentDate ? 'border-rose-300 bg-rose-50/30' : ''} /></div>{errors.appointmentDate && <p className="text-xs font-medium text-rose-600">{errors.appointmentDate}</p>}</div>
+              <div className="space-y-1.5"><label className="text-xs font-semibold text-slate-600">Appointment date <span className="text-rose-500">*</span></label><div data-appointment-field="appointmentDate" tabIndex={-1}><CustomDatePicker min={appointment ? '' : today} value={selectedDate} onChange={selectDate} disabled={isReadOnly || !branchId} className={errors.appointmentDate ? 'border-rose-300 bg-rose-50/30' : ''} /></div>{errors.appointmentDate && <p className="text-xs font-medium text-rose-600">{errors.appointmentDate}</p>}</div>
 
-              <div className="space-y-2"><div className="flex items-center justify-between"><label className="text-xs font-semibold text-slate-600">Time slot <span className="text-rose-500">*</span></label>{doctorId && selectedDate && <span className="text-[11px] text-slate-400">Times shown in clinic time</span>}</div>{!doctorId ? <p className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-xs font-medium text-amber-700">Select a clinic and doctor to view available times.</p> : <div className="rounded-xl border border-slate-200 bg-slate-50 p-2"><div className="grid grid-cols-3 gap-2 sm:grid-cols-4">{timeSlots.map(time => { const available = isSlotAvailable(time); const selected = selectedTime === time; return <button key={time} type="button" disabled={isReadOnly || !available} onClick={() => { setSelectedTime(time); clearError('appointmentDate'); }} className={`rounded-lg border px-1 py-2 text-[11px] font-bold transition ${selected ? 'border-teal-600 bg-teal-600 text-white' : available ? 'border-slate-200 bg-white text-slate-700 hover:border-teal-500 hover:bg-teal-50' : 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 line-through'}`}>{formatSlot(time)}</button>; })}</div></div>}</div>
+              <div className="space-y-2"><div className="flex items-center justify-between"><label className="text-xs font-semibold text-slate-600">Time slot <span className="text-rose-500">*</span></label>{branchId && selectedDate && <span className="text-[11px] text-slate-400">Times shown in clinic time</span>}</div>{!branchId ? <p className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-xs font-medium text-amber-700">Select a clinic to view appointment times.</p> : <div className="rounded-xl border border-slate-200 bg-slate-50 p-2"><div className="grid grid-cols-3 gap-2 sm:grid-cols-4">{timeSlots.map(time => { const available = isSlotAvailable(time); const selected = selectedTime === time; return <button key={time} type="button" disabled={isReadOnly || !available} onClick={() => { setSelectedTime(time); clearError('appointmentDate'); }} className={`rounded-lg border px-1 py-2 text-[11px] font-bold transition ${selected ? 'border-teal-600 bg-teal-600 text-white' : available ? 'border-slate-200 bg-white text-slate-700 hover:border-teal-500 hover:bg-teal-50' : 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 line-through'}`}>{formatSlot(time)}</button>; })}</div></div>}</div>
             </section>
 
             <section className="space-y-4">

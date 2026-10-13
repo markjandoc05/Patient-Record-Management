@@ -1,15 +1,25 @@
 import { performedServiceLabel } from '../utils/visitServicePolicy';
-import React, { useState } from 'react';
+import { visitPerformerName } from '../utils/visitPerformerPolicy';
+import React, { useEffect, useState } from 'react';
 import { formatDateTime } from '../utils';
+import { uiCan } from '../permissionState';
+import ClinicalChartModal from './ClinicalChartModal';
 
-export default function PatientTimeline({ patientId, users, branches, visits }: { patientId: string, users: any[], branches: any[], visits: any[] }) {
+export default function PatientTimeline({ patientId, users, branches, visits, userRole }: { patientId: string, users: any[], branches: any[], visits: any[], userRole?: string }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedVisit, setSelectedVisit] = useState<any | null>(null);
+  const [chartVisitId, setChartVisitId] = useState<string | null>(null);
   const visitsPerPage = 5;
 
   const patientVisits = visits
     .filter(visit => visit.patientId === patientId && visit.isArchived !== true)
     .sort((a, b) => (b.visitDate || '').localeCompare(a.visitDate || ''));
+
+  const canViewChart = uiCan(userRole, 'clinical.view') && uiCan(userRole, 'visits.view');
+  const chartVisit = patientVisits.find(visit => visit.id === chartVisitId);
+  useEffect(() => {
+    if (chartVisitId && (!chartVisit || !canViewChart)) setChartVisitId(null);
+  }, [chartVisitId, chartVisit, canViewChart]);
 
   const totalPages = Math.ceil(patientVisits.length / visitsPerPage);
   const paginatedVisits = patientVisits.slice((currentPage - 1) * visitsPerPage, currentPage * visitsPerPage);
@@ -66,9 +76,9 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
                   {/* Column 1 */}
                   <div className="space-y-2.5">
                     <div>
-                      <span className="text-slate-400 block font-semibold uppercase tracking-wider text-[9px]">Provider / Doctor</span>
+                      <span className="text-slate-400 block font-semibold uppercase tracking-wider text-[9px]">{c.performedByUserId ? 'Performed by' : 'Recorded doctor'}</span>
                       <span className="text-slate-800 font-semibold text-sm block">
-                        {users.find(u => u.id === c.doctorId)?.fullName || users.find(u => u.id === c.doctorId)?.name || c.doctorId}
+                        {visitPerformerName(c, users)}
                       </span>
                     </div>
                     <div>
@@ -152,9 +162,9 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Doctor / Provider</span>
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">{selectedVisit.performedByUserId ? 'Performed by' : 'Recorded doctor'}</span>
                   <span className="font-semibold text-slate-800">
-                    {users.find(u => u.id === selectedVisit.doctorId)?.fullName || users.find(u => u.id === selectedVisit.doctorId)?.name || selectedVisit.doctorId}
+                    {visitPerformerName(selectedVisit, users)}
                   </span>
                 </div>
                 <div>
@@ -165,6 +175,9 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
                 </div>
               </div>
 
+              {selectedVisit.assistingStaffText && <div><p className="text-xs font-semibold text-slate-600">Assisting staff</p><p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">{selectedVisit.assistingStaffText}</p></div>}
+              {(selectedVisit.createdByName || selectedVisit.createdBy) && <div><p className="text-xs font-semibold text-slate-600">Recorded by</p><p className="mt-1 text-sm text-slate-800">{selectedVisit.createdByName || selectedVisit.createdBy}</p></div>}
+              {selectedVisit.doctorId && selectedVisit.performedByUserId && selectedVisit.doctorId !== selectedVisit.performedByUserId && <div><p className="text-xs font-semibold text-slate-600">Associated doctor</p><p className="mt-1 text-sm text-slate-800">{users.find(user => user.id === selectedVisit.doctorId)?.fullName || users.find(user => user.id === selectedVisit.doctorId)?.name || selectedVisit.doctorName || 'Recorded doctor'}</p></div>}
               <div className="grid grid-cols-1 gap-4 pt-2 sm:grid-cols-2">
                 <div>
                   <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Service Performed</span>
@@ -189,6 +202,7 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
               </div>
 
               <div className="flex justify-end pt-2">
+                {canViewChart && patientVisits.some(visit => visit.id === selectedVisit.id) && <button type="button" onClick={() => setChartVisitId(selectedVisit.id)} className="mr-2 rounded-xl bg-teal-700 px-4 py-2 text-xs font-semibold text-white hover:bg-teal-800">Open chart</button>}
                 <button 
                   onClick={() => setSelectedVisit(null)} 
                   className="px-5 py-2 bg-slate-800 hover:bg-slate-900 font-semibold text-xs text-white rounded-xl shadow-sm transition duration-150"
@@ -200,6 +214,7 @@ export default function PatientTimeline({ patientId, users, branches, visits }: 
           </div>
         </div>
       )}
+      {canViewChart && chartVisit && <ClinicalChartModal visit={chartVisit} users={users} userRole={userRole} onClose={() => setChartVisitId(null)} />}
     </div>
   );
 }

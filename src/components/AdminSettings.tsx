@@ -1,7 +1,7 @@
 import UserOperationalDetails from './UserOperationalDetails';
 import { hasCapability, canOpenView, permissionScopeKey } from '../permissions';
 import UserPermissionEditor from './UserPermissionEditor';
-import { updateUserAccess } from '../utils/accessApi';
+import { mergeUserAccessResult, updateUserAccess } from '../utils/accessApi';
 import UserRoleSelect from './UserRoleSelect';
 import React, { useState, useEffect, useRef } from 'react';
 import { collection, onSnapshot, doc, updateDoc, setDoc, getDoc, getDocs, addDoc, writeBatch, limit, query, where } from '../dataClient';
@@ -157,7 +157,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
   const canManageBranches = canManageAccess && hasCapability(userProfile, 'branches.manage');
   const allowedTabs = SETTINGS_TABS.filter(tab => tab.id === 'access' ? canManageAccess || canManageUsers : tab.id === 'branches' ? hasCapability(userProfile, 'branches.view') && hasCapability(userProfile, 'settings.view') : hasCapability(userProfile, 'settings.view'));
   useEffect(() => { if (!allowedTabs.some(tab => tab.id === activeSettingsTab) && allowedTabs[0]) setActiveSettingsTab(allowedTabs[0].id); }, [userProfile, activeSettingsTab]);
-  const acceptAccess = (result: any) => setUsers(current => current.map(user => user.id === result.id ? { ...user, ...result } : user));
+  const acceptAccess = (result: any) => setUsers(current => mergeUserAccessResult(current, result));
   const canManageFooter = isSupportDeveloper(normalizedUserRole) && canManageSettings;
   const latestUserAccess = useRef({ users, branches, usersLoaded, branchesLoaded, accessErrors });
   latestUserAccess.current = { users, branches, usersLoaded, branchesLoaded, accessErrors };

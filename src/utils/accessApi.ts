@@ -1,6 +1,15 @@
 import { auth } from '../platform';
 import { captureProtectedRequestScope, protectedFetch, invalidateProtectedData } from '../dataClient';
 
+export type UserAccessResult = { id: string; accessRevision: number; staffDesignation?: string | null; permissionOverrides: Record<string, 'allow' | 'deny'> };
+
+// Compare with the state at merge time: a profile refresh may already be queued
+// even when an editor still holds the previous rendered target.
+export function mergeUserAccessResult<T extends { id: string; accessRevision?: number }>(users: T[], result: UserAccessResult): T[] {
+  return users.map(user => user.id === result.id && (user.accessRevision ?? 0) <= result.accessRevision
+    ? { ...user, ...result } : user);
+}
+
 export async function updateUserAccess(userId: string, expectedAccessRevision: number, changes: Record<string, unknown>) {
   const current = captureProtectedRequestScope();
   const user = auth.currentUser;
@@ -18,5 +27,5 @@ export async function updateUserAccess(userId: string, expectedAccessRevision: n
     if ([401, 403].includes(response.status)) invalidateProtectedData(error);
     throw error;
   }
-  return body as { id: string; accessRevision: number; permissionOverrides: Record<string, 'allow' | 'deny'> };
+  return body as UserAccessResult;
 }

@@ -70,7 +70,7 @@ export default function PatientAppointments({ patientId, users, branches, appoin
                     <div>
                       <span className="text-slate-400 block font-semibold uppercase tracking-wider text-[9px]">Provider / Doctor</span>
                       <span className="text-slate-800 font-semibold text-sm block">
-                        {users.find(u => u.id === appt.doctorId)?.fullName || users.find(u => u.id === appt.doctorId)?.name || 'N/A'}
+                        {users.find(u => u.id === appt.doctorId)?.fullName || users.find(u => u.id === appt.doctorId)?.name || (appt.doctorId ? appt.doctorName || 'Doctor not available' : 'Unassigned')}
                       </span>
                     </div>
                     <div>
@@ -156,7 +156,7 @@ export default function PatientAppointments({ patientId, users, branches, appoin
                 <div>
                   <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Doctor / Provider</span>
                   <span className="font-semibold text-slate-800">
-                    {users.find(u => u.id === selectedAppointment.doctorId)?.fullName || users.find(u => u.id === selectedAppointment.doctorId)?.name || 'N/A'}
+                    {users.find(u => u.id === selectedAppointment.doctorId)?.fullName || users.find(u => u.id === selectedAppointment.doctorId)?.name || (selectedAppointment.doctorId ? selectedAppointment.doctorName || 'Doctor not available' : 'Unassigned')}
                   </span>
                 </div>
                 <div>

@@ -52,11 +52,11 @@ try {
   check((await query('users/pending', 'pending')).status === 200, 'pending own-profile onboarding exception preserved');
   check((await grants('manager', { 'users.manage': 'allow', 'services.manage': 'allow', 'services.pricing': 'allow', 'access.manage': 'allow' })).status === 200, 'administrator explicit grants');
   check((await write('users/staff', { fullName: 'Updated operational name', contactNumber: '123456' })).status === 200, 'delegated operational user details');
-  for (const changes of [{ role: 'admin' }, { assignedBranches: ['A', 'B'] }, { permissionChanges: { 'clinical.finalize': 'allow' } }]) {
+  for (const changes of [{ role: 'admin' }, { staffDesignation: 'Nurse' }, { assignedBranches: ['A', 'B'] }, { permissionChanges: { 'clinical.finalize': 'allow' } }]) {
     check((await access('manager', changes, 'manager')).status === 403, 'Manager self escalation blocked');
     check((await access('staff', changes, 'manager')).status === 403, 'users.manage cannot delegate security policy');
   }
-  for (const changes of [{ role: 'admin' }, { assignedBranches: ['A', 'B'] }, { permissionOverrides: { 'clinical.finalize': 'allow' } }, { accessRevision: 40 }, { active: false }]) check((await write('users/staff', changes)).status === 403, 'generic user API blocks security/lifecycle bypass');
+  for (const changes of [{ role: 'admin' }, { staffDesignation: 'Nurse' }, { assignedBranches: ['A', 'B'] }, { permissionOverrides: { 'clinical.finalize': 'allow' } }, { accessRevision: 40 }, { active: false }]) check((await write('users/staff', changes)).status === 403, 'generic user API blocks security/lifecycle bypass');
   for (const actor of ['admin', 'support_developer']) {
     check((await grants(actor, { 'clinical.finalize': 'allow' }, actor)).status === 403, 'self override blocked ' + actor);
     check((await access(actor, { role: 'doctor' }, actor)).status === 403, 'self role change blocked ' + actor);

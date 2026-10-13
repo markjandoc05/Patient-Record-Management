@@ -25,7 +25,7 @@ export default function CalendarView({ appointments, onSelectEvent }: { appointm
     end: new Date(new Date(a.appointmentDate).getTime() + 60 * 60 * 1000), // 1-hour default
     allDay: false,
     resource: a,
-    tooltip: `Patient: ${a.patientName}\nType: ${a.visitType}\nStatus: ${a.status}\nDoctor: ${a.doctorId}`,
+    tooltip: `Patient: ${a.patientName}\nType: ${a.visitType}\nStatus: ${a.status}\nDoctor: ${a.doctorId ? a.doctorName || a.doctorId : 'Unassigned'}`,
   }));
 
   return (

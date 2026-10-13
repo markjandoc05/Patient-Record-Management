@@ -1,9 +1,11 @@
-import { uiRecordPermission } from '../permissionState';
+import { uiCan, uiRecordPermission } from '../permissionState';
 import { performedServiceLabel, isVisitClinicallySealed } from '../utils/visitServicePolicy';
+import { visitPerformerName } from '../utils/visitPerformerPolicy';
 import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot } from '../dataClient';
 import { formatDateTime } from '../utils';
 import VisitForm from './VisitForm';
+import ClinicalChartModal from './ClinicalChartModal';
 import { hasPermission, Role } from '../rbac';
 import { Activity, Archive, Calendar, CalendarCheck2, ChevronLeft, ChevronRight, CircleAlert, Eye, Inbox, MapPin, Pencil, Plus, RotateCcw, Search, Stethoscope, UserRound, X } from 'lucide-react';
 import { getAccessibleBranches, subscribeToBranchScopedCollection, subscribeToSharedCollection } from '../utils/branchAccess';
@@ -37,6 +39,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [selectedVisit, setSelectedVisit] = useState<any>(null);
+  const [chartVisit, setChartVisit] = useState<any>(null);
   
   const [searchTerm, setSearchTerm] = useState('');
   const [filterVisitType, setFilterVisitType] = useState('All');
@@ -47,9 +50,9 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [showArchived, setShowArchived] = useState(false);
 
-  const canCreate = role ? uiRecordPermission(role as Role, 'visitHistory', 'create') : false;
-  const canUpdate = role ? uiRecordPermission(role as Role, 'visitHistory', 'update') : false;
-  const canArchive = role ? uiRecordPermission(role as Role, 'visitHistory', 'delete') : false;
+  const canCreate = uiRecordPermission(userProfile || role, 'visitHistory', 'create');
+  const canUpdate = uiRecordPermission(userProfile || role, 'visitHistory', 'update');
+  const canArchive = uiRecordPermission(userProfile || role, 'visitHistory', 'delete');
 
   useEffect(() => {
     const unsubVisits = subscribeToBranchScopedCollection(db, 'visits', 'branchId', userProfile, setVisits, undefined, [], true);
@@ -90,10 +93,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
     setCurrentPage(1);
   };
 
-  const doctorName = (visit: any) => {
-    const doctor = users.find(user => user.id === visit.doctorId);
-    return doctor ? (doctor.fullName || doctor.name) : 'Not assigned';
-  };
+  const doctorName = (visit: any) => visitPerformerName(visit, users);
 
   const branchName = (visit: any) => branches.find(branch => branch.id === visit.branchId)?.branchName || visit.branchName || 'Not assigned';
 
@@ -282,7 +282,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
               <tr>
                 <th className="px-5 py-3.5">Date and time</th>
                 <th className="px-5 py-3.5">Patient and service</th>
-                <th className="px-5 py-3.5">Provider and source</th>
+                <th className="px-5 py-3.5">Performer / doctor and source</th>
                 <th className="px-5 py-3.5">Outcome</th>
                 <th className="px-5 py-3.5">Clinic and status</th>
                 <th className="px-5 py-3.5 text-right">Actions</th>
@@ -356,7 +356,10 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
                 <h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-400">Visit overview</h3>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {[
-                    ['Provider', doctorName(selectedVisit)],
+                    [selectedVisit.performedByUserId ? 'Performed by' : 'Recorded doctor', doctorName(selectedVisit)],
+                    ...(selectedVisit.createdByName || selectedVisit.createdBy ? [['Recorded by', selectedVisit.createdByName || selectedVisit.createdBy]] : []),
+                    ...(selectedVisit.assistingStaffText ? [['Assisting staff', selectedVisit.assistingStaffText]] : []),
+                    ...(selectedVisit.doctorId && selectedVisit.performedByUserId && selectedVisit.doctorId !== selectedVisit.performedByUserId ? [['Associated doctor', users.find(user => user.id === selectedVisit.doctorId)?.fullName || users.find(user => user.id === selectedVisit.doctorId)?.name || selectedVisit.doctorName || 'Recorded doctor']] : []),
                     ['Clinic', branchName(selectedVisit)],
                     ['Source', selectedVisit.visitSource || 'Not recorded'],
                     ['Service', performedServiceLabel(selectedVisit, 'Not recorded')],
@@ -403,11 +406,13 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
               {canUpdate && !selectedVisit.isArchived && !isVisitClinicallySealed(selectedVisit) && (role !== 'doctor' || selectedVisit.doctorId === auth.currentUser?.uid) && (
                 <button className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-700 hover:bg-slate-100" onClick={() => setShowAddForm(true)}><Pencil className="h-4 w-4" /> Edit visit</button>
               )}
+              {uiCan(role, 'clinical.view') && uiCan(role, 'visits.view') && <button type="button" onClick={() => setChartVisit(selectedVisit)} className="inline-flex h-10 items-center justify-center rounded-xl bg-teal-700 px-4 text-xs font-semibold text-white hover:bg-teal-800">Open chart</button>}
               <button className="inline-flex h-10 items-center justify-center rounded-xl bg-slate-900 px-5 text-xs font-semibold text-white hover:bg-slate-800" onClick={() => setSelectedVisit(null)}>Close</button>
             </div>
           </div>
         </div>
       )}
+      {chartVisit && <ClinicalChartModal visit={visits.find(visit => visit.id === chartVisit.id) || chartVisit} users={users} userProfile={userProfile} userRole={role} onClose={() => setChartVisit(null)} />}
     </div>
   );
 }

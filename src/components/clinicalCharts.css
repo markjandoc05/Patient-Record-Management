@@ -1,0 +1,26 @@
+@media print {
+  /* A chart can be opened inside the patient drawer or a Visit detail modal.
+     Remove only those ancestor clipping/position rules for its print view. */
+  body:has(.clinical-chart-dialog) *:has(.clinical-chart-dialog) {
+    position: static !important;
+    inset: auto !important;
+    transform: none !important;
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+    width: auto !important;
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+  }
+  body:has(.clinical-chart-dialog) *:not(:has(.clinical-chart-dialog)):not(.clinical-chart-dialog):not(.clinical-chart-dialog *) { display: none !important; }
+  body:has(.clinical-chart-dialog) * { visibility: hidden !important; }
+  .clinical-chart-print, .clinical-chart-print * { visibility: visible !important; }
+  .clinical-chart-dialog { position: static !important; display: block !important; inset: auto !important; padding: 0 !important; background: white !important; backdrop-filter: none !important; overflow: visible !important; }
+  .clinical-chart-dialog > div { max-height: none !important; max-width: none !important; overflow: visible !important; border: 0 !important; box-shadow: none !important; }
+  .clinical-chart-print { display: block !important; position: static !important; width: 100% !important; padding: 10mm !important; background: white !important; color: black !important; }
+  .clinical-chart-print .clinical-chart-map { break-inside: avoid; }
+  .clinical-chart-print p, .clinical-chart-print li { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .clinical-chart-no-print { display: none !important; }
+}

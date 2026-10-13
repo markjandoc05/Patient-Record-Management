@@ -10,7 +10,7 @@ export function uiCan(fallback: PermissionActor | string | null | undefined, per
   return hasCapability(actor, permission);
 }
 export function uiPermissionScope(fallback?: PermissionActor | null) { return permissionScopeKey(initialized ? profile : fallback); }
-export function uiRecordPermission(role: string | null, module: string, action: string): boolean {
+export function uiRecordPermission(role: PermissionActor | string | null | undefined, module: string, action: string): boolean {
   const prefix = ({ patientRecord: 'patients', appointment: 'appointments', visitHistory: 'visits' } as Record<string, string>)[module];
   const verb = ({ read: 'view', create: 'create', update: 'edit', delete: 'archive' } as Record<string, string>)[action];
   return !!prefix && !!verb && uiCan(role, `${prefix}.${verb}` as PermissionId)

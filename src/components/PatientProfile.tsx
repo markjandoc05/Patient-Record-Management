@@ -12,6 +12,7 @@ import {
   Clock3,
   Images,
   MapPin,
+  MapPinned,
   StickyNote,
   UserRound,
   UserX,
@@ -23,8 +24,9 @@ import PatientAppointments from './PatientAppointments';
 import NotesTab from './NotesTab';
 import AppointmentForm from './AppointmentForm';
 import PatientMediaTab from './PatientMediaTab';
+import ClinicalChartsTab from './ClinicalChartsTab';
 
-type ProfileTab = 'visits' | 'appointments' | 'notes' | 'media';
+type ProfileTab = 'visits' | 'appointments' | 'notes' | 'media' | 'charts';
 
 function displayValue(value: unknown, fallback = 'Not provided') {
   if (value === null || value === undefined || value === '') return fallback;
@@ -74,7 +76,7 @@ export default function PatientProfile({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape' && !document.querySelector('[data-clinical-chart-dialog]')) onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
@@ -126,7 +128,8 @@ export default function PatientProfile({
     { id: 'appointments', label: 'Appointments', count: patientAppointments.length, icon: CalendarDays },
     { id: 'notes', label: 'Notes', icon: StickyNote },
     { id: 'media', label: 'Media', icon: Images },
-  ].filter(tab => clinicalAccess || tab.id === 'appointments') as typeof tabs;
+    { id: 'charts', label: 'Clinical Charts', icon: MapPinned },
+  ].filter(tab => (clinicalAccess || tab.id === 'appointments') && (tab.id !== 'charts' || uiCan(userRole, 'visits.view'))) as typeof tabs;
 
   return (
     <>
@@ -266,7 +269,7 @@ export default function PatientProfile({
 
               <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                 <div className="border-b border-slate-200 p-3 sm:p-4">
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" role="tablist" aria-label="Patient record sections">
+                  <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap" role="tablist" aria-label="Patient record sections">
                     {tabs.map(tab => {
                       const Icon = tab.icon;
                       const isActive = activeTab === tab.id;
@@ -298,11 +301,13 @@ export default function PatientProfile({
 
                 <div className="min-h-56 p-4 sm:p-5">
                   {activeTab === 'visits' ? (
-                    <PatientTimeline patientId={patient.id} users={users} branches={branches} visits={visits} />
+                    <PatientTimeline patientId={patient.id} users={users} branches={branches} visits={visits} userRole={userRole} />
                   ) : activeTab === 'appointments' ? (
                     <PatientAppointments patientId={patient.id} users={users} branches={branches} appointments={appointments} />
                   ) : activeTab === 'notes' ? (
                     <NotesTab patient={patient} userRole={userRole} />
+                  ) : activeTab === 'charts' ? (
+                    <ClinicalChartsTab patientId={patient.id} visits={visits} users={users} userRole={userRole} />
                   ) : (
                     <PatientMediaTab patientId={patient.id} users={users} branches={branches} visits={visits} />
                   )}

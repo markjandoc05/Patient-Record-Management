@@ -4,8 +4,10 @@ import { redactClinicalData, protectClinicalWrite, clinicalWriteFields } from '.
 import { mountAccessApi } from './backend/accessApi';
 import { applyVisitServiceSelection } from './backend/visitServices';
 import { isVisitClinicallySealed } from './src/utils/visitServicePolicy';
+import { ASSISTING_STAFF_MAX_LENGTH, isEligibleVisitPerformer, visitDoctorIds, visitPerformerSnapshotFields } from './src/utils/visitPerformerPolicy';
 import { AppointmentServiceError, parseAppointmentServiceSelection, appointmentServiceSnapshot } from './backend/appointmentServices';
 import { mountServices } from './backend/services';
+import { mountClinicalCharts } from './backend/clinicalCharts';
 import { parseEmergencyContact } from './src/utils/emergencyContact';
 import { parseClinicalFindings } from './src/utils/clinicalFindings';
 import { parsePatientBirth } from './src/utils/patientBirth';
@@ -65,6 +67,7 @@ mountDataApi(app);
 mountAccessApi(app);
 mountInventory(app);
 mountServices(app);
+mountClinicalCharts(app);
 app.get("/api/health", async (_req, res) => {
   try { await pool.query("SELECT 1"); res.json({ status: "ok", database: "postgresql" }); }
   catch { res.status(503).json({ status: "unavailable" }); }
@@ -429,10 +432,11 @@ function requestPermission(req: express.Request): PermissionId | undefined {
 
 async function assertDoctorAvailability(
     transaction: RecordTransaction,
-    doctorId: string,
+    doctorId: string | null,
     dateTime: string,
     exclusions: { appointmentId?: string | null, visitId?: string | null } = {}
 ) {
+    if (!doctorId) return;
     const minutePrefix = normalizeLocalDateTime(dateTime);
     const appointmentQuery = db.collection('appointments')
         .where('appointmentDate', '>=', minutePrefix)
@@ -454,10 +458,10 @@ async function assertDoctorAvailability(
     );
     const visitConflict = visits.docs.some(document =>
         document.id !== exclusions.visitId
-        && document.data().doctorId === doctorId
+        && visitDoctorIds(document.data()).includes(doctorId)
         && document.data().isArchived !== true
         && document.data().status !== 'Cancelled'
-        && document.data().appointmentId !== exclusions.appointmentId
+        && (!exclusions.appointmentId || document.data().appointmentId !== exclusions.appointmentId)
         && typeof document.data().visitDate === 'string'
         && normalizeLocalDateTime(document.data().visitDate) === normalizeLocalDateTime(dateTime)
     );
@@ -594,11 +598,11 @@ async function patientVisitSummary(
     };
 }
 
-function parseAppointmentPayload(payload: Record<string, unknown>): Record<string, any> {
+function parseAppointmentPayload(payload: Record<string, unknown>, previous?: Record<string, any>): Record<string, any> {
     const data = cleanRecordText(payload, appointmentTextLimits);
     if (!isValidDocumentId(payload.patientId)) throw new RequestError(400, 'patientId is required');
     if (!isValidDocumentId(payload.branchId)) throw new RequestError(400, 'branchId is required');
-    if (!isValidDocumentId(payload.doctorId)) throw new RequestError(400, 'doctorId is required');
+    const doctorId = optionalDoctorId(Object.hasOwn(payload, 'doctorId') ? payload.doctorId : previous?.doctorId);
     if (!isValidLocalDateTime(payload.appointmentDate)) throw new RequestError(400, 'Invalid appointment date');
     const appointmentTime = normalizeLocalDateTime(payload.appointmentDate).slice(11, 16);
     if (!/^((1[0-8]):(00|30)|19:00)$/.test(appointmentTime)) {
@@ -614,12 +618,21 @@ function parseAppointmentPayload(payload: Record<string, unknown>): Record<strin
         ...data,
         patientId: payload.patientId,
         branchId: payload.branchId,
-        doctorId: payload.doctorId,
+        doctorId,
         appointmentDate: normalizeLocalDateTime(payload.appointmentDate)
     };
 }
 
+function optionalDoctorId(value: unknown): string | null {
+    if (value === null || value === undefined || value === '') return null;
+    if (!isValidDocumentId(value)) throw new RequestError(400, 'Invalid doctorId');
+    return value as string;
+}
+
 function parseVisitPayload(payload: Record<string, unknown>, previous?: Record<string, any>): Record<string, any> {
+    if (visitPerformerSnapshotFields.some(field => Object.hasOwn(payload, field))) {
+        throw new RequestError(400, 'Performer snapshots are supplied by the server');
+    }
     // Retained historical text is not a new write: do not trim or reject an
     // imported value against today's limit. Selection mirroring happens later.
     const retainText = previous && (previous.serviceId
@@ -627,7 +640,7 @@ function parseVisitPayload(payload: Record<string, unknown>, previous?: Record<s
     const data = cleanRecordText(retainText ? { ...payload, treatmentService: undefined } : payload, visitTextLimits);
     if (!isValidDocumentId(payload.patientId)) throw new RequestError(400, 'patientId is required');
     if (!isValidDocumentId(payload.branchId)) throw new RequestError(400, 'branchId is required');
-    if (!isValidDocumentId(payload.doctorId)) throw new RequestError(400, 'doctorId is required');
+    const doctorId = optionalDoctorId(Object.hasOwn(payload, 'doctorId') ? payload.doctorId : previous?.doctorId);
     if (!isValidLocalDateTime(payload.visitDate)) throw new RequestError(400, 'Invalid visit date');
     requireRecordFields(data, ['visitType']);
     if (!visitTypes.has(data.visitType)) throw new RequestError(400, 'Invalid visit type');
@@ -636,16 +649,84 @@ function parseVisitPayload(payload: Record<string, unknown>, previous?: Record<s
         throw new RequestError(400, 'Invalid appointmentId');
     }
     if (data.nextVisitDate && !isValidDate(data.nextVisitDate)) throw new RequestError(400, 'Invalid follow-up date');
+    let assistants: Record<string, string> = {};
+    if (Object.hasOwn(payload, 'assistingStaffText')) {
+        if (previous && payload.assistingStaffText === previous.assistingStaffText) {
+            // Unchanged imported attribution remains byte-for-byte historical.
+            assistants = {};
+        } else {
+            if (typeof payload.assistingStaffText !== 'string'
+                || payload.assistingStaffText.length > ASSISTING_STAFF_MAX_LENGTH) {
+                throw new RequestError(400, `Assisting staff must contain at most ${ASSISTING_STAFF_MAX_LENGTH} characters`);
+            }
+            assistants = { assistingStaffText: payload.assistingStaffText.trim() };
+        }
+    } else if (!previous) assistants = { assistingStaffText: '' };
     return {
         ...data,
+        ...assistants,
         patientId: payload.patientId,
         branchId: payload.branchId,
-        doctorId: payload.doctorId,
+        doctorId,
         visitDate: normalizeLocalDateTime(payload.visitDate),
         appointmentId: (payload.appointmentId || null) as string | null,
         followUpRequired: payload.followUpRequired === true,
         status: 'Completed'
     };
+}
+
+async function applyVisitPerformer(
+    transaction: RecordTransaction,
+    payload: Record<string, unknown>,
+    visit: Record<string, any>,
+    previous?: Record<string, any>
+) {
+    const explicit = Object.hasOwn(payload, 'performedByUserId');
+    if (explicit && !isValidDocumentId(payload.performedByUserId)) {
+        throw new RequestError(400, 'Select a performer for this Visit');
+    }
+    const performerId = explicit ? payload.performedByUserId as string
+        : previous ? previous.performedByUserId : visit.doctorId;
+    // Legacy edits retain their original doctor-based attribution. Old doctor-only
+    // create clients still resolve a real eligible performer on the server.
+    if (previous && !explicit && !performerId) return;
+    if (!isValidDocumentId(performerId)) throw new RequestError(400, 'Select a performer for this Visit');
+    const retained = previous?.performedByUserId === performerId;
+    if (retained && previous.branchId === visit.branchId && previous.visitDate === visit.visitDate
+        && optionalDoctorId(previous.doctorId) === visit.doctorId) return;
+    const performerSnapshot = await transaction.get(db.collection('users').doc(performerId));
+    const performer = performerSnapshot.data();
+    if (!performerSnapshot.exists || !isEligibleVisitPerformer(performer, visit.branchId)) {
+        throw new RequestError(400, 'Performer is not active or eligible in the selected branch');
+    }
+    if (!visit.doctorId && performer!.role === 'doctor') visit.doctorId = performerId;
+    if (!retained) {
+        Object.assign(visit, {
+            performedByUserId: performerId,
+            performedByNameSnapshot: typeof performer!.fullName === 'string' ? performer!.fullName
+                : typeof performer!.name === 'string' ? performer!.name : '',
+            performedByRoleSnapshot: performer!.role,
+            performedByDesignationSnapshot: performer!.role === 'staff' ? performer!.staffDesignation : null
+        });
+    }
+}
+
+function assertVisitDoctorOwnership(authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> }, doctorId: string | null) {
+    if (authorization.userProfile.role === 'doctor' && doctorId !== authorization.decodedToken.uid) {
+        throw new RequestError(403, 'Doctors can only write their own visit records');
+    }
+}
+
+async function assertVisitDoctorAvailability(transaction: RecordTransaction, visit: Record<string, any>, exclusions: { appointmentId?: string | null, visitId?: string | null }) {
+    for (const doctorId of visitDoctorIds(visit)) {
+        await assertDoctorAvailability(transaction, doctorId, visit.visitDate, exclusions);
+    }
+}
+
+function matchesLinkedAppointmentDoctor(appointment: Record<string, any>, visit: Record<string, any>) {
+    const bookedDoctorId = optionalDoctorId(appointment.doctorId);
+    return bookedDoctorId ? bookedDoctorId === visit.doctorId
+        : visit.doctorId === (visit.performedByRoleSnapshot === 'doctor' ? visit.performedByUserId : null);
 }
 
 async function refreshSupportAuthorization(transaction: RecordTransaction, authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> }) {
@@ -666,7 +747,7 @@ async function refreshAppointmentAuthorization(transaction: RecordTransaction, a
     authorization.userProfile = profile;
 }
 
-async function refreshVisitAuthorization(transaction: RecordTransaction, authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> }, permission: 'CREATE' | 'UPDATE', doctorId: string) {
+async function refreshVisitAuthorization(transaction: RecordTransaction, authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> }, permission: 'CREATE' | 'UPDATE') {
     await refreshSupportAuthorization(transaction, authorization);
     const profile = authorization.userProfile;
     assertDevelopmentRole(profile?.role);
@@ -674,7 +755,6 @@ async function refreshVisitAuthorization(transaction: RecordTransaction, authori
     requireRole(profile, auditActionRoles.Visit[permission]);
     assertCapability(profile, 'clinical.view');
     assertCapability(profile, 'clinical.edit_draft');
-    if (profile.role === 'doctor' && doctorId !== authorization.decodedToken.uid) throw new RequestError(403, 'Doctors can only write their own visit records');
     authorization.userProfile = profile;
 }
 
@@ -683,28 +763,29 @@ async function transactionRecordContext(
     authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> },
     patientId: string,
     branchId: string,
-    doctorId: string
+    doctorId: string | null,
+    retainedDoctor = false
 ) {
     await refreshSupportAuthorization(transaction, authorization);
     const patientRef = db.collection('patients').doc(patientId);
     const branchRef = db.collection('branches').doc(branchId);
-    const doctorRef = db.collection('users').doc(doctorId);
+    const doctorRef = doctorId ? db.collection('users').doc(doctorId) : null;
     const [patientSnapshot, branchSnapshot, doctorSnapshot] = await Promise.all([
         transaction.get(patientRef),
         transaction.get(branchRef),
-        transaction.get(doctorRef)
+        doctorRef ? transaction.get(doctorRef) : Promise.resolve(null)
     ]);
     if (!patientSnapshot.exists) throw new RequestError(404, 'Patient not found');
     if (!branchSnapshot.exists) throw new RequestError(400, 'Branch not found');
     const patientData = patientSnapshot.data() || {};
     const branchData = branchSnapshot.data() || {};
-    const doctorData = doctorSnapshot.data() || {};
+    const doctorData = doctorSnapshot?.data() || {};
     if (!canAccessBranch(authorization.userProfile, branchId)) {
         throw new RequestError(403, 'Branch access denied');
     }
     if (patientData.isArchived === true) throw new RequestError(409, 'Patient is archived');
-    if (!doctorSnapshot.exists || doctorData.active !== true || doctorData.role !== 'doctor'
-        || !Array.isArray(doctorData.assignedBranches) || !doctorData.assignedBranches.includes(branchId)) {
+    if (doctorId && !retainedDoctor && (!doctorSnapshot?.exists || !isEligibleVisitPerformer(doctorData, branchId)
+        || doctorData.role !== 'doctor')) {
         throw new RequestError(400, 'Doctor is not active in the selected branch');
     }
     return { patientRef, patientData, branchRef, branchData, doctorRef, doctorData };
@@ -1933,7 +2014,7 @@ app.patch("/api/records/appointments/:appointmentId", async (req, res) => {
             const permittedPayload = { ...payload };
             protectClinicalWrite(authorization.userProfile, permittedPayload, appointmentData, false);
             const retainedClinical = hasCapability(authorization.userProfile, 'clinical.view') ? {} : Object.fromEntries([...clinicalWriteFields].filter(field => Object.hasOwn(appointmentData, field)).map(field => [field, appointmentData[field]]));
-            const updates = parseAppointmentPayload({ ...retainedClinical, ...permittedPayload });
+            const updates = parseAppointmentPayload({ ...retainedClinical, ...permittedPayload }, appointmentData);
             if (appointmentData.isArchived === true) throw new RequestError(409, 'Archived appointments must be restored before editing');
             if (!canAccessBranch(authorization.userProfile, appointmentData.branchId)) {
                 throw new RequestError(403, 'Branch access denied');
@@ -2007,17 +2088,16 @@ app.post("/api/records/visits", async (req, res) => {
         const payload = requestPayload(req);
         const visit = parseVisitPayload(payload);
         const selection = parseAppointmentServiceSelection(payload);
-        if (authorization.userProfile.role === 'doctor'
-            && visit.doctorId !== authorization.decodedToken.uid) {
-            throw new RequestError(403, 'Doctors can only create their own visit records');
-        }
         const visitRef = db.collection('visits').doc();
         const now = new Date().toISOString();
         const actorName = trustedUserName(authorization);
 
         await db.runTransaction(async transaction => {
-            await refreshVisitAuthorization(transaction, authorization, 'CREATE', visit.doctorId);
+            await refreshVisitAuthorization(transaction, authorization, 'CREATE');
+            if (!canAccessBranch(authorization.userProfile, visit.branchId)) throw new RequestError(403, 'Branch access denied');
             if (selection) assertCapability(authorization.userProfile, 'services.view');
+            await applyVisitPerformer(transaction, payload, visit);
+            assertVisitDoctorOwnership(authorization, visit.doctorId);
             const context = await transactionRecordContext(
                 transaction,
                 authorization,
@@ -2040,13 +2120,13 @@ app.post("/api/records/visits", async (req, res) => {
                 if (appointmentData.visitHistoryCreated === true) throw new RequestError(409, 'A visit already exists for this appointment');
                 if (appointmentData.patientId !== visit.patientId
                     || appointmentData.branchId !== visit.branchId
-                    || appointmentData.doctorId !== visit.doctorId
+                    || !matchesLinkedAppointmentDoctor(appointmentData, visit)
                     || normalizeLocalDateTime(String(appointmentData.appointmentDate || '')) !== visit.visitDate) {
                     throw new RequestError(409, 'Visit details do not match the linked appointment');
                 }
             }
 
-            await assertDoctorAvailability(transaction, visit.doctorId, visit.visitDate, {
+            await assertVisitDoctorAvailability(transaction, visit, {
                 appointmentId: visit.appointmentId
             });
             await applyVisitServiceSelection(transaction, selection, payload, visit);
@@ -2092,7 +2172,8 @@ app.post("/api/records/visits", async (req, res) => {
                 resource: 'Visit',
                 resourceId: visitRef.id,
                 resourceName: typeof context.patientData.patientID === 'string' ? context.patientData.patientID : '',
-                branchId: visit.branchId
+                branchId: visit.branchId,
+                changeFields: ['performedByUserId', ...visitPerformerSnapshotFields, 'assistingStaffText']
             });
             if (linkedAppointmentRef) {
                 stageAuditLog(transaction, {
@@ -2122,16 +2203,12 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
         if (!isValidDocumentId(req.params.visitId)) throw new RequestError(400, 'Invalid visit ID');
         const payload = requestPayload(req);
         const selection = parseAppointmentServiceSelection(payload);
-        if (authorization.userProfile.role === 'doctor'
-            && payload.doctorId !== authorization.decodedToken.uid) {
-            throw new RequestError(403, 'Doctors can only update their own visit records');
-        }
         const visitRef = db.collection('visits').doc(req.params.visitId);
         const now = new Date().toISOString();
         const actorName = trustedUserName(authorization);
 
         await db.runTransaction(async transaction => {
-            await refreshVisitAuthorization(transaction, authorization, 'UPDATE', String(payload.doctorId || ''));
+            await refreshVisitAuthorization(transaction, authorization, 'UPDATE');
             if (selection) assertCapability(authorization.userProfile, 'services.view');
             const visitSnapshot = await transaction.get(visitRef);
             if (!visitSnapshot.exists) throw new RequestError(404, 'Visit not found');
@@ -2146,16 +2223,22 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
             if (!canAccessBranch(authorization.userProfile, visitData.branchId)) {
                 throw new RequestError(403, 'Branch access denied');
             }
+            if (!canAccessBranch(authorization.userProfile, updates.branchId)) throw new RequestError(403, 'Branch access denied');
             if (updates.patientId !== visitData.patientId) throw new RequestError(409, 'A visit cannot be moved to another patient');
             if (updates.appointmentId !== (visitData.appointmentId || null)) {
                 throw new RequestError(409, 'The linked appointment cannot be changed');
             }
+            await applyVisitPerformer(transaction, payload, updates, visitData);
+            assertVisitDoctorOwnership(authorization, updates.doctorId);
+            const prospectiveVisit = { ...visitData, ...updates };
             const context = await transactionRecordContext(
                 transaction,
                 authorization,
                 updates.patientId,
                 updates.branchId,
-                updates.doctorId
+                updates.doctorId,
+                updates.doctorId === optionalDoctorId(visitData.doctorId)
+                    && updates.branchId === visitData.branchId && updates.visitDate === visitData.visitDate
             );
             if (updates.branchId !== visitData.branchId && context.branchData.status !== 'Active') {
                 throw new RequestError(400, 'Branch is not active');
@@ -2168,13 +2251,13 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
                 if (!appointmentSnapshot.exists
                     || appointmentData.patientId !== updates.patientId
                     || appointmentData.branchId !== updates.branchId
-                    || appointmentData.doctorId !== updates.doctorId
+                    || !matchesLinkedAppointmentDoctor(appointmentData, prospectiveVisit)
                     || normalizeLocalDateTime(String(appointmentData.appointmentDate || '')) !== updates.visitDate
                     || appointmentData.visitHistoryId !== visitRef.id) {
                     throw new RequestError(409, 'Visit details must remain consistent with the linked appointment');
                 }
             }
-            await assertDoctorAvailability(transaction, updates.doctorId, updates.visitDate, {
+            await assertVisitDoctorAvailability(transaction, prospectiveVisit, {
                 appointmentId: updates.appointmentId,
                 visitId: visitRef.id
             });
@@ -2341,7 +2424,7 @@ app.post("/api/records/:kind/:recordId/restore", async (req, res) => {
                 });
             }
             if (req.params.kind === 'visits') {
-                await assertDoctorAvailability(transaction, recordData.doctorId, recordData.visitDate, {
+                await assertVisitDoctorAvailability(transaction, recordData, {
                     appointmentId: recordData.appointmentId || null,
                     visitId: recordRef.id
                 });

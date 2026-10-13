@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { hasCapability, normalizePermissionOverrides, permissionDefinitions, permissionScopeKey, roleAllows } from '../src/permissions';
+import { hasCapability, normalizePermissionOverrides, permissionDefinitions, permissionScopeKey, roleAllows, medicalStaffPermissions } from '../src/permissions';
 import { RBAC, administrativeRoles } from '../src/rbac';
 import { redactClinicalData, assertClinicalQuery } from '../backend/clinicalRedaction';
 import { assertCapability } from '../backend/permissions';
@@ -26,6 +26,24 @@ for (const invalid of [null, [], true, { 'not.real': 'allow' }, { 'clinical.view
 }
 check(permissionScopeKey({ permissionOverrides: { 'patients.view': 'deny', 'clinical.view': 'allow' } }) === permissionScopeKey({ permissionOverrides: { 'clinical.view': 'allow', 'patients.view': 'deny' } }), 'override ordering does not change scope');
 check(permissionScopeKey(manager) !== permissionScopeKey({ ...manager, permissionOverrides: {} }), 'permission changes alter protected scope');
+for (const staffDesignation of ['Nurse', 'Medical Staff']) {
+  const medical = { role: 'staff', active: true, staffDesignation, assignedBranches: ['A'] };
+  for (const id of medicalStaffPermissions) {
+    check(hasCapability(medical, id, { branchId: 'A' }), `${staffDesignation} inherits ${id} in own branch`);
+    check(!hasCapability(medical, id, { branchId: 'B' }), `${staffDesignation} cannot expand branch scope`);
+    check(!hasCapability({ ...medical, permissionOverrides: { [id]: 'deny' } }, id), `${staffDesignation} explicit denial wins for ${id}`);
+    for (const invalid of [{ active: false }, { isArchived: true }, { accountStatus: 'pending' }, { permissionOverrides: { invalid: 'allow' } }]) {
+      check(!hasCapability({ ...medical, ...invalid }, id), `${staffDesignation} invalid account/map cannot use ${id}`);
+    }
+  }
+  for (const id of ['clinical.finalize', 'clinical.prescription_draft', 'clinical.private_notes.view', 'clinical.private_notes.create', 'visits.archive', 'patients.attachments.manage', 'access.manage', 'services.manage', 'developer.access'] as const) {
+    check(!hasCapability(medical, id), `${staffDesignation} gains no unrelated authority ${id}`);
+  }
+  check(permissionScopeKey(medical) !== permissionScopeKey({ ...medical, staffDesignation: 'Reception/Admin Staff' }), 'designation loss changes protected request scope');
+}
+for (const staffDesignation of [undefined, null, 'Reception/Admin Staff', 'nurse', {}, ['Nurse']]) {
+  for (const id of medicalStaffPermissions) check(!hasCapability({ role: 'staff', active: true, staffDesignation }, id), 'nonmedical or malformed designation retains Staff defaults');
+}
 const restricted = { role: 'staff', active: true, permissionOverrides: { 'clinical.view': 'deny' } };
 for (const collection of ['patients', 'appointments', 'visits']) {
   const data = { id: 'record', patientId: 'patient', patientName: 'Synthetic', branchId: 'A', doctorId: 'doctor', visitDate: '2028-01-01T09:00', status: 'Completed',
