@@ -8,6 +8,7 @@ import Lightbox from './Lightbox';
 import ConfirmationModal from './ConfirmationModal';
 import { deleteAttachment, downloadAttachment, fetchAttachmentBlob, isImageAttachment, isOptimizableImageUpload, openAttachment, uploadAttachment } from '../utils/attachmentApi';
 import { DEFAULT_MEDIA_SETTINGS, IMAGE_OPTIMIZATION, normalizeMediaSettings } from '../mediaSettings';
+import { GALLERY_PHOTO_LIMIT, galleryPhotoCount } from '../patientGalleryPolicy';
  
 export default function FileAttachmentSection({ patientId, appointmentId, visitId, isGeneral = false }: { patientId: string, appointmentId: string | null, visitId: string | null, isGeneral?: boolean }) {
   const [files, setFiles] = useState<any[]>([]);
@@ -77,6 +78,13 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
     if (!fileList) return;
     
     const newFiles = Array.from(fileList);
+
+    const newPhotoCount = newFiles.filter(file => isOptimizableImageUpload(file, file.name)).length;
+    if (visitId && newPhotoCount > 0 && galleryPhotoCount(files) + selectedFiles.filter(item => isOptimizableImageUpload(item.file, item.file.name)).length
+      + newPhotoCount > GALLERY_PHOTO_LIMIT) {
+        alert('A Visit can have up to 4 photos. Existing photos are kept; select fewer new photos.');
+        return;
+    }
 
     if (files.length + selectedFiles.length + newFiles.length > settings.maxFilesPerRecord) {
         alert(`Maximum of ${settings.maxFilesPerRecord} files reached for this record.`);
@@ -208,6 +216,7 @@ export default function FileAttachmentSection({ patientId, appointmentId, visitI
             )}
         </div>
         <p className="text-[10px] text-slate-400">Allowed: {settings.allowedExtensions.join(', ')} · Up to {settings.maxFileSizeMB} MB each · {settings.maxFilesPerRecord} files per record</p>
+        {visitId && <p className="text-xs text-slate-600">Photos: {galleryPhotoCount(files)} / {GALLERY_PHOTO_LIMIT} — {Math.max(0, GALLERY_PHOTO_LIMIT - galleryPhotoCount(files))} remaining. Older photos are retained.</p>}
         <p className="text-[10px] font-medium text-emerald-600">Images are resized to {IMAGE_OPTIMIZATION.maxWidthOrHeight}px and optimized below 500 KB before upload.</p>
         
         {selectedFiles.length > 0 && (

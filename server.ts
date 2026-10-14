@@ -33,6 +33,7 @@ import { readFile } from "fs/promises";
 
 import { canEditPatient, hasPermission, RBAC, Role, SUPPORT_DEVELOPER, developerRoles, administrativeRoles, clinicalPatientRoles, isSupportDeveloper } from "./src/rbac";
 import { IMAGE_OPTIMIZATION, normalizeMediaSettings } from "./src/mediaSettings";
+import { GALLERY_PHOTO_LIMIT, GalleryPhotoInputError, galleryPhotoCount, isGalleryImage, parsePhotoInput, type GalleryPhotoMetadata } from './src/patientGalleryPolicy';
 import { AuditAction, AuditResource, shouldRecordAuditEvent } from "./src/auditPolicy";
 import { getDeveloperActivityDefinition } from "./src/developerToolsPolicy";
 import { describeLoginUserAgent, shouldRecordLoginActivity } from "./src/loginActivityPolicy";
@@ -271,6 +272,45 @@ async function authorizeAttachmentResource(
     if (requireWrite && resourceType !== 'patient' && !canAccessBranch(userProfile, resourceBranchId)) return null;
 
     return { patientRef, resourceRef, patientData, resourceData, branchId: resourceBranchId };
+}
+
+async function refreshAttachmentWriteContext(
+    transaction: RecordTransaction,
+    authorization: { decodedToken: SessionIdentity, userProfile: Record<string, any> },
+    patientId: string,
+    resourceType: ResourceType,
+    resourceId: string
+) {
+    await refreshSupportAuthorization(transaction, authorization);
+    if (!canWriteAttachments(authorization.userProfile, resourceType)) throw new RequestError(403, 'Attachment access changed');
+    const patientRef = db.collection('patients').doc(patientId);
+    const resourceRef = db.collection(resourceCollections[resourceType]).doc(resourceId);
+    const patientSnapshot = await transaction.get(patientRef);
+    const resourceSnapshot = resourceType === 'patient' ? patientSnapshot : await transaction.get(resourceRef);
+    if (!patientSnapshot.exists || !resourceSnapshot.exists) throw new RequestError(404, 'Attachment resource no longer exists');
+    const patientData = patientSnapshot.data() || {};
+    const resourceData = resourceSnapshot.data() || {};
+    const branchId = resourceType === 'patient' ? patientData.homeBranchId : resourceData.branchId;
+    if (patientData.isArchived === true || resourceData.isArchived === true
+        || (resourceType === 'patient' && resourceId !== patientId)
+        || (resourceType !== 'patient' && (resourceData.patientId !== patientId || !canAccessBranch(authorization.userProfile, branchId)))) {
+        throw new RequestError(403, 'Attachment access changed');
+    }
+    return { patientData, resourceData, branchId, resourceRef };
+}
+
+function validGalleryTimezone(value: unknown): value is string {
+    if (typeof value !== 'string' || value.length > 100) return false;
+    try { new Intl.DateTimeFormat('en', { timeZone: value }).format(); return true; }
+    catch { return false; }
+}
+
+async function galleryTimezone(transaction: RecordTransaction, visit: Record<string, any>) {
+    if (validGalleryTimezone(visit.timezoneSnapshot)) return visit.timezoneSnapshot;
+    const branch = (await transaction.get(db.collection('branches').doc(visit.branchId))).data() || {};
+    if (validGalleryTimezone(branch.timezone)) return branch.timezone;
+    const settings = (await transaction.get(db.collection('settings').doc('timezone'))).data() || {};
+    return validGalleryTimezone(settings.timezone) ? settings.timezone : 'Asia/Manila';
 }
 
 function parseAttachmentPath(storagePath: unknown) {
@@ -848,6 +888,7 @@ function buildAuditLogData(options: {
     const eventDetails: Record<string, string> = {
         attachment_uploaded: `Uploaded attachment for ${options.resource.toLowerCase()} record`,
         attachment_deleted: `Deleted attachment from ${options.resource.toLowerCase()} record`,
+        attachment_photo_updated: 'Updated Visit photo details',
         appointment_completed_from_visit: 'Completed appointment when its linked visit was created',
         developer_metrics_view: 'Viewed developer metrics',
         developer_diagnostics_run: 'Ran trusted service diagnostics',
@@ -1595,12 +1636,23 @@ app.post("/api/attachments/upload", uploadSingleFile, async (req, res) => {
             return res.status(400).json({ error: "Image was not optimized below the 500 KB storage limit" });
         }
 
+        const hasPhotoInput = ['photoStage', 'photoTakenAt', 'photoArea'].some(key => req.body[key] !== undefined);
+        if (hasPhotoInput && (typedResource !== 'visit' || !detectedType.startsWith('image/'))) {
+            return res.status(400).json({ error: 'Photo details are only allowed on Visit images' });
+        }
+        const photoInput = hasPhotoInput ? parsePhotoInput({
+            stage: req.body.photoStage, takenAt: req.body.photoTakenAt, area: req.body.photoArea, note: req.body.note
+        }) : null;
+        if (typedResource === 'visit' && detectedType.startsWith('image/') && galleryPhotoCount(existingAttachments) >= GALLERY_PHOTO_LIMIT) {
+            return res.status(409).json({ error: `Maximum ${GALLERY_PHOTO_LIMIT} photos per Visit reached` });
+        }
+
         const safeName = sanitizeFileName(req.file.originalname);
         const fileId = `${Date.now()}_${randomUUID()}${extension}`;
         const folder = typedResource === 'patient' ? 'general' : `${typedResource}s`;
         const storagePath = `uploads/${patientId}/${folder}/${resourceId}/${fileId}`;
-        const note = typeof req.body.note === 'string' ? req.body.note.replace(/[\r\n]/g, ' ').trim().slice(0, 500) : '';
-        const attachment = {
+        const note = photoInput?.note ?? (typeof req.body.note === 'string' ? req.body.note.replace(/[\r\n]/g, ' ').trim().slice(0, 500) : '');
+        const attachment: { id: string; name: string; storagePath: string; note: string; contentType: string; size: number; uploadedAt: string; uploadedByUid: string; photo?: GalleryPhotoMetadata } = {
             id: fileId,
             name: safeName,
             storagePath,
@@ -1630,18 +1682,17 @@ app.post("/api/attachments/upload", uploadSingleFile, async (req, res) => {
         });
 
         await db.runTransaction(async transaction => {
-            await refreshSupportAuthorization(transaction, authorization);
-            if (!canWriteAttachments(authorization.userProfile, typedResource)) throw new RequestError(403, 'Attachment access changed');
-            const snapshot = await transaction.get(context.resourceRef);
-            if (!snapshot.exists) throw new Error('Attachment resource no longer exists');
-            const data = snapshot.data() || {};
-            const branchId = typedResource === 'patient' ? data.homeBranchId : data.branchId;
-            if ((typedResource !== 'patient' && data.patientId !== patientId)
-                || (typedResource !== 'patient' && !canAccessBranch(authorization.userProfile, branchId))) {
-                throw new Error('Attachment access changed');
-            }
+            const { resourceData: data, branchId } = await refreshAttachmentWriteContext(transaction, authorization, patientId, typedResource, resourceId);
             const attachments = Array.isArray(data.attachments) ? data.attachments : [];
             if (attachments.length >= settings.maxFiles) throw new RequestError(409, 'Maximum attachment count reached');
+            if (typedResource === 'visit' && isGalleryImage(attachment) && galleryPhotoCount(attachments) >= GALLERY_PHOTO_LIMIT) {
+                throw new RequestError(409, `Maximum ${GALLERY_PHOTO_LIMIT} photos per Visit reached`);
+            }
+            if (photoInput) attachment.photo = {
+                schemaVersion: 1, stage: photoInput.stage, takenAt: photoInput.takenAt, area: photoInput.area,
+                timezone: await galleryTimezone(transaction, data), version: 1,
+                updatedAt: new Date().toISOString(), updatedByUid: authorization.decodedToken.uid
+            };
             transaction.update(context.resourceRef, { attachments: [...attachments, attachment] });
             stageAuditLog(transaction, {
                 authorization,
@@ -1659,8 +1710,50 @@ app.post("/api/attachments/upload", uploadSingleFile, async (req, res) => {
         if (storedFile) await storedFile.delete({ ignoreNotFound: true }).catch(() => undefined);
         console.error("Attachment upload failed", error);
         res.status(error.status || (error instanceof RequestError ? error.status : 500)).json({
-            error: error instanceof RequestError ? error.message : "Attachment upload failed"
+            error: error instanceof RequestError || error instanceof GalleryPhotoInputError ? error.message : "Attachment upload failed"
         });
+    }
+});
+
+app.patch('/api/attachments/photo', async (req, res) => {
+    const authorization = await authorizeRequest(req, res, applicationRoles);
+    if (!authorization) return;
+    try {
+        const storagePath = req.body?.storagePath;
+        const parsed = parseAttachmentPath(storagePath);
+        if (!parsed || parsed.resourceType !== 'visit') throw new RequestError(400, 'Photo details require a Visit attachment');
+        const expectedVersion = req.body?.expectedVersion;
+        if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) throw new RequestError(400, 'Photo version is required');
+        const photoInput = parsePhotoInput(req.body);
+        const context = await authorizeAttachmentResource(authorization.userProfile, parsed.patientId, 'visit', parsed.resourceId, true);
+        if (!context) throw new RequestError(403, 'Attachment access denied');
+        const attachment = await db.runTransaction(async transaction => {
+            const { resourceData, resourceRef, branchId, patientData } = await refreshAttachmentWriteContext(transaction, authorization, parsed.patientId, 'visit', parsed.resourceId);
+            const attachments = Array.isArray(resourceData.attachments) ? resourceData.attachments : [];
+            const index = attachments.findIndex((file: any) => file?.storagePath === storagePath);
+            if (index < 0) throw new RequestError(404, 'Attachment is not registered on this record');
+            const existing = attachments[index];
+            if (!isGalleryImage(existing)) throw new RequestError(400, 'Only image attachments have photo details');
+            const currentVersion = existing.photo?.version ?? 0;
+            if (currentVersion !== expectedVersion) throw new RequestError(409, 'Photo details changed. Reload the Gallery before saving.');
+            const photo: GalleryPhotoMetadata = {
+                schemaVersion: 1, stage: photoInput.stage, takenAt: photoInput.takenAt, area: photoInput.area,
+                timezone: validGalleryTimezone(existing.photo?.timezone) ? existing.photo.timezone : await galleryTimezone(transaction, resourceData),
+                version: currentVersion + 1, updatedAt: new Date().toISOString(), updatedByUid: authorization.decodedToken.uid
+            };
+            const updated = { ...existing, note: photoInput.note, photo };
+            transaction.update(resourceRef, { attachments: attachments.map((file: any, position: number) => position === index ? updated : file) });
+            stageAuditLog(transaction, {
+                authorization, action: 'UPDATE', resource: 'Visit', resourceId: parsed.resourceId, branchId,
+                resourceName: typeof patientData.patientID === 'string' ? patientData.patientID.slice(0, 80) : '',
+                eventType: 'attachment_photo_updated', changeFields: ['photo', 'note']
+            });
+            return updated;
+        });
+        res.json({ attachment });
+    } catch (error: any) {
+        if (!(error instanceof RequestError || error instanceof GalleryPhotoInputError)) console.error('Photo details update failed', error);
+        res.status(error.status || 500).json({ error: error.status ? error.message : 'Photo details update failed' });
     }
 });
 
@@ -1734,16 +1827,7 @@ app.delete("/api/attachments", async (req, res) => {
 
     try {
         await db.runTransaction(async transaction => {
-            await refreshSupportAuthorization(transaction, authorization);
-            if (!canWriteAttachments(authorization.userProfile, parsed.resourceType)) throw new RequestError(403, 'Attachment access changed');
-            const snapshot = await transaction.get(context.resourceRef);
-            if (!snapshot.exists) throw new Error('Attachment resource no longer exists');
-            const data = snapshot.data() || {};
-            const branchId = parsed.resourceType === 'patient' ? data.homeBranchId : data.branchId;
-            if ((parsed.resourceType !== 'patient' && data.patientId !== parsed.patientId)
-                || (parsed.resourceType !== 'patient' && !canAccessBranch(authorization.userProfile, branchId))) {
-                throw new Error('Attachment access changed');
-            }
+            const { resourceData: data, branchId } = await refreshAttachmentWriteContext(transaction, authorization, parsed.patientId, parsed.resourceType, parsed.resourceId);
             const attachments = Array.isArray(data.attachments) ? data.attachments : [];
             if (!attachments.some((attachment: any) => attachment?.storagePath === storagePath)) {
                 throw new Error('Attachment is not registered on this record');

@@ -78,7 +78,7 @@ export default function PatientProfile({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !document.querySelector('[data-clinical-chart-dialog]')) onClose();
+      if (event.key === 'Escape' && !document.querySelector('[data-clinical-chart-dialog], [data-gallery-dialog]')) onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
@@ -130,7 +130,7 @@ export default function PatientProfile({
     { id: 'ledger', label: 'Treatment Ledger', icon: ClipboardList },
     { id: 'appointments', label: 'Appointments', count: patientAppointments.length, icon: CalendarDays },
     { id: 'notes', label: 'Notes', icon: StickyNote },
-    { id: 'media', label: 'Media', icon: Images },
+    { id: 'media', label: 'Gallery', icon: Images },
     { id: 'charts', label: 'Clinical Charts', icon: MapPinned },
   ].filter(tab => (clinicalAccess || tab.id === 'appointments') && (tab.id !== 'charts' || uiCan(userRole, 'visits.view'))
     && (tab.id !== 'ledger' || uiCan(userRole, 'treatment_ledger.view') && uiCan(userRole, 'patients.view') && uiCan(userRole, 'visits.view'))) as typeof tabs;
@@ -318,7 +318,7 @@ export default function PatientProfile({
                   ) : activeTab === 'ledger' ? (
                     <TreatmentLedgerTab patient={patient} userRole={userRole} />
                   ) : (
-                    <PatientMediaTab patientId={patient.id} users={users} branches={branches} visits={visits} />
+                    <PatientMediaTab patientId={patient.id} users={users} branches={branches} visits={visits} userRole={userRole} patientArchived={patient.isArchived} />
                   )}
                 </div>
               </section>

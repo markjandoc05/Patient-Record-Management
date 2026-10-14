@@ -2,6 +2,13 @@ import { captureProtectedRequestScope, protectedFetch, invalidateProtectedData, 
 import { auth } from '../platform';
 import imageCompression from 'browser-image-compression';
 import { DEFAULT_MEDIA_SETTINGS, IMAGE_OPTIMIZATION } from '../mediaSettings';
+import { uiPermissionScope } from '../permissionState';
+import type { GalleryPhotoMetadata, GalleryPhotoStage } from '../patientGalleryPolicy';
+
+export interface AttachmentRequestOptions { signal?: AbortSignal; isCurrent?: () => boolean }
+export class AttachmentApiError extends Error {
+  constructor(message: string, public status: number, public code?: string) { super(message); this.name = 'AttachmentApiError'; }
+}
 
 export interface StoredAttachment {
   id: string;
@@ -12,6 +19,7 @@ export interface StoredAttachment {
   size?: number;
   uploadedAt?: string;
   uploadedByUid?: string;
+  photo?: GalleryPhotoMetadata;
 }
 
 export function isOptimizableImageUpload(file: File | Blob, originalName: string) {
@@ -56,27 +64,47 @@ export async function optimizeAttachmentImage(file: File | Blob, originalName: s
   return optimizedFile;
 }
 
-async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+function captureAttachmentScope(options: AttachmentRequestOptions) {
   const lifetime = captureProtectedRequestScope();
+  const permissionScope = uiPermissionScope();
   const currentUser = auth.currentUser;
-  if (!currentUser) throw new Error('Please sign in again to access attachments.');
-  const token = await currentUser.getRequestToken();
-  lifetime();
-  const headers = new Headers(init.headers);
-  headers.set('Authorization', `Bearer ${token}`);
-  return protectedFetch(input, { ...init, headers }, lifetime);
+  if (!currentUser) throw new AttachmentApiError('Please sign in again to access attachments.', 401);
+  return () => {
+    lifetime();
+    options.signal?.throwIfAborted();
+    if (auth.currentUser?.uid !== currentUser.uid || uiPermissionScope() !== permissionScope
+      || options.isCurrent && !options.isCurrent()) throw new DOMException('Attachment request is no longer current.', 'AbortError');
+  };
 }
 
-async function getErrorMessage(response: Response, fallback: string) {
+async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit, options: AttachmentRequestOptions,
+  current = captureAttachmentScope(options)) {
+  current();
+  const currentUser = auth.currentUser!;
+  const token = await currentUser.getRequestToken().catch(error => { current(); throw error; });
+  current();
+  const headers = new Headers(init.headers);
+  headers.set('Authorization', `Bearer ${token}`);
+  return protectedFetch(input, { ...init, signal: options.signal, headers }, current);
+}
+
+async function attachmentError(response: Response, fallback: string) {
+  let body: any;
   try {
-    const body = await response.json();
-    if (response.status === 401 || response.status === 403) invalidateProtectedData();
-    return typeof body?.error === 'string' ? body.error : fallback;
+    body = await response.json();
   } catch (error: any) {
     if (error?.name === 'AbortError') throw error;
-    if (response.status === 401 || response.status === 403) invalidateProtectedData();
-    return fallback;
   }
+  const error = new AttachmentApiError(typeof body?.error === 'string' ? body.error : fallback, response.status, body?.code);
+  if (response.status === 401 || response.status === 403) invalidateProtectedData(error);
+  return error;
+}
+
+export async function requestAttachmentJson<T>(input: string, init: RequestInit, fallback: string,
+  options: AttachmentRequestOptions = {}): Promise<T> {
+  const response = await authenticatedFetch(input, init, options);
+  if (!response.ok) throw await attachmentError(response, fallback);
+  return response.json();
 }
 
 export async function uploadAttachment(options: {
@@ -87,51 +115,61 @@ export async function uploadAttachment(options: {
   patientId: string;
   resourceType: 'patient' | 'appointment' | 'visit';
   resourceId: string;
-}) {
-  const lifetime = captureProtectedRequestScope();
+  photoStage?: GalleryPhotoStage;
+  photoTakenAt?: string;
+  photoArea?: string;
+}, requestOptions: AttachmentRequestOptions = {}): Promise<{ attachment: StoredAttachment }> {
+  const current = captureAttachmentScope(requestOptions);
+  current();
   const fileToUpload = isOptimizableImageUpload(options.file, options.originalName)
-    ? await optimizeAttachmentImage(options.file, options.originalName, options.maxFileSizeMB)
+    ? await optimizeAttachmentImage(options.file, options.originalName, options.maxFileSizeMB).catch(error => { current(); throw error; })
     : options.file;
-  lifetime();
+  current();
   const formData = new FormData();
   formData.append('file', fileToUpload, options.originalName);
   formData.append('note', options.note);
   formData.append('patientId', options.patientId);
   formData.append('resourceType', options.resourceType);
   formData.append('resourceId', options.resourceId);
+  if (options.photoStage !== undefined) formData.append('photoStage', options.photoStage);
+  if (options.photoTakenAt !== undefined) formData.append('photoTakenAt', options.photoTakenAt);
+  if (options.photoArea !== undefined) formData.append('photoArea', options.photoArea);
 
   const response = await authenticatedFetch('/api/attachments/upload', {
     method: 'POST',
     body: formData,
-  });
-  if (!response.ok) throw new Error(await getErrorMessage(response, 'Attachment upload failed.'));
+  }, requestOptions, current);
+  if (!response.ok) throw await attachmentError(response, 'Attachment upload failed.');
   return response.json();
 }
 
-export async function fetchAttachmentBlob(storagePath: string) {
-  const response = await authenticatedFetch(`/api/attachments/content?path=${encodeURIComponent(storagePath)}`);
-  if (!response.ok) throw new Error(await getErrorMessage(response, 'Attachment download failed.'));
+export async function fetchAttachmentBlob(storagePath: string, options: AttachmentRequestOptions = {}) {
+  const response = await authenticatedFetch(`/api/attachments/content?path=${encodeURIComponent(storagePath)}`, {}, options);
+  if (!response.ok) throw await attachmentError(response, 'Attachment download failed.');
   return response.blob();
 }
 
-export async function deleteAttachment(storagePath: string) {
+export async function deleteAttachment(storagePath: string, options: AttachmentRequestOptions = {}) {
   const response = await authenticatedFetch('/api/attachments', {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ storagePath }),
-  });
-  if (!response.ok) throw new Error(await getErrorMessage(response, 'Attachment deletion failed.'));
+  }, options);
+  if (!response.ok) throw await attachmentError(response, 'Attachment deletion failed.');
 }
 
 export function isImageAttachment(file: Pick<StoredAttachment, 'name' | 'contentType'>) {
   return file.contentType?.startsWith('image/') === true
-    || /\.(jpg|jpeg|png)$/i.test(file.name || '');
+    || /\.(jpg|jpeg|png|webp)$/i.test(file.name || '');
 }
 
-export async function openAttachment(file: StoredAttachment) {
+export async function openAttachment(file: StoredAttachment, options: AttachmentRequestOptions = {}) {
+  const current = captureAttachmentScope(options);
+  current();
   const placeholder = window.open('', '_blank');
   try {
-    const blob = await fetchAttachmentBlob(file.storagePath);
+    const blob = await fetchAttachmentBlob(file.storagePath, options);
+    current();
     const objectUrl = URL.createObjectURL(blob);
     if (placeholder) {
       placeholder.location.href = objectUrl;
@@ -150,8 +188,10 @@ export async function openAttachment(file: StoredAttachment) {
   }
 }
 
-export async function downloadAttachment(file: StoredAttachment) {
-  const blob = await fetchAttachmentBlob(file.storagePath);
+export async function downloadAttachment(file: StoredAttachment, options: AttachmentRequestOptions = {}) {
+  const current = captureAttachmentScope(options);
+  const blob = await fetchAttachmentBlob(file.storagePath, options);
+  current();
   const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = objectUrl;
