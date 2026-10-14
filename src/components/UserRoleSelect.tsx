@@ -18,6 +18,6 @@ export default function UserRoleSelect({ actorRole, currentRole, archived, ownAc
     <option value="staff">Staff</option>
     <option value="doctor">Doctor</option>
     {((supportActor && development) || currentRole === 'SUPPORT_DEVELOPER') && <option value="SUPPORT_DEVELOPER">Support / Developer</option>}
-    {(supportActor || currentRole === 'support_developer') && <option value="support_developer">Support / Developer (legacy)</option>}
+    {currentRole === 'support_developer' && <option value="support_developer">Support / Developer (existing account)</option>}
   </select>;
 }

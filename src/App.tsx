@@ -42,7 +42,7 @@ const defaultBranding = {
   loginPageLogoUrl: '',
   browserTitle: 'Vine Management App',
   // Company Information
-  companyName: 'Skin Clinic',
+  companyName: 'Vine Aesthetics',
   companyAddress: '',
   contactNumber: '',
   supportEmail: '',
@@ -53,8 +53,8 @@ const defaultBranding = {
   accentColor: '#14b8a6', // default teal-500
   darkMode: false,
   // Footer
-  footerText: 'HIPAA Compliant Skin Clinic Patient Records System.',
-  copyrightNotice: '© 2026 Skin Clinic Patient Records. All rights reserved.',
+  footerText: 'Vine Patient Records System.',
+  copyrightNotice: '© 2026 Vine Aesthetics. All rights reserved.',
   privacyPolicyUrl: '',
   termsConditionsUrl: '',
   showDeveloperCredit: true,

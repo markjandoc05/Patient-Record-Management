@@ -7,7 +7,7 @@ export const clinicalPatientRoles = ['admin', 'doctor', ...developerRoles] as co
 export const isSupportDeveloper = (role: unknown) => typeof role === 'string' && (developerRoles as readonly string[]).includes(role);
 export const hasAdministrativeAccess = (role: unknown) => typeof role === 'string' && (administrativeRoles as readonly string[]).includes(role);
 
-export const roleLabel = (role: string) => role === SUPPORT_DEVELOPER ? 'Support / Developer' : role === 'support_developer' ? 'Support / Developer (legacy)' : role;
+export const roleLabel = (role: string) => isSupportDeveloper(role) ? 'Support / Developer' : role;
 
 export type Permission = 'create' | 'read' | 'update' | 'delete';
 

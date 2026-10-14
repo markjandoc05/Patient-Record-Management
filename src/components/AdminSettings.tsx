@@ -1060,7 +1060,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
                                     value={brandingForm.appName} 
                                     onChange={e => setBrandingForm({...brandingForm, appName: e.target.value})} 
-                                    placeholder="Skin Clinic Patient Records"
+                                    placeholder="Vine Management App"
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
@@ -1070,7 +1070,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
                                     value={brandingForm.appShortName} 
                                     onChange={e => setBrandingForm({...brandingForm, appShortName: e.target.value})} 
-                                    placeholder="Lumina Skin"
+                                    placeholder="Vine"
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
@@ -1080,7 +1080,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
                                     value={brandingForm.browserTitle} 
                                     onChange={e => setBrandingForm({...brandingForm, browserTitle: e.target.value})} 
-                                    placeholder="Skin Clinic Patient Records"
+                                    placeholder="Vine Management App"
                                 />
                             </div>
                         </div>
@@ -1155,7 +1155,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
                                     value={brandingForm.companyName} 
                                     onChange={e => setBrandingForm({...brandingForm, companyName: e.target.value})} 
-                                    placeholder="Skin Clinic"
+                                    placeholder="Vine Aesthetics"
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
@@ -1175,7 +1175,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
                                     value={brandingForm.contactNumber} 
                                     onChange={e => setBrandingForm({...brandingForm, contactNumber: e.target.value})} 
-                                    placeholder="+1-555-0199"
+                                    placeholder="Clinic contact number"
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
@@ -1185,7 +1185,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
                                     value={brandingForm.supportEmail} 
                                     onChange={e => setBrandingForm({...brandingForm, supportEmail: e.target.value})} 
-                                    placeholder="support@skinclinic.com"
+                                    placeholder="clinic@example.com"
                                 />
                             </div>
                             <div className="flex flex-col gap-1 md:col-span-2">
@@ -1195,7 +1195,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
                                     value={brandingForm.websiteUrl} 
                                     onChange={e => setBrandingForm({...brandingForm, websiteUrl: e.target.value})} 
-                                    placeholder="https://www.skinclinic.com"
+                                    placeholder="Clinic website URL"
                                 />
                             </div>
                         </div>
@@ -1242,7 +1242,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                 <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
                                 <div>
                                     <p className="text-xs font-semibold text-emerald-900">Automatic image optimization is always on</p>
-                                    <p className="mt-0.5 text-[11px] leading-5 text-emerald-700">Patient-record images are resized to {IMAGE_OPTIMIZATION.maxWidthOrHeight}px and compressed below 500 KB before Cloud Run receives them. Originals are not uploaded when optimization fails.</p>
+                                    <p className="mt-0.5 text-[11px] leading-5 text-emerald-700">Patient-record images are resized to {IMAGE_OPTIMIZATION.maxWidthOrHeight}px and compressed below 500 KB before upload. Originals are not uploaded when optimization fails.</p>
                                 </div>
                             </div>
                             <div className="flex flex-col items-start gap-2 md:col-span-3 sm:flex-row sm:items-center">
@@ -1422,7 +1422,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
                                     value={footerForm.footerText || ''} 
                                     onChange={e => setFooterForm({...footerForm, footerText: e.target.value})} 
-                                    placeholder="HIPAA Compliant Skin Clinic Patient Records System."
+                                    placeholder="Vine Patient Records System."
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
@@ -1432,7 +1432,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                                     className="border border-slate-200 p-2 rounded-lg focus:ring-1 focus:ring-teal-500 text-sm" 
                                     value={footerForm.copyrightNotice || ''} 
                                     onChange={e => setFooterForm({...footerForm, copyrightNotice: e.target.value})} 
-                                    placeholder="© 2026 Skin Clinic Patient Records. All rights reserved."
+                                    placeholder="© 2026 Vine Aesthetics. All rights reserved."
                                 />
                             </div>
                             <div className="flex flex-col gap-1">
@@ -1649,7 +1649,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                               <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                             </div>
                             {!user.active && user.isArchived !== true && <div className="px-5 pb-3 sm:px-6"><UserActivationReadiness profile={user} branches={branches} loading={readinessLoading} /></div>}
-                            {isExpanded && <div className="grid gap-4 bg-slate-50/70 px-5 py-4 lg:grid-cols-[180px_minmax(0,1fr)] sm:px-6"><div><label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Role</label><UserRoleSelect onChange={(e) => { const nextRole = e.target.value; setActionToConfirm({ onConfirm: () => updateRole(user.id, nextRole), title: 'Change User Role', message: `Change ${user.fullName || user.email} to ${roleLabel(nextRole)}? Their permissions will update immediately.`, confirmLabel: 'Change role' }); }} actorRole={userRole} currentRole={user.role || 'staff'} archived={!canManageAccess || userAccessView === 'archived'} ownAccount={isOwnAccount} development={Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV)} className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm" /></div><div><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Clinic access</p><div className="grid gap-x-4 gap-y-2 lg:grid-cols-2 xl:grid-cols-3">{branches.filter(branch => branch.status === 'Active').map(branch => { const isChecked = user.assignedBranches?.includes(branch.id); return <div key={branch.id} className="flex min-w-0 items-center gap-2 text-xs"><input id={`user-${user.id}-branch-${branch.id}`} type="checkbox" checked={!!isChecked} disabled={!canManageAccess || userAccessView === 'archived'} onChange={(event) => updateUserBranches(user, branch, event.target.checked)} /><label htmlFor={`user-${user.id}-branch-${branch.id}`} className="min-w-0 cursor-pointer truncate text-slate-700">{branch.branchName}</label>{isChecked && user.assignedBranches.length > 1 && <button type="button" disabled={!canManageAccess || userAccessView === 'archived'} className={`ml-auto text-[10px] font-semibold ${user.defaultBranchId === branch.id ? 'text-teal-700' : 'text-slate-400 hover:text-slate-700'}`} onClick={() => setUserDefaultBranch(user, branch)}>{user.defaultBranchId === branch.id ? 'Default' : 'Set default'}</button>}</div>; })}{branches.filter(branch => branch.status === 'Active').length === 0 && <p className="text-xs text-red-600">Add or activate a branch before assigning access.</p>}</div></div><UserOperationalDetails key={`details:${user.id}`} actor={userProfile} target={user} /><UserPermissionEditor key={`${user.id}:${permissionScopeKey(userProfile)}`} actor={userProfile} target={user} onSaved={acceptAccess} /></div>}
+                            {isExpanded && <div className="grid gap-4 bg-slate-50/70 px-5 py-4 lg:grid-cols-[180px_minmax(0,1fr)] sm:px-6"><div><label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Role</label><UserRoleSelect onChange={(e) => { const nextRole = e.target.value; setActionToConfirm({ onConfirm: () => updateRole(user.id, nextRole), title: 'Change User Role', message: `Change ${user.fullName || user.email} to ${roleLabel(nextRole)}? Their permissions will update immediately.`, confirmLabel: 'Change role' }); }} actorRole={userRole} currentRole={user.role || 'staff'} archived={!canManageAccess || userAccessView === 'archived'} ownAccount={isOwnAccount} development={Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV)} className="w-full rounded-lg border border-slate-200 bg-white p-2 text-sm" />{user.role === 'support_developer' && <p className="mt-1.5 text-xs text-slate-500">Older role · existing account retained.</p>}</div><div><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Clinic access</p><div className="grid gap-x-4 gap-y-2 lg:grid-cols-2 xl:grid-cols-3">{branches.filter(branch => branch.status === 'Active').map(branch => { const isChecked = user.assignedBranches?.includes(branch.id); return <div key={branch.id} className="flex min-w-0 items-center gap-2 text-xs"><input id={`user-${user.id}-branch-${branch.id}`} type="checkbox" checked={!!isChecked} disabled={!canManageAccess || userAccessView === 'archived'} onChange={(event) => updateUserBranches(user, branch, event.target.checked)} /><label htmlFor={`user-${user.id}-branch-${branch.id}`} className="min-w-0 cursor-pointer truncate text-slate-700">{branch.branchName}</label>{isChecked && user.assignedBranches.length > 1 && <button type="button" disabled={!canManageAccess || userAccessView === 'archived'} className={`ml-auto text-[10px] font-semibold ${user.defaultBranchId === branch.id ? 'text-teal-700' : 'text-slate-400 hover:text-slate-700'}`} onClick={() => setUserDefaultBranch(user, branch)}>{user.defaultBranchId === branch.id ? 'Default' : 'Set default'}</button>}</div>; })}{branches.filter(branch => branch.status === 'Active').length === 0 && <p className="text-xs text-red-600">Add or activate a branch before assigning access.</p>}</div></div><UserOperationalDetails key={`details:${user.id}`} actor={userProfile} target={user} /><UserPermissionEditor key={`${user.id}:${permissionScopeKey(userProfile)}`} actor={userProfile} target={user} onSaved={acceptAccess} /></div>}
                           </article>;
                         })}
                         {visibleUsers.length === 0 && !accessErrors.users && <div className="px-5 py-12 text-center text-sm text-slate-500 sm:px-6">{!usersLoaded ? 'Loading user accounts…' : userAccessView === 'archived' ? 'No archived user accounts.' : userAccessView === 'pending' ? 'No user accounts are pending activation.' : userAccessView === 'inactive' ? 'No inactive user accounts.' : 'No active user accounts.'}</div>}
@@ -1708,7 +1708,7 @@ export default function AdminSettings({ db, userRole, branding, timezone, footer
                           </thead>
                           <tbody className="divide-y divide-slate-100 text-slate-700">
                               {Object.entries(RBAC)
-                                  .filter(([role]) => isSupportDeveloper(userRole) || !isSupportDeveloper(role))
+                                  .filter(([role]) => role !== 'support_developer' && (isSupportDeveloper(userRole) || !isSupportDeveloper(role)))
                                   .map(([role, modules]) => (
                                   <tr key={role} className="capitalize">
                                     <td className="px-6 py-4 font-semibold text-slate-900">{roleLabel(role)}</td>

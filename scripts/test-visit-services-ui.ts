@@ -298,6 +298,37 @@ try {
   });
   for(const status of [401,403])await test(`current targeted review denial ${status} invalidates normally`,async f=>{await f.start();await f.loaded();await f.select();await reload(f);f.latestGet().deliver({error:'Current review denial'},status);await f.settle();assert.equal(globals.servicesTestInvalidations,1);assert.ok(text(f.renderer.tree).includes('Visit access changed'));});
   await test('legacy arbitrary text stays visible and submitted exactly',async f=>{await f.start();await f.loaded([]);assert.equal(f.node('visit-legacy-service').props.value,'  Legacy custom care  ');await f.save();assert.equal(JSON.parse(f.latestSave().init.body).treatmentService,'  Legacy custom care  ');});
+  for (const saved of ['', '   ']) await test('empty recorded treatment field is hidden while its exact saved value survives an unrelated edit', async f => {
+    f.props.visit = { ...f.props.visit, treatmentService: saved };
+    await f.start(); await f.loaded([]);
+    assert.ok(!find(f.renderer.tree, (n: any) => n.props?.id === 'visit-legacy-service'));
+    f.node('visit-notes').props.onChange({ target: { value: 'Updated synthetic note' } }); await f.settle(); await f.save();
+    assert.equal(JSON.parse(f.latestSave().init.body).treatmentService, saved);
+    assert.equal(JSON.parse(f.latestSave().init.body).notes, 'Updated synthetic note');
+  });
+  await test('a duplicate recorded Service name is hidden without rewriting its stored whitespace or snapshot', async f => {
+    f.props.visit = { ...f.props.visit, serviceId: 'historical', serviceNameSnapshot: 'Recorded care', serviceCatalogueVersion: 7,
+      treatmentService: '  Recorded care  ' };
+    await f.start(); await f.loaded([]);
+    assert.ok(!find(f.renderer.tree, (n: any) => n.props?.id === 'visit-legacy-service'));
+    await f.save(); const body = JSON.parse(f.latestSave().init.body);
+    assert.equal(body.treatmentService, '  Recorded care  '); assert.ok(!('serviceSelection' in body));
+    assert.equal(f.props.visit.serviceNameSnapshot, 'Recorded care'); assert.equal(f.props.visit.serviceCatalogueVersion, 7);
+  });
+  await test('distinct recorded treatment beside a canonical Service stays visible and read-only', async f => {
+    f.props.visit = { ...f.props.visit, serviceId: 'historical', serviceNameSnapshot: 'Recorded care', treatmentService: '  Earlier custom treatment  ' };
+    await f.start(); await f.loaded([]);
+    assert.equal(f.node('visit-legacy-service').props.value, '  Earlier custom treatment  ');
+    assert.equal(f.node('visit-legacy-service').props.readOnly, true);
+    assert.ok(text(f.renderer.tree).includes('Previously recorded treatment'));
+    await f.save(); assert.equal(JSON.parse(f.latestSave().init.body).treatmentService, '  Earlier custom treatment  ');
+  });
+  await test('clearing an editable historical treatment keeps the field available until explicit save', async f => {
+    await f.start(); await f.loaded([]);
+    f.node('visit-legacy-service').props.onChange({ target: { value: '' } }); await f.settle();
+    assert.ok(f.node('visit-legacy-service')); assert.equal(f.node('visit-legacy-service').props.value, '');
+    await f.save(); assert.equal(JSON.parse(f.latestSave().init.body).treatmentService, '');
+  });
   await test('Completed remains editable; explicit finalization blocks even forced submit',async f=>{f.props.visit={...f.props.visit,isFinalized:true,serviceId:'sealed',serviceNameSnapshot:'Signed historical fact'};await f.start();assert.equal(f.requests.length,0);assert.equal(f.button('Save changes').props.disabled,true);assert.ok(text(f.renderer.tree).includes('Signed historical fact'));await f.save();assert.equal(f.requests.length,0);});
   const booked = (f: Fixture, id = 'priced') => {
     const v = f.props.visit; f.props.visit = undefined;

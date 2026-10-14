@@ -107,11 +107,11 @@ try {
     await f.start(); assert.match(text(f.renderer.tree), /Gallery/); assert.match(text(f.renderer.tree), /No.*photo/i);
     assert.ok(f.button('Upload photos'));
   });
-  await check('historical Unclassified photos above four stay visible and are not rewritten', async f => {
+  await check('historical photos without labels remain visible under readable wording and are not rewritten', async f => {
     const legacy = Array.from({ length: 5 }, (_, n) => image(`legacy-${n + 1}`));
     f.props.visits = [visit('visit-A', 'A', [...legacy, document]), visit('other-patient', 'B', [image('OTHER_PATIENT')])];
     f.props.visits[1].patientId = 'other-patient'; await f.start();
-    assert.match(text(f.renderer.tree), /Unclassified/); assert.doesNotMatch(text(f.renderer.tree), /OTHER_PATIENT/);
+    assert.match(text(f.renderer.tree), /Label not recorded/); assert.doesNotMatch(text(f.renderer.tree), /Unclassified|OTHER_PATIENT/);
     for (const file of legacy) assert.ok(f.button('Open photo ' + file.name));
     assert.deepEqual(f.props.visits[0].attachments, [...legacy, document]); assert.equal(f.requests.length, 0);
   });
