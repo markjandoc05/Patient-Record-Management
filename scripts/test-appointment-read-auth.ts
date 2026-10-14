@@ -1,3 +1,4 @@
+import { resetDisposablePlatformRecords } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
@@ -50,7 +51,7 @@ const branchFilter = (operator: string, value: any) => [{ type: 'where', field: 
 
 try {
   await migrateDatabase();
-  await pool.query('TRUNCATE service_branch_settings, services, service_categories, app_records, auth_sessions, auth_identities, oauth_attempts');
+  await resetDisposablePlatformRecords();
   for (const [id, name] of [['A', 'Synthetic Branch A'], ['B', 'Synthetic Branch B']]) {
     await db.collection('branches').doc(id).set({ branchName: name, status: 'Active' });
   }

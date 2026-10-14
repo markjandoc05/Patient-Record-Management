@@ -67,7 +67,7 @@ export default function UserPermissionEditor({ actor, target, onSaved }: { actor
             {actions.map(([id, , label]) => {
               const value = target.permissionOverrides?.[id] || 'inherit';
               const defaultAllowed = defaultAllows(target, id);
-              const constrained = id === 'access.manage' && !hasAdministrativeAccess(target.role) || id === 'developer.access' && !isSupportDeveloper(target.role);
+              const constrained = (id === 'access.manage' || id === 'treatment_ledger.reference') && !hasAdministrativeAccess(target.role) || id === 'developer.access' && !isSupportDeveloper(target.role);
               return <div key={id} className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <label htmlFor={`permission-${target.id}-${id}`} className="text-sm text-slate-800">{label}</label>

@@ -12,6 +12,12 @@ if (url.hostname !== '127.0.0.1' || url.pathname !== '/vine_services_migration_t
 const originalCwd = process.cwd();
 const names = ['001_platform.sql', '002_session_integrity.sql', '003_services.sql', '004_services_name_identity.sql'];
 const migrations = await Promise.all(names.map(name => readFile(path.join(originalCwd, 'migrations', name), 'utf8')));
+// This suite targets 003→004 specifically. Later feature migrations are tested
+// separately and must not introduce dependencies into the rewind fixtures.
+const schemaFixture = await mkdtemp(path.join(os.tmpdir(), 'services-schema-fixture-'));
+await mkdir(path.join(schemaFixture, 'migrations'));
+for (let i = 0; i < names.length; i++) await writeFile(path.join(schemaFixture, 'migrations', names[i]), migrations[i]);
+process.chdir(schemaFixture);
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 let checks = 0;
 const check = (value: any, label: string) => { assert.ok(value, label); checks++; };
@@ -76,8 +82,8 @@ try {
       await assert.rejects(migrateDatabase(), new RegExp('Applied migration changed: ' + names[i])); checks++;
       await writeFile(path.join(temp, 'migrations', names[i]), migrations[i]);
     }
-  } finally { process.chdir(originalCwd); await rm(temp, { recursive: true, force: true }); }
+  } finally { process.chdir(schemaFixture); await rm(temp, { recursive: true, force: true }); }
   check(await snapshot() === legacy, 'final JSONB snapshot unchanged');
   check(hash(await readFile(path.join(originalCwd, 'migrations', names[2]), 'utf8')) === hash(migrations[2]), '003 source untouched by checksum tests');
   console.log(`Services forward migration: ${checks} checks passed`);
-} finally { process.chdir(originalCwd); await pool.end(); }
+} finally { process.chdir(originalCwd); await rm(schemaFixture, { recursive: true, force: true }); await pool.end(); }

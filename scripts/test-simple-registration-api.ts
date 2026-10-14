@@ -1,3 +1,4 @@
+import { resetDisposablePlatformRecords } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
@@ -24,7 +25,7 @@ async function read(path: string, account='staff', kind='collection', constraint
  const r=await request('/api/data/query',{path,kind,constraints},account);return {status:r.status,body:await r.json()};
 }
 try {
- await migrateDatabase();await pool.query('TRUNCATE service_branch_settings, services, service_categories, app_records,auth_sessions,auth_identities,oauth_attempts');
+ await migrateDatabase();await resetDisposablePlatformRecords();
  for(const role of ['staff','admin','inactive']) {
   const token=randomBytes(32).toString('base64url'),csrf=randomBytes(32).toString('base64url');
   await db.collection('users').doc(role).set({role:role==='inactive'?'staff':role,active:role!=='inactive',assignedBranches:['A'],fullName:'Synthetic account'});

@@ -1,3 +1,4 @@
+import { assertCurrentMigrationChain } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -59,7 +60,7 @@ try {
   const existing = await pool.query("SELECT to_regclass('public.app_records') AS records");
   if (existing.rows[0].records) throw Error('vine_performers_test must be empty; recreate only this disposable test database');
   await migrateDatabase(); await migrateDatabase();
-  check((await pool.query('SELECT name FROM schema_migrations ORDER BY name')).rows.length === 4, 'fresh immutable migration chain 001–004, repeat-safe');
+  check(await assertCurrentMigrationChain(), 'fresh complete migration chain, repeat-safe');
   for (const [id, branchStatus] of [['A', 'Active'], ['B', 'Active'], ['C', 'Inactive']]) {
     await db.collection('branches').doc(id).set({ branchName: 'Synthetic branch ' + id, status: branchStatus });
   }
@@ -368,7 +369,7 @@ try {
   const recordsBefore = JSON.stringify((await pool.query("SELECT * FROM app_records WHERE collection_path IN ('appointments','visits') ORDER BY collection_path,id")).rows);
   await migrateDatabase();
   check(recordsBefore === JSON.stringify((await pool.query("SELECT * FROM app_records WHERE collection_path IN ('appointments','visits') ORDER BY collection_path,id")).rows), 'migration rerun preserves legacy and new JSONB exactly');
-  check((await pool.query('SELECT name FROM schema_migrations ORDER BY name')).rows.length === 4, 'no feature migration or divergent schema');
+  check(await assertCurrentMigrationChain(), 'performer workflow preserves the current migration chain');
   console.log(`Appointment and Visit performers API: ${checks} checks passed (disposable synthetic database)`);
 } finally {
   if (server) await new Promise<void>(resolve => server!.close(() => resolve()));

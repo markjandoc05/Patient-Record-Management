@@ -1,3 +1,4 @@
+import { assertCurrentMigrationChain } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -52,7 +53,7 @@ try {
   const before = JSON.stringify((await pool.query("SELECT * FROM app_records WHERE collection_path='visits'")).rows);
   await migrateDatabase(); await migrateDatabase();
   check(before === JSON.stringify((await pool.query("SELECT * FROM app_records WHERE collection_path='visits'")).rows), '002 -> 004 preserves legacy values and timestamps');
-  check((await pool.query('SELECT name FROM schema_migrations ORDER BY name')).rows.length === 4, 'same four migration chain');
+  check(await assertCurrentMigrationChain(), 'same current immutable migration chain');
   for (const role of ['admin', 'support_developer', 'manager', 'doctor', 'staff', 'inactive']) {
     const token = randomBytes(32).toString('base64url'), csrf = randomBytes(32).toString('base64url');
     await db.collection('users').doc(role).set({ role: role === 'inactive' ? 'staff' : role, active: role !== 'inactive', assignedBranches: ['A'], fullName: 'Synthetic ' + role });
@@ -243,7 +244,7 @@ try {
   const recordsBefore=JSON.stringify((await pool.query("SELECT * FROM app_records WHERE collection_path='visits' ORDER BY id")).rows);
   await migrateDatabase();
   check(JSON.stringify((await pool.query("SELECT * FROM app_records WHERE collection_path='visits' ORDER BY id")).rows)===recordsBefore,'004 application upgrade/restart retains legacy and canonical JSONB including timestamps');
-  check((await pool.query('SELECT name FROM schema_migrations ORDER BY name')).rows.length===4,'no 005 migration or schema change');
+  check(await assertCurrentMigrationChain(),'Visit Service integration preserves the current schema chain');
   console.log(`Visit Services API: ${checks} checks passed (disposable synthetic database)`);
 } finally {
   if (server) await new Promise<void>(resolve => server.close(() => resolve()));

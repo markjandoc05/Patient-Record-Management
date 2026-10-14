@@ -1,3 +1,4 @@
+import { resetDisposablePlatformRecords } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
@@ -47,7 +48,7 @@ async function auditCount(uid:string,eventType:string) { return (await pool.quer
 function barrier() { let release!:()=>void; const wait=new Promise<void>(resolve=>{release=resolve;}); return {wait,release}; }
 try {
   await migrateDatabase();
-  await pool.query('TRUNCATE service_branch_settings, services, service_categories, app_records,auth_sessions,auth_identities,oauth_attempts');
+  await resetDisposablePlatformRecords();
   OAuth2Client.prototype.getToken=(async(options:any)=>({tokens:{id_token:options.code}})) as any;
   OAuth2Client.prototype.verifyIdToken=(async(options:any)=>({getPayload:()=>JSON.parse(Buffer.from(options.idToken,'base64url').toString())})) as any;
   server=app.listen(0,'127.0.0.1'); await once(server,'listening');
@@ -141,6 +142,6 @@ try {
   db.runTransaction=originals.transaction;
   OAuth2Client.prototype.getToken=originals.getToken; OAuth2Client.prototype.verifyIdToken=originals.verify;
   if(server!) { server.close();await once(server,'close'); }
-  await pool.query('TRUNCATE service_branch_settings, services, service_categories, app_records,auth_sessions,auth_identities,oauth_attempts');
+  await resetDisposablePlatformRecords();
   await pool.end();
 }

@@ -26,8 +26,9 @@ import NotesTab from './NotesTab';
 import AppointmentForm from './AppointmentForm';
 import PatientMediaTab from './PatientMediaTab';
 import ClinicalChartsTab from './ClinicalChartsTab';
+import TreatmentLedgerTab from './TreatmentLedgerTab';
 
-type ProfileTab = 'visits' | 'appointments' | 'notes' | 'media' | 'charts';
+type ProfileTab = 'visits' | 'appointments' | 'notes' | 'media' | 'charts' | 'ledger';
 
 function displayValue(value: unknown, fallback = 'Not provided') {
   if (value === null || value === undefined || value === '') return fallback;
@@ -126,11 +127,13 @@ export default function PatientProfile({
 
   const tabs: Array<{ id: ProfileTab; label: string; count?: number; icon: typeof Activity }> = [
     { id: 'visits', label: 'Visits', count: patientVisits.length, icon: Activity },
+    { id: 'ledger', label: 'Treatment Ledger', icon: ClipboardList },
     { id: 'appointments', label: 'Appointments', count: patientAppointments.length, icon: CalendarDays },
     { id: 'notes', label: 'Notes', icon: StickyNote },
     { id: 'media', label: 'Media', icon: Images },
     { id: 'charts', label: 'Clinical Charts', icon: MapPinned },
-  ].filter(tab => (clinicalAccess || tab.id === 'appointments') && (tab.id !== 'charts' || uiCan(userRole, 'visits.view'))) as typeof tabs;
+  ].filter(tab => (clinicalAccess || tab.id === 'appointments') && (tab.id !== 'charts' || uiCan(userRole, 'visits.view'))
+    && (tab.id !== 'ledger' || uiCan(userRole, 'treatment_ledger.view') && uiCan(userRole, 'patients.view') && uiCan(userRole, 'visits.view'))) as typeof tabs;
 
   return (
     <>
@@ -312,6 +315,8 @@ export default function PatientProfile({
                     <NotesTab patient={patient} userRole={userRole} />
                   ) : activeTab === 'charts' ? (
                     <ClinicalChartsTab patientId={patient.id} visits={visits} users={users} userRole={userRole} />
+                  ) : activeTab === 'ledger' ? (
+                    <TreatmentLedgerTab patient={patient} userRole={userRole} />
                   ) : (
                     <PatientMediaTab patientId={patient.id} users={users} branches={branches} visits={visits} />
                   )}

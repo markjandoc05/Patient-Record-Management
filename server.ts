@@ -8,6 +8,8 @@ import { ASSISTING_STAFF_MAX_LENGTH, isEligibleVisitPerformer, visitDoctorIds, v
 import { AppointmentServiceError, parseAppointmentServiceSelection, appointmentServiceSnapshot } from './backend/appointmentServices';
 import { mountServices } from './backend/services';
 import { mountClinicalCharts } from './backend/clinicalCharts';
+import { mountTreatmentLedger, applyVisitSessionUsage } from './backend/treatmentLedger';
+import { TreatmentLedgerError } from './src/treatmentLedgerPolicy';
 import { parseEmergencyContact } from './src/utils/emergencyContact';
 import { parseClinicalFindings } from './src/utils/clinicalFindings';
 import { assertPatientHistoryMetadata, patientHistoryAttribution, patientHistoryInput, PatientHistoryError } from './backend/patientMedicalHistory';
@@ -69,6 +71,7 @@ mountAccessApi(app);
 mountInventory(app);
 mountServices(app);
 mountClinicalCharts(app);
+mountTreatmentLedger(app);
 app.get("/api/health", async (_req, res) => {
   try { await pool.query("SELECT 1"); res.json({ status: "ok", database: "postgresql" }); }
   catch { res.status(503).json({ status: "unavailable" }); }
@@ -473,6 +476,7 @@ function sendRecordError(res: express.Response, error: unknown, operation: strin
     if (error instanceof Error && error.message === 'Unauthorized') return res.status(401).json({ error: 'Unauthorized' });
     if (error instanceof AppointmentServiceError) return res.status(error.status).json({ error: error.message, code: error.code });
     if (error instanceof PatientHistoryError) return res.status(error.status).json({ error: error.message, code: error.code });
+    if (error instanceof TreatmentLedgerError) return res.status(error.status).json({ error: error.message, code: error.code });
     if (error instanceof RequestError) return res.status(error.status).json({ error: error.message });
     if (error instanceof Error && (error as any).status === 403) return res.status(403).json({ error: error.message });
     console.error(`${operation} failed`, error);
@@ -484,6 +488,24 @@ function requestPayload(req: express.Request) {
         throw new RequestError(400, 'Invalid request body');
     }
     return req.body as Record<string, unknown>;
+}
+
+// Only opt-in session redemptions need a retry identity for Visit creation.
+// Persist the complete submitted intent: a retry cannot create a second Visit or
+// silently accept a different clinical draft after an ambiguous response.
+function visitCreationIntent(payload: Record<string, unknown>): string {
+    const canonical = (value: any): any => Array.isArray(value) ? value.map(canonical)
+        : value && typeof value === 'object'
+            ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+    return createHash('sha256').update(JSON.stringify(canonical(payload))).digest('hex');
+}
+
+function visitCreatedRecordIntent(visit: Record<string, any>): string {
+    const fields = [...Object.keys(visitTextLimits), 'patientId', 'branchId', 'doctorId', 'visitDate',
+        'appointmentId', 'followUpRequired', 'status', 'serviceId', 'serviceNameSnapshot',
+        'serviceDurationMinutesSnapshot', 'serviceCatalogueVersion', 'performedByUserId',
+        ...visitPerformerSnapshotFields, 'assistingStaffText'];
+    return visitCreationIntent(Object.fromEntries(fields.map(field => [field, visit[field] ?? null])));
 }
 
 function parsePatientPayload(payload: Record<string, unknown>, operationalOnly = false): Record<string, any> {
@@ -632,6 +654,9 @@ function optionalDoctorId(value: unknown): string | null {
 }
 
 function parseVisitPayload(payload: Record<string, unknown>, previous?: Record<string, any>): Record<string, any> {
+    if (['creationIntentHash', 'creationRecordHash', 'sessionUsageSnapshot'].some(field => Object.hasOwn(payload, field))) {
+        throw new RequestError(400, 'Visit retry and session snapshots are supplied by the server');
+    }
     if (visitPerformerSnapshotFields.some(field => Object.hasOwn(payload, field))) {
         throw new RequestError(400, 'Performer snapshots are supplied by the server');
     }
@@ -2101,13 +2126,45 @@ app.post("/api/records/visits", async (req, res) => {
         const payload = requestPayload(req);
         const visit = parseVisitPayload(payload);
         const selection = parseAppointmentServiceSelection(payload);
-        const visitRef = db.collection('visits').doc();
+        const hasSessionUsage = Object.hasOwn(payload, 'sessionUsage');
+        const clientVisitId = payload.clientVisitId;
+        if ((hasSessionUsage || clientVisitId !== undefined) && (typeof clientVisitId !== 'string'
+            || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientVisitId))) {
+            throw new RequestError(400, 'A valid clientVisitId is required for retry-safe session usage');
+        }
+        const creationIntent = clientVisitId ? visitCreationIntent(payload) : undefined;
+        const visitRef = db.collection('visits').doc(clientVisitId ? String(clientVisitId).toLowerCase() : undefined);
+        let alreadyCreated = false;
         const now = new Date().toISOString();
         const actorName = trustedUserName(authorization);
 
         await db.runTransaction(async transaction => {
             await refreshVisitAuthorization(transaction, authorization, 'CREATE');
             if (!canAccessBranch(authorization.userProfile, visit.branchId)) throw new RequestError(403, 'Branch access denied');
+            if (clientVisitId) {
+                const existing = (await transaction.get(visitRef)).data();
+                if (existing) {
+                    if (existing.createdByUid !== authorization.decodedToken.uid
+                        || existing.creationIntentHash !== creationIntent || existing.isArchived === true) {
+                        throw new RequestError(409, 'This Visit retry identity belongs to another or changed record. Reload the saved Visit.');
+                    }
+                    if (!canAccessBranch(authorization.userProfile, existing.branchId)) throw new RequestError(403, 'Branch access denied');
+                    assertVisitDoctorOwnership(authorization, optionalDoctorId(existing.doctorId));
+                    if (hasSessionUsage) {
+                        for (const permission of ['treatment_ledger.view', 'patients.view', 'visits.view'] as const) {
+                            assertCapability(authorization.userProfile, permission);
+                        }
+                    }
+                    const currentPatient = (await transaction.get(db.collection('patients').doc(existing.patientId))).data();
+                    if (!currentPatient) throw new RequestError(404, 'Patient not found');
+                    if (currentPatient.isArchived === true) throw new RequestError(409, 'Patient is archived');
+                    if (existing.creationRecordHash !== visitCreatedRecordIntent(existing) || isVisitClinicallySealed(existing)) {
+                        throw new TreatmentLedgerError(409, 'CREATE_RETRY_CHANGED', 'This Visit was already saved and has since changed. Reload Visit history to review the saved record.');
+                    }
+                    alreadyCreated = true;
+                    return;
+                }
+            }
             if (selection) assertCapability(authorization.userProfile, 'services.view');
             await applyVisitPerformer(transaction, payload, visit);
             assertVisitDoctorOwnership(authorization, visit.doctorId);
@@ -2143,9 +2200,12 @@ app.post("/api/records/visits", async (req, res) => {
                 appointmentId: visit.appointmentId
             });
             await applyVisitServiceSelection(transaction, selection, payload, visit);
+            await applyVisitSessionUsage(transaction, { identity: authorization.decodedToken, profile: authorization.userProfile },
+                visitRef.id, visit, payload.sessionUsage);
             const visitSource = linkedAppointmentRef ? 'Appointment' : 'Walk-In';
             transaction.create(visitRef, {
                 ...visit,
+                ...(creationIntent ? { creationIntentHash: creationIntent, creationRecordHash: visitCreatedRecordIntent({ ...visit, visitSource }) } : {}),
                 visitSource,
                 patientName: typeof context.patientData.name === 'string' ? context.patientData.name : '',
                 attachments: [],
@@ -2201,7 +2261,7 @@ app.post("/api/records/visits", async (req, res) => {
                 });
             }
         });
-        res.status(201).json({ id: visitRef.id });
+        res.status(alreadyCreated ? 200 : 201).json({ id: visitRef.id });
     } catch (error) {
         return sendRecordError(res, error, 'Visit creation');
     }
@@ -2216,6 +2276,7 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
         if (!isValidDocumentId(req.params.visitId)) throw new RequestError(400, 'Invalid visit ID');
         const payload = requestPayload(req);
         const selection = parseAppointmentServiceSelection(payload);
+        if (Object.hasOwn(payload, 'clientVisitId')) throw new RequestError(400, 'clientVisitId is only valid when creating a Visit');
         const visitRef = db.collection('visits').doc(req.params.visitId);
         const now = new Date().toISOString();
         const actorName = trustedUserName(authorization);
@@ -2276,6 +2337,8 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
             });
 
             await applyVisitServiceSelection(transaction, selection, payload, updates, visitData);
+            await applyVisitSessionUsage(transaction, { identity: authorization.decodedToken, profile: authorization.userProfile },
+                visitRef.id, { ...visitData, ...updates }, payload.sessionUsage, visitData);
             const visitsSnapshot = await transaction.get(
                 db.collection('visits').where('patientId', '==', updates.patientId)
             );

@@ -1,3 +1,4 @@
+import { assertCurrentMigrationChain } from './platform-test-support';
 import { servicesRetryRegressions } from './services-retry-regressions';
 import assert from 'node:assert/strict';
 import { createHash,randomBytes,randomUUID } from 'node:crypto';
@@ -22,7 +23,7 @@ try{
  const legacyBefore=JSON.stringify((await pool.query("SELECT * FROM app_records ORDER BY collection_path,id")).rows);
  // Let the checksummed runner register the existing idempotent foundation migrations.
  await migrateDatabase();check(legacyBefore===JSON.stringify((await pool.query('SELECT * FROM app_records ORDER BY collection_path,id')).rows),'migration preserves legacy byte values and timestamps');
- await migrateDatabase();check((await pool.query('SELECT * FROM schema_migrations')).rows.length===4,'migration rerun safe');
+ await migrateDatabase();check(await assertCurrentMigrationChain(),'migration rerun safe');
  for(const role of ['admin','SUPPORT_DEVELOPER','support_developer','manager','doctor','staff','inactive','pending']){
  const token=randomBytes(32).toString('base64url'),csrf=randomBytes(32).toString('base64url');await db.collection('users').doc(role).set({role:['inactive','pending'].includes(role)?'staff':role,active:!['inactive','pending'].includes(role),assignedBranches:['A'],fullName:'Synthetic '+role});
  await pool.query('INSERT INTO auth_identities(google_subject,user_id,email) VALUES($1,$1,$2)',[role,role+'@example.invalid']);await pool.query("INSERT INTO auth_sessions(token_hash,user_id,csrf_token,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')",[createHash('sha256').update(token).digest('hex'),role,csrf]);credentials.set(role,{cookie:`${origin.startsWith('https')?'__Host-':''}vine_session=${token}`,csrf});}

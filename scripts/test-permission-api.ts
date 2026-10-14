@@ -1,3 +1,4 @@
+import { assertCurrentMigrationChain } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -27,7 +28,7 @@ async function access(target: string, changes: any, actor = 'admin') {
 const grants = (target: string, permissionChanges: any, actor = 'admin') => access(target, { permissionChanges }, actor);
 try {
   await migrateDatabase(); await migrateDatabase();
-  check((await pool.query('SELECT name FROM schema_migrations')).rows.length === 4, 'fresh immutable four migration chain, idempotent');
+  check(await assertCurrentMigrationChain(), 'fresh complete migration chain, idempotent');
   for (const id of ['A', 'B']) await db.collection('branches').doc(id).set({ branchName: 'Synthetic ' + id, status: 'Active' });
   for (const id of ['admin', 'admin2', 'support_developer', 'SUPPORT_DEVELOPER', 'manager', 'doctor', 'staff', 'inactive', 'pending', 'archived']) {
     const token = randomBytes(32).toString('base64url'), csrf = randomBytes(32).toString('base64url');

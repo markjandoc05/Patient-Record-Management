@@ -1,3 +1,4 @@
+import { assertCurrentMigrationChain } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
@@ -71,7 +72,7 @@ try {
   await migrateDatabase(); await migrateDatabase();
   const migrations = await pool.query('SELECT name, checksum FROM schema_migrations ORDER BY name');
   const committedNames = (await readdir(path.resolve('migrations'))).filter(name => name.endsWith('.sql')).sort();
-  check(committedNames.length === 4 && migrations.rows.length === 4, 'fresh committed migration chain remains 001–004');
+  check(await assertCurrentMigrationChain(), 'fresh complete migration chain and checksums');
   check(JSON.stringify(migrations.rows.map(row => row.name)) === JSON.stringify(committedNames), 'applied migration names match the ordered committed chain');
   for (const row of migrations.rows) {
     check(row.checksum === createHash('sha256').update(await readFile(path.resolve('migrations', row.name))).digest('hex'), `committed checksum matches ${row.name}`);
@@ -469,7 +470,7 @@ try {
   const recordsBefore = JSON.stringify((await pool.query("SELECT * FROM app_records WHERE collection_path IN ('visits','clinical_charts') ORDER BY collection_path,id")).rows);
   await migrateDatabase();
   check(recordsBefore === JSON.stringify((await pool.query("SELECT * FROM app_records WHERE collection_path IN ('visits','clinical_charts') ORDER BY collection_path,id")).rows), 'migration rerun preserves legacy Visits, drafts and signed chart history exactly');
-  check((await pool.query('SELECT name FROM schema_migrations ORDER BY name')).rows.length === 4, 'charts require no new SQL migration or alternate schema');
+  check(await assertCurrentMigrationChain(), 'charts preserve the current migration chain');
   console.log(`Clinical charts API: ${checks} checks passed (disposable synthetic database)`);
 } finally {
   if (server) await new Promise<void>(resolve => server!.close(() => resolve()));

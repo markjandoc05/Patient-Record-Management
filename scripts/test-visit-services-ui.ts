@@ -98,7 +98,7 @@ class Fixture {
     visit:{id:'visit',patientId:'patient',doctorId:'doctor',branchId:'A',visitDate:'2029-01-01T10:00',visitType:'Initial Consultation',status:'Completed',treatmentService:'  Legacy custom care  '},userRole:'doctor',
     appointments:[],onSave:()=>{this.saves++;},onClose:()=>{this.closes++;} };
   constructor(){globals.servicesTestInvalidations=0;globals.servicesTestAuth.currentUser={uid:'doctor',email:'doctor@example.invalid',getRequestToken:async()=> 'synthetic'};
-    globals.fetch=(url:string,init:any)=>new Promise((resolve,reject)=>this.requests.push({url,init,deliver:(body,status=200)=>resolve(new Response(JSON.stringify(body),{status})),fail:()=>reject(new TypeError('Synthetic network failure'))}));}
+    globals.fetch=(url:string,init:any)=>url === '/api/records/patients/patient/treatment-ledger' ? Promise.resolve(new Response(JSON.stringify({ patientId:'patient', purchases:[], events:[], activeVisitUsages:[], branches:[], capabilities:{canPurchase:false,canAdjust:false,canEditOrNumber:false}, redemptionPolicy:'authorized_branches' }))) : new Promise((resolve,reject)=>this.requests.push({url,init,deliver:(body,status=200)=>resolve(new Response(JSON.stringify(body),{status})),fail:()=>reject(new TypeError('Synthetic network failure'))}));}
   render(){this.renderer.render(this.props);}
   async settle(){for(let i=0;i<8;i++){this.renderer.passives.splice(0).forEach(run=>run());await flush();if(this.renderer.dirty)this.render();}}
   async start(){this.render();await this.settle();}

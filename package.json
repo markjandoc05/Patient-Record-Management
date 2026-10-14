@@ -73,7 +73,14 @@
     "test:patient-medical-history": "node --import tsx scripts/test-patient-medical-history.ts",
     "test:patient-medical-history-api": "node --import tsx scripts/test-patient-medical-history-api.ts",
     "test:patient-medical-history-ui": "node --import tsx scripts/test-patient-medical-history-ui.ts",
-    "test:services-ui": "node --import tsx scripts/test-services-ui.ts"
+    "test:services-ui": "node --import tsx scripts/test-services-ui.ts",
+    "test:treatment-ledger-policy": "node --import tsx scripts/test-treatment-ledger-policy.ts",
+    "test:treatment-ledger-api": "node --import tsx scripts/test-treatment-ledger-api.ts",
+    "test:treatment-ledger-migration": "node --import tsx scripts/test-treatment-ledger-migration.ts",
+    "test:treatment-ledger-ui": "node --import tsx scripts/test-treatment-ledger-ui.ts",
+    "test:treatment-ledger-transport": "node --import tsx scripts/test-treatment-ledger-transport.ts",
+    "test:treatment-ledger-print": "node --import tsx scripts/test-treatment-ledger-print.ts",
+    "test:treatment-ledger-presentation": "node --import tsx scripts/test-treatment-ledger-presentation.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

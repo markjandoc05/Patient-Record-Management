@@ -24,6 +24,10 @@ export const permissionDefinitions = [
   ['services.view', 'Services', 'View catalogue and permitted prices', all],
   ['services.manage', 'Services', 'Manage catalogue', admin],
   ['services.pricing', 'Services', 'Change prices', admin],
+  ['treatment_ledger.view', 'Treatment Ledger', 'View patient packages and session history', all],
+  ['treatment_ledger.purchase', 'Treatment Ledger', 'Record purchases and edit package notes', [...admin, 'staff', 'manager']],
+  ['treatment_ledger.adjust', 'Treatment Ledger', 'Adjust sessions and reverse recorded usage', admin],
+  ['treatment_ledger.reference', 'Treatment Ledger', 'Manage Admin OR references', admin],
   ['clinical.view', 'Clinical', 'View clinical information', all],
   ['clinical.edit_draft', 'Clinical', 'Edit clinical documentation', clinical],
   ['clinical.finalize', 'Clinical', 'Finalize records (Clinical R1)', []],
@@ -94,6 +98,7 @@ export function hasCapability(actor: PermissionActor | null | undefined, id: Per
   if (overrides[id] !== 'allow' && !defaultAllows(actor, id)) return false;
   // Security administration and Developer safeguards are not delegable by a map.
   if (id === 'access.manage' && !(administrativeRoles as readonly string[]).includes(actor!.role!)) return false;
+  if (id === 'treatment_ledger.reference' && !(administrativeRoles as readonly string[]).includes(actor!.role!)) return false;
   if (id === 'developer.access' && !(developerRoles as readonly string[]).includes(actor!.role!)) return false;
   return context.branchId === undefined || hasBranchScope(actor!, context.branchId);
 }

@@ -1,3 +1,4 @@
+import { resetDisposablePlatformRecords } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createHash, randomBytes } from 'node:crypto';
@@ -25,7 +26,7 @@ const patient = (name: string) => ({ name, contactNumber: '09171234567', email: 
 const stored = async (id: string) => (await db.collection('patients').doc(id).get()).data()!;
 try {
   await migrateDatabase();
-  await pool.query('TRUNCATE service_branch_settings, services, service_categories, app_records, auth_sessions, auth_identities, oauth_attempts');
+  await resetDisposablePlatformRecords();
   for (const id of ['A', 'B']) await db.collection('branches').doc(id).set({ branchName: 'Synthetic ' + id, status: 'Active' });
   for (const [id, role, designation, overrides] of [
     ['admin', 'admin', undefined, {}], ['doctor', 'doctor', undefined, {}], ['nurse', 'staff', 'Nurse', {}],

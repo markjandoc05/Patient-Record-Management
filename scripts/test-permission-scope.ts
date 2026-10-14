@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { permissionDefinitions } from '../src/permissions';
 const saved = { fetch: globalThis.fetch, interval: globalThis.setInterval };
 globalThis.setInterval = (() => 0) as any;
 globalThis.fetch = (async () => new Response(JSON.stringify({ user: { uid: 'admin' }, csrfToken: 'synthetic' }))) as any;
@@ -95,9 +96,11 @@ try {
   check(html.includes('Module Access') && html.includes('<details') && html.includes('<summary'), 'compact expandable module groups');
   check(html.includes('Inherited default: Allowed') && html.includes('value="deny" selected=""') && html.includes('Inherited'), 'inherited default and explicit denial shown');
   check(html.includes('sm:flex-row') && html.includes('w-full') && html.includes('htmlFor') === false && html.includes('for="permission-'), 'responsive layout and linked native labels');
-  for (const actor of [{ role: 'manager', active: true, permissionOverrides: { 'users.manage': 'allow', 'access.manage': 'allow' } }, { ...admin, permissionOverrides: { 'access.manage': 'deny' } }]) check((render(actor).match(/<select[^>]*disabled/g) || []).length === 40, 'security and designation selectors disabled without effective access.manage');
-  check((render(admin, { ...target, id: 'admin' }).match(/<select[^>]*disabled/g) || []).length === 40, 'own override/designation UI cannot escalate');
-  check((render(admin, { ...target, role: 'support_developer' }).match(/<select[^>]*disabled/g) || []).length === 39, 'Support target protected');
+  for (const actor of [{ role: 'manager', active: true, permissionOverrides: { 'users.manage': 'allow', 'access.manage': 'allow' } }, { ...admin, permissionOverrides: { 'access.manage': 'deny' } }]) check((render(actor).match(/<select[^>]*disabled/g) || []).length === permissionDefinitions.length + 1, 'all security and designation selectors disabled without effective access.manage');
+  check((render(admin, { ...target, id: 'admin' }).match(/<select[^>]*disabled/g) || []).length === permissionDefinitions.length + 1, 'own override/designation UI cannot escalate');
+  check((render(admin, { ...target, role: 'support_developer' }).match(/<select[^>]*disabled/g) || []).length === permissionDefinitions.length, 'Support target protected');
+  const referenceControl = html.match(/<select[^>]*id="permission-staff-treatment_ledger.reference"[^>]*>[\s\S]*?<\/select>/)?.[0] || '';
+  check(/<option(?=[^>]*value="allow")(?=[^>]*disabled)[^>]*>/.test(referenceControl), 'Admin OR reference cannot be delegated to a Staff role in Module Access');
   check(renderToStaticMarkup(React.createElement(Details, { actor: { role: 'manager', active: true, permissionOverrides: { 'users.manage': 'allow' } }, target })).includes('Save user details'), 'delegated operational details remain editable');
   stop(); console.log(`${checks} permission-scope adapter race, invalidation and Module Access rendering checks passed (controlled responses, not browser acceptance).`);
 } finally { globalThis.fetch = saved.fetch; globalThis.setInterval = saved.interval; }
