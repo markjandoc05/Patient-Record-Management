@@ -70,6 +70,9 @@
     "test:clinical-charts-api": "node --import tsx scripts/test-clinical-charts-api.ts",
     "test:clinical-charts-ui": "node --import tsx scripts/test-clinical-charts-ui.ts",
     "test:clinical-charts-print": "NODE_ENV=production node --import tsx scripts/test-clinical-charts-print.ts",
+    "test:patient-medical-history": "node --import tsx scripts/test-patient-medical-history.ts",
+    "test:patient-medical-history-api": "node --import tsx scripts/test-patient-medical-history-api.ts",
+    "test:patient-medical-history-ui": "node --import tsx scripts/test-patient-medical-history-ui.ts",
     "test:services-ui": "node --import tsx scripts/test-services-ui.ts"
   },
   "dependencies": {

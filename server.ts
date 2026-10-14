@@ -10,6 +10,7 @@ import { mountServices } from './backend/services';
 import { mountClinicalCharts } from './backend/clinicalCharts';
 import { parseEmergencyContact } from './src/utils/emergencyContact';
 import { parseClinicalFindings } from './src/utils/clinicalFindings';
+import { assertPatientHistoryMetadata, patientHistoryAttribution, patientHistoryInput, PatientHistoryError } from './backend/patientMedicalHistory';
 import { parsePatientBirth } from './src/utils/patientBirth';
 import express from "express";
 import { mountHttpSecurity } from "./backend/httpSecurity";
@@ -471,6 +472,7 @@ async function assertDoctorAvailability(
 function sendRecordError(res: express.Response, error: unknown, operation: string) {
     if (error instanceof Error && error.message === 'Unauthorized') return res.status(401).json({ error: 'Unauthorized' });
     if (error instanceof AppointmentServiceError) return res.status(error.status).json({ error: error.message, code: error.code });
+    if (error instanceof PatientHistoryError) return res.status(error.status).json({ error: error.message, code: error.code });
     if (error instanceof RequestError) return res.status(error.status).json({ error: error.message });
     if (error instanceof Error && (error as any).status === 403) return res.status(403).json({ error: error.message });
     console.error(`${operation} failed`, error);
@@ -1748,7 +1750,9 @@ app.post("/api/records/patients", async (req, res) => {
 
     try {
         requireRole(authorization.userProfile, auditActionRoles.Patient.CREATE);
-        const patient = parsePatientPayload(requestPayload(req), !hasCapability(authorization.userProfile, 'clinical.view'));
+        const payload = requestPayload(req);
+        assertPatientHistoryMetadata(payload);
+        const patient = parsePatientPayload(payload, !hasCapability(authorization.userProfile, 'clinical.view'));
         const branchSnapshot = await db.collection('branches').doc(patient.homeBranchId).get();
         const branchData = branchSnapshot.data() || {};
         if (!branchSnapshot.exists || branchData.status !== 'Active') throw new RequestError(400, 'Branch is not active');
@@ -1785,7 +1789,10 @@ app.post("/api/records/patients", async (req, res) => {
         await db.runTransaction(async transaction => {
             await refreshSupportAuthorization(transaction, authorization);
             if (!canAccessBranch(authorization.userProfile, patient.homeBranchId)) throw new RequestError(403, 'Branch access denied');
+            Object.assign(patient, patientHistoryInput(payload, undefined, authorization.userProfile));
             protectClinicalWrite(authorization.userProfile, patient, {}, false);
+            const historyAttribution = patientHistoryAttribution(payload, patient, undefined,
+                { uid: authorization.decodedToken.uid, name: trustedUserName(authorization) }, now);
             const [counterSnapshot, latestBranchSnapshot, identitySnapshot] = await Promise.all([
                 transaction.get(counterRef),
                 transaction.get(db.collection('branches').doc(patient.homeBranchId)),
@@ -1804,6 +1811,7 @@ app.post("/api/records/patients", async (req, res) => {
             });
             transaction.create(patientRef, {
                 ...patient,
+                ...historyAttribution,
                 patientID,
                 homeBranchName: typeof latestBranch.branchName === 'string' ? latestBranch.branchName : '',
                 dateRegistered: now,
@@ -1844,6 +1852,7 @@ app.patch("/api/records/patients/:patientId", async (req, res) => {
         requireRole(authorization.userProfile, auditActionRoles.Patient.UPDATE);
         if (!isValidDocumentId(req.params.patientId)) throw new RequestError(400, 'Invalid patient ID');
         const payload = requestPayload(req);
+        assertPatientHistoryMetadata(payload);
         const expectedLastUpdatedAt = typeof payload.expectedLastUpdatedAt === 'string'
             ? payload.expectedLastUpdatedAt
             : null;
@@ -1868,6 +1877,7 @@ app.patch("/api/records/patients/:patientId", async (req, res) => {
             // Earlier clients do not send structured emergency contacts. Omission
             // preserves the current values; explicit empty values still clear them.
             if (fullUpdates) {
+                Object.assign(updates, patientHistoryInput(payload, patientData, authorization.userProfile));
                 for (const field of ['emergencyContactName', 'emergencyContactRelationship', 'emergencyContactNumber']) {
                     if (!Object.prototype.hasOwnProperty.call(payload, field)) {
                         delete updates[field];
@@ -1875,6 +1885,8 @@ app.patch("/api/records/patients/:patientId", async (req, res) => {
                 }
             }
             protectClinicalWrite(authorization.userProfile, updates, patientData);
+            const historyAttribution = patientHistoryAttribution(payload, updates, patientData,
+                { uid: authorization.decodedToken.uid, name: trustedUserName(authorization) }, now);
             const targetPatientData = { ...patientData, ...updates };
             const branchRef = db.collection('branches').doc(targetPatientData.homeBranchId);
             const branchSnapshot = await transaction.get(branchRef);
@@ -1907,6 +1919,7 @@ app.patch("/api/records/patients/:patientId", async (req, res) => {
             }
             const trustedUpdates = {
                 ...updates,
+                ...historyAttribution,
                 homeBranchName: typeof branchData.branchName === 'string' ? branchData.branchName : '',
                 lastUpdatedBranchId: targetPatientData.homeBranchId,
                 lastUpdatedBranchName: typeof branchData.branchName === 'string' ? branchData.branchName : '',

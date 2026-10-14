@@ -1,5 +1,6 @@
 import { uiCan } from '../permissionState';
 import { clinicalFindingLabel } from '../utils/clinicalFindings';
+import { patientHistoryLabel } from '../utils/patientMedicalHistory';
 import { birthMode, patientBirthLabel } from '../utils/patientBirth';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -264,7 +265,10 @@ export default function PatientProfile({
                   <DetailItem label="Allergies" value={clinicalFindingLabel(patient, 'allergies')} />
                   <DetailItem label="Current medications" value={clinicalFindingLabel(patient, 'medications')} />
                   <DetailItem label="Medical conditions" value={clinicalFindingLabel(patient, 'medicalConditions')} />
+                  <DetailItem label="Medical history" value={patientHistoryLabel(patient.medicalHistory)} className="sm:col-span-2" />
+                  <DetailItem label="Ongoing health concerns" value={patientHistoryLabel(patient.healthConcerns)} className="sm:col-span-2" />
                 </dl>
+                {patient.clinicalHistoryUpdatedAt && <p className="mt-3 text-xs text-slate-500">History last recorded by {patient.clinicalHistoryUpdatedByName || 'Recorded user'} · {formatDateTime(patient.clinicalHistoryUpdatedAt)}. This records the entry, not a signed clinical review.</p>}
               </section>}
 
               <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">

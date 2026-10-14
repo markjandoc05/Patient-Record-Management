@@ -47,11 +47,11 @@ async function recordRequest(
   return body as { id: string; patientID?: string };
 }
 
-export const createPatientRecord = (payload: Record<string, unknown>) =>
-  recordRequest('patients', 'POST', payload);
+export const createPatientRecord = (payload: Record<string, unknown>, scope?: RecordRequestScope) =>
+  recordRequest('patients', 'POST', payload, undefined, undefined, scope);
 
-export const updatePatientRecord = (patientId: string, payload: Record<string, unknown>) =>
-  recordRequest('patients', 'PATCH', payload, patientId);
+export const updatePatientRecord = (patientId: string, payload: Record<string, unknown>, scope?: RecordRequestScope) =>
+  recordRequest('patients', 'PATCH', payload, patientId, undefined, scope);
 
 export const createAppointmentRecord = (payload: Record<string, unknown>, scope?: RecordRequestScope) =>
   recordRequest('appointments', 'POST', payload, undefined, undefined, scope);

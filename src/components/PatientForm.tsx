@@ -1,11 +1,14 @@
-import { uiCan } from '../permissionState';
+import { uiCan, uiPermissionScope } from '../permissionState';
 import { uiRecordPermission } from '../permissionState';
 import { parseEmergencyContact } from '../utils/emergencyContact';
 import { findingFields, findingState, parseClinicalFindings, reportedFindingEdit } from '../utils/clinicalFindings';
 import { possiblePatientDuplicates } from '../utils/patientDuplicates';
 import { patientBirthLabel } from '../utils/patientBirth';
 import { birthMode, parsePatientBirth } from '../utils/patientBirth';
-import React, { useState, useEffect, useRef } from 'react';
+import { parsePatientHistory, patientHistoryFields, patientHistoryLimits, patientHistoryVersion } from '../utils/patientMedicalHistory';
+import { auth } from '../platform';
+import { subscribeProtectedDataInvalidation } from '../dataClient';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { canEditPatient, getPatientEditScope, hasPermission, Role } from '../rbac';
 import { createPatientRecord, updatePatientRecord } from '../utils/recordApi';
 import { getActiveDatePrefix } from '../utils/timezone';
@@ -15,16 +18,19 @@ const ErrorMessage = ({ error, id }: { error?: string; id?: string }) => {
   return <p id={id} className="text-rose-600 text-xs font-medium">{error}</p>;
 }
 
-export default function PatientForm({ db, user, users, patients, branches, userProfile, patient, defaultBranchId, onClose, onSave, onOpenExisting, lookupWarning }: { db: any, user: any, users: any[], patients: any[], branches: any[], userProfile: any, patient?: any, defaultBranchId?: string, onClose: () => void, onSave: () => void, onOpenExisting?: (patient: any) => void, lookupWarning?: string }) {
+type PatientFormProps = { db: any, user: any, users: any[], patients: any[], branches: any[], userProfile: any, patient?: any, defaultBranchId?: string, onClose: () => void, onSave: () => void, onOpenExisting?: (patient: any) => void, lookupWarning?: string };
+
+function PatientFormWorkspace({ db, user, users, patients, branches, userProfile, patient, defaultBranchId, onClose, onSave, onOpenExisting, lookupWarning }: PatientFormProps) {
   const role = userProfile.role as Role;
   const editScope = getPatientEditScope(role);
   const isLimitedEdit = !!patient && editScope !== 'full';
   const canChangeHomeBranch = !patient || editScope === 'full' || editScope === 'operational';
+  const openedPatient = useRef(patient);
   const [formData, setFormData] = useState({
     patientID: '',
     name: '', contactNumber: '', email: '', birthday: '', age: '', gender: 'Male', address: '', emergencyContact: '',
     dateRegistered: '',
-    mainConcern: '', skinType: '', allergies: '', medications: '', medicalConditions: '',
+    mainConcern: '', skinType: '', allergies: '', medications: '', medicalConditions: '', medicalHistory: '', healthConcerns: '',
     notes: '', status: 'Active',
     homeBranchId: '', homeBranchName: '',
     ...(patient || {}),
@@ -38,9 +44,14 @@ export default function PatientForm({ db, user, users, patients, branches, userP
     emergencyContactNumber: patient?.emergencyContactNumber || ''
   });
 
-  const canSeeClinical = uiCan(role, 'clinical.view');
-  const canWriteClinical = canSeeClinical && (!patient || uiCan(role, 'clinical.edit_draft'));
+  const canSeeClinical = uiCan(userProfile, 'clinical.view');
+  const canWriteClinical = canSeeClinical && (!patient || uiCan(userProfile, 'clinical.edit_draft'));
   const [isSaving, setIsSaving] = useState(false);
+  const saveLifetime = useRef({ active: false, generation: 0, request: null as AbortController | null });
+  useLayoutEffect(() => {
+    saveLifetime.current.active = true; saveLifetime.current.generation++;
+    return () => { saveLifetime.current.active = false; saveLifetime.current.generation++; saveLifetime.current.request?.abort(); };
+  }, []);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState('');
   const [isDirty, setIsDirty] = useState(false);
@@ -142,6 +153,17 @@ export default function PatientForm({ db, user, users, patients, branches, userP
     let findings: Record<string, string> = {};
     try { findings = parseClinicalFindings(formData); }
     catch (error: any) { newErrors.clinicalFindings = error.message; }
+    let history: Record<string, string> = {}, historyVersion = 0;
+    if (canWriteClinical && !isLimitedEdit) {
+      try {
+        // Imported non-text content is retained for review, never converted by
+        // an unrelated form edit into text or an empty default.
+        history = parsePatientHistory(Object.fromEntries(patientHistoryFields
+          .filter(field => openedPatient.current?.[field] === undefined || typeof openedPatient.current?.[field] === 'string')
+          .map(field => [field, (formData as any)[field]])), openedPatient.current);
+        historyVersion = patientHistoryVersion(openedPatient.current);
+      } catch (error: any) { newErrors.medicalHistory = error.message; }
+    }
     if (!formData.gender) newErrors.gender = 'Select the patient’s gender.';
     if (canWriteClinical && (!patient || editScope === 'full') && !mainConcern) newErrors.mainConcern = 'Enter the patient’s main concern.';
 
@@ -172,13 +194,13 @@ export default function PatientForm({ db, user, users, patients, branches, userP
     
     setIsSaving(true);
     if (patient) {
-        if (!uiCan(role, 'patients.edit')) {
+        if (!uiCan(userProfile, 'patients.edit')) {
             setSaveError("You are not authorized to update patient records.");
             setIsSaving(false);
             return;
         }
     } else {
-        if (!uiRecordPermission(role, 'patientRecord', 'create')) {
+        if (!uiRecordPermission(userProfile, 'patientRecord', 'create')) {
             setSaveError("You are not authorized to register patients.");
             setIsSaving(false);
             return;
@@ -200,6 +222,7 @@ export default function PatientForm({ db, user, users, patients, branches, userP
       allergies: String(formData.allergies || '').trim(),
       medications: String(formData.medications || '').trim(),
       medicalConditions: String(formData.medicalConditions || '').trim(),
+      ...history,
       notes: String(formData.notes || '').trim(),
       status: formData.status,
       homeBranchId: formData.homeBranchId
@@ -220,25 +243,33 @@ export default function PatientForm({ db, user, users, patients, branches, userP
         ? { ...demographicData, homeBranchId: formData.homeBranchId, status: formData.status }
         : fullRecordData;
     
+    const controller = new AbortController(), generation = saveLifetime.current.generation;
+    saveLifetime.current.request = controller;
+    const current = () => saveLifetime.current.active && saveLifetime.current.generation === generation
+      && saveLifetime.current.request === controller && !controller.signal.aborted;
+    const requestScope = { signal: controller.signal, current };
     try {
         if (patient) {
           await updatePatientRecord(patient.id, {
             ...dataToSave,
-            expectedLastUpdatedAt: patient.lastUpdatedAt || null
-          });
+            expectedLastUpdatedAt: openedPatient.current?.lastUpdatedAt || null,
+            ...(!isLimitedEdit && canWriteClinical ? { expectedClinicalHistoryVersion: historyVersion } : {})
+          }, requestScope);
         } else {
-          const savedPatient = await createPatientRecord(dataToSave);
+          const savedPatient = await createPatientRecord(dataToSave, requestScope);
           if (!savedPatient.id || !savedPatient.patientID) {
             throw new Error('The server did not confirm the new patient record. Please try again.');
           }
         }
+        if (!current()) return;
         onSave();
         onClose();
     } catch (err: any) {
+        if (!current() || err.name === 'AbortError') return;
         console.error("Error saving patient:", err);
         setSaveError(err.message || "The patient record could not be saved. Please try again.");
     } finally {
-        setIsSaving(false);
+        if (current()) setIsSaving(false);
     }
   };
 
@@ -293,7 +324,7 @@ export default function PatientForm({ db, user, users, patients, branches, userP
           <button type="button" onClick={() => setAcknowledgedMatches(matchSignature)} className="min-h-10 text-sm font-semibold underline">Continue registration</button>
         </section>}
 
-        <div className="grid md:grid-cols-2 gap-8">
+        <fieldset disabled={isSaving} className="grid min-w-0 md:grid-cols-2 gap-8">
             <div className="space-y-6">
                 <section className="space-y-4">
                     <div className="border-b border-slate-200 pb-3">
@@ -514,6 +545,18 @@ export default function PatientForm({ db, user, users, patients, branches, userP
                             </select>
                         </div>
                         
+                        <div data-patient-field="medicalHistory" tabIndex={-1} className="space-y-4">
+                          <p className="text-xs text-slate-600">Optional reported background information. Blank means not recorded, not confirmed none.</p>
+                          <ErrorMessage error={errors.medicalHistory} />
+                          {patientHistoryFields.map(field => <div key={field} className="space-y-1.5">
+                            <label htmlFor={`patient-${field}`} className="block text-xs font-semibold text-slate-600">{field === 'medicalHistory' ? 'Medical history' : 'Ongoing health concerns'}</label>
+                            <textarea id={`patient-${field}`} rows={3} maxLength={Math.max(patientHistoryLimits[field], String(openedPatient.current?.[field] || '').length)}
+                              value={typeof (formData as any)[field] === 'string' ? (formData as any)[field] : JSON.stringify((formData as any)[field]) || ''}
+                              disabled={isLimitedEdit || !canWriteClinical || openedPatient.current?.[field] !== undefined && typeof openedPatient.current?.[field] !== 'string'}
+                              onChange={event => setField(field, event.target.value)} className={fieldClass('medicalHistory', 'p-2.5')} />
+                            {openedPatient.current?.[field] !== undefined && typeof openedPatient.current?.[field] !== 'string' && <p className="text-xs text-slate-500">Historical content is retained. This entry needs review before it can be edited as text.</p>}
+                          </div>)}
+                        </div>
                         <div data-patient-field="clinicalFindings" tabIndex={-1} className="space-y-4">
                           <p className="text-xs text-slate-600">Record what is reported. Unknown is not a negative finding. These entries do not constitute clinician review.</p>
                           <ErrorMessage id="patient-findings-error" error={errors.clinicalFindings} />
@@ -546,7 +589,7 @@ export default function PatientForm({ db, user, users, patients, branches, userP
                     </div>
                 </section>
             </div>}
-        </div>
+        </fieldset>
     
         <div className="-mx-5 sm:-mx-7 -mb-5 sm:-mb-7 flex flex-col-reverse sm:flex-row sm:justify-end gap-3 border-t border-slate-200 bg-white px-5 sm:px-7 py-4">
           <button 
@@ -572,4 +615,19 @@ export default function PatientForm({ db, user, users, patients, branches, userP
       </form>
     </div>
   );
+}
+
+// Keep a draft and its pending responses inside the same protected access scope.
+export default function PatientForm(props: PatientFormProps) {
+  const user = auth.currentUser;
+  // The own-profile poll is fresher than the shared users list and need not carry
+  // a document id. Bind it to the authenticated user supplied by the parent.
+  const profile = user ? (props.user?.uid === user.uid ? props.userProfile : props.users.find(value => value.id === user.uid)) : null;
+  const scope = JSON.stringify([user?.uid, uiPermissionScope(profile), profile?.role, profile?.active, props.patient?.id]);
+  const [invalidatedScope, setInvalidatedScope] = useState<string | null>(null);
+  useLayoutEffect(() => subscribeProtectedDataInvalidation(() => setInvalidatedScope(scope)), [scope]);
+  if (!profile?.active || invalidatedScope === scope || !uiRecordPermission(profile, 'patientRecord', props.patient ? 'update' : 'create')) {
+    return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 p-4"><div role="alert" className="space-y-4 rounded-2xl bg-white p-6"><p>Patient access changed. Close and reopen after your access is refreshed.</p><button type="button" onClick={props.onClose}>Close</button></div></div>;
+  }
+  return <PatientFormWorkspace key={scope} {...props} userProfile={profile} />;
 }
