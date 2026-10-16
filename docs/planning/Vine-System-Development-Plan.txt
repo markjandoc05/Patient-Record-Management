@@ -107,7 +107,8 @@ Clinical records:
 Encounters; medical history; allergies; medications; health concerns; clinical notes; clinician-authored prescription drafts. No automatic clinical decision-making is included in this plan.
 
 Consent, media and interactive charts:
-Versioned consent; private attachments; before/after/progress photos; face, front/back body and dental markers; editable drafts; undo; signed charts; attributed amendments; print/export.
+Versioned consent; private attachments; before/after/progress photos; face and front/back body markers; editable drafts; undo; signed charts; attributed amendments; print/export.
+October 13 scope update: clinical charting covers face and front/back body only. Dental maps are excluded by the user's instruction.
 
 Services:
 Categories; descriptions; duration; standard and branch-specific pricing; branch availability; scheduling requirements; descriptive consumable defaults.

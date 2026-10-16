@@ -79,7 +79,6 @@
     "test:treatment-ledger-migration": "node --import tsx scripts/test-treatment-ledger-migration.ts",
     "test:treatment-ledger-ui": "node --import tsx scripts/test-treatment-ledger-ui.ts",
     "test:treatment-ledger-transport": "node --import tsx scripts/test-treatment-ledger-transport.ts",
-    "test:treatment-ledger-print": "node --import tsx scripts/test-treatment-ledger-print.ts",
     "test:treatment-ledger-presentation": "node --import tsx scripts/test-treatment-ledger-presentation.ts",
     "test:patient-gallery-policy": "node --import tsx scripts/test-patient-gallery-policy.ts",
     "test:patient-gallery-api": "node --import tsx scripts/test-patient-gallery-api.ts",

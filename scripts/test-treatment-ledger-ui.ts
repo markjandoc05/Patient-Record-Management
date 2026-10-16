@@ -45,8 +45,8 @@ class Fixture {
 const results: { name: string; passed: boolean; error?: string }[] = [];
 async function check(name: string, run: (fixture: Fixture) => Promise<void>, component?: string) { const fixture = new Fixture(component); try { await run(fixture); results.push({ name, passed: true }); } catch (error: any) { results.push({ name, passed: false, error: error.message }); } finally { fixture.stop(); } }
 try {
-  for (const action of ['Print / Save PDF', 'Export saved ledger']) for (const role of ['admin', 'staff']) {
-    await check(`${action} retains the ${role} metadata draft version until explicit reload`, async f => {
+  for (const role of ['admin', 'staff']) {
+    await check(`JSON export retains the ${role} metadata draft version until explicit reload`, async f => {
       f.props.userRole = role;
       const original = ledger();
       if (role === 'staff') {
@@ -73,26 +73,17 @@ try {
       URL.revokeObjectURL = () => {};
       globals.document.createElement = () => ({ click() {} });
       try {
-        await f.click(action);
+        await f.click('Export saved ledger');
         assert.equal(f.requests.at(-1).init.method, 'GET');
         f.requests.at(-1).deliver(concurrent);
         await f.settle();
         assert.equal(f.label('Package notes').props.value, 'Draft notes based on version two');
         if (role === 'admin') assert.equal(f.label('OR#').props.value, '0000003');
-        if (action === 'Print / Save PDF') {
-          f.frames.splice(0).forEach(run => run());
-          assert.equal(f.printed, 1);
-          const statement = find(f.renderer.tree, node => node.props?.['aria-label'] === 'Saved treatment session statement');
-          assert.match(text(statement), /Concurrent saved notes/);
-          assert.match(text(statement), /0000004/);
-          assert.doesNotMatch(text(statement), /Draft notes based on version two|0000003/);
-        } else {
-          assert.ok(downloaded);
-          const saved = JSON.parse(await downloaded!.text());
-          assert.equal(saved.purchases[0].notes, 'Concurrent saved notes');
-          assert.equal(saved.purchases[0].orNumber, '0000004');
-          assert.equal(saved.purchases[0].lines[0].remainingSessions, 7);
-        }
+        assert.ok(downloaded);
+        const saved = JSON.parse(await downloaded!.text());
+        assert.equal(saved.purchases[0].notes, 'Concurrent saved notes');
+        assert.equal(saved.purchases[0].orNumber, '0000004');
+        assert.equal(saved.purchases[0].lines[0].remainingSessions, 7);
         await f.submit();
         const stale = JSON.parse(f.requests.at(-1).init.body);
         assert.equal(stale.expectedVersion, 2, 'A saved-statement refresh must not rebase an open metadata draft');
@@ -139,10 +130,9 @@ try {
     const pending = f.requests.at(-1), submitted = JSON.parse(pending.init.body);
     pending.fail(); await f.settle();
     assert.equal(submitted.expectedVersion, 2);
-    assert.equal(f.button('Print / Save PDF').props.disabled, true);
     assert.equal(f.button('Export saved ledger').props.disabled, true);
     const beforeRetry = f.requests.length;
-    await f.click('Print / Save PDF'); await f.click('Export saved ledger');
+    await f.click('Export saved ledger');
     assert.equal(f.requests.length, beforeRetry);
     await f.submit();
     assert.deepEqual(JSON.parse(f.requests.at(-1).init.body), submitted);
@@ -153,21 +143,83 @@ try {
     assert.match(text(f.renderer.tree), /Package details saved/);
   });
   await check('saved balances and historical names lead the ledger', async f => { await f.loaded(); assert.match(text(f.renderer.tree), /Saved Treatment Package/); assert.match(text(f.renderer.tree), /Saved Laser Service/); assert.match(text(f.renderer.tree), /8 remaining after/); assert.ok(text(f.renderer.tree).indexOf('Remaining') < text(f.renderer.tree).indexOf('Session history')); });
-  await check('saved statement uses a direct body portal and preserves purchase calendar date', async f => { await f.loaded(); assert.equal(f.renderer.portals.length, 1); assert.equal(f.renderer.portals[0].container, globals.document.body); const statement = find(f.renderer.tree, node => node.props?.['aria-label'] === 'Saved treatment session statement'); assert.match(text(statement), /Purchased\s+2035-01-01/); assert.doesNotMatch(text(statement), /DO NOT EXPORT/); });
+  await check('ledger has no print control or print portal while loading, editing or exporting', async f => {
+    const noPrint = () => {
+      assert.ok(!find(f.renderer.tree, node => node.type === 'button' && text(node).trim() === 'Print / Save PDF'));
+      assert.ok(!find(f.renderer.tree, node => node.props?.['aria-label'] === 'Saved treatment session statement'));
+      assert.equal(f.renderer.portals.length, 0);
+      assert.equal(f.printed, 0);
+      assert.equal(f.frames.length, 0);
+    };
+    await f.start(); noPrint();
+    f.requests[0].deliver(ledger()); await f.settle(); noPrint();
+    assert.match(text(f.renderer.tree), /Purchased\s+2035-01-01/);
+    await f.click('Edit package details');
+    await f.change(f.label('Package notes'), 'Unsubmitted edit while exporting'); noPrint();
+    let downloaded: Blob | undefined;
+    const oldCreate = URL.createObjectURL, oldRevoke = URL.revokeObjectURL, oldElement = globals.document.createElement;
+    URL.createObjectURL = blob => { assert.ok(blob instanceof Blob); downloaded = blob; return 'blob:no-ledger-print'; };
+    URL.revokeObjectURL = () => {};
+    globals.document.createElement = () => ({ click() {} });
+    try {
+      await f.click('Export saved ledger'); noPrint();
+      f.requests.at(-1).deliver(ledger()); await f.settle(); noPrint();
+      const saved = JSON.parse(await downloaded!.text());
+      assert.equal(saved.purchases[0].purchaseDate, '2035-01-01');
+      assert.equal(saved.purchases[0].notes, 'Saved package note');
+      assert.equal(f.label('Package notes').props.value, 'Unsubmitted edit while exporting');
+    } finally {
+      URL.createObjectURL = oldCreate; URL.revokeObjectURL = oldRevoke;
+      globals.document.createElement = oldElement;
+    }
+    f.stop(); noPrint();
+  });
   await check('empty state explains purchase and Visit usage', async f => { await f.loaded(ledger({ purchases: [], events: [] })); assert.match(text(f.renderer.tree), /No package purchases recorded/); assert.match(text(f.renderer.tree), /matching performed Service/); });
   await check('Staff can purchase and edit notes without an OR input or adjustment controls', async f => { f.props.userRole = 'staff'; const data = ledger(); data.capabilities.canAdjust = false; data.capabilities.canEditOrNumber = false; data.purchases[0].capabilities = { canEditNotes: true, canAdjust: false, canEditOrNumber: false }; await f.loaded(data); await f.click('Record purchase'); assert.ok(!find(f.renderer.tree, node => node.type === 'label' && text(node).includes('OR#'))); assert.ok(!find(f.renderer.tree, node => node.type === 'button' && text(node) === 'Adjust sessions')); });
   await check('cross-branch balances retain redacted metadata and hide originating-branch edits', async f => { const data = ledger(); data.purchases[0] = { ...data.purchases[0], notes: '', orNumber: null, metadataRedacted: true, capabilities: { canEditNotes: false, canAdjust: false, canEditOrNumber: false } }; await f.loaded(data); assert.doesNotMatch(text(f.renderer.tree), /Saved package note|OR-SYNTHETIC/); assert.ok(!find(f.renderer.tree, node => node.type === 'button' && text(node) === 'Edit package details')); });
   await check('purchase validates and submits Service IDs with verified versions', async f => { await f.loaded(); await f.click('Record purchase'); await f.change(f.label('Package name'), 'Synthetic New Package'); await f.change(f.label('Service 1'), ids.service); await f.change(f.label('Sessions'), '6'); await f.submit(); const request = f.requests.at(-1), body = JSON.parse(request.init.body); assert.equal(request.init.method, 'POST'); assert.deepEqual(body.lines, [{ serviceId: ids.service, expectedServiceVersion: 4, purchasedSessions: 6 }]); assert.equal(body.purchaseDate, '2035-01-01'); assert.ok(!Object.hasOwn(body.lines[0], 'serviceNameSnapshot')); assert.ok(find(f.renderer.tree, node => node.type === 'fieldset' && node.props.disabled)); });
   await check('uncertain purchase keeps submitted command stable across Retry', async f => { await f.loaded(); await f.click('Record purchase'); await f.change(f.label('Package name'), 'Synthetic Retry Package'); await f.change(f.label('Service 1'), ids.service); await f.submit(); const first = f.requests.at(-1); first.fail(); await f.settle(); assert.match(text(f.renderer.tree), /result is uncertain/); await f.submit(); assert.deepEqual(JSON.parse(f.requests.at(-1).init.body), JSON.parse(first.init.body)); });
-  await check('lost adjustment response blocks print/export and Retry reuses the exact command', async f => { await f.loaded(); await f.click('Adjust sessions'); await f.change(f.label('Session adjustment'), '1'); await f.change(f.label('Reason'), 'Synthetic correction'); await f.submit(); const committed = f.requests.at(-1), submitted = JSON.parse(committed.init.body); committed.fail(); await f.settle(); assert.equal(f.button('Print / Save PDF').props.disabled, true); assert.equal(f.button('Export saved ledger').props.disabled, true); const count = f.requests.length; await f.click('Print / Save PDF'); await f.click('Export saved ledger'); assert.equal(f.requests.length, count); await f.submit(); assert.deepEqual(JSON.parse(f.requests.at(-1).init.body), submitted); const fresh = ledger(); fresh.purchases[0].lines[0].remainingSessions = 9; fresh.purchases[0].lines[0].version = 4; f.requests.at(-1).deliver(fresh); await f.settle(); assert.ok(!find(f.renderer.tree, node => node.type === 'form')); });
-  await check('Reload after lost adjustment discards the pending editor without applying another adjustment', async f => { await f.loaded(); await f.click('Adjust sessions'); await f.change(f.label('Reason'), 'Synthetic correction'); await f.submit(); f.requests.at(-1).fail(); await f.settle(); await f.click('Reload balances'); const fresh = ledger(); fresh.purchases[0].lines[0].remainingSessions = 9; fresh.purchases[0].lines[0].version = 4; f.requests.at(-1).deliver(fresh); await f.settle(); assert.ok(!find(f.renderer.tree, node => node.type === 'form')); assert.equal(f.requests.filter(request => request.url.endsWith('/adjustments')).length, 1); assert.equal(f.button('Print / Save PDF').props.disabled, false); });
+  await check('lost adjustment response blocks JSON export and Retry reuses the exact command', async f => { await f.loaded(); await f.click('Adjust sessions'); await f.change(f.label('Session adjustment'), '1'); await f.change(f.label('Reason'), 'Synthetic correction'); await f.submit(); const committed = f.requests.at(-1), submitted = JSON.parse(committed.init.body); committed.fail(); await f.settle(); assert.equal(f.button('Export saved ledger').props.disabled, true); const count = f.requests.length; await f.click('Export saved ledger'); assert.equal(f.requests.length, count); await f.submit(); assert.deepEqual(JSON.parse(f.requests.at(-1).init.body), submitted); const fresh = ledger(); fresh.purchases[0].lines[0].remainingSessions = 9; fresh.purchases[0].lines[0].version = 4; f.requests.at(-1).deliver(fresh); await f.settle(); assert.ok(!find(f.renderer.tree, node => node.type === 'form')); });
+  await check('Reload after lost adjustment discards the pending editor without applying another adjustment', async f => { await f.loaded(); await f.click('Adjust sessions'); await f.change(f.label('Reason'), 'Synthetic correction'); await f.submit(); f.requests.at(-1).fail(); await f.settle(); await f.click('Reload balances'); const fresh = ledger(); fresh.purchases[0].lines[0].remainingSessions = 9; fresh.purchases[0].lines[0].version = 4; f.requests.at(-1).deliver(fresh); await f.settle(); assert.ok(!find(f.renderer.tree, node => node.type === 'form')); assert.equal(f.requests.filter(request => request.url.endsWith('/adjustments')).length, 1); assert.equal(f.button('Export saved ledger').props.disabled, false); });
   await check('metadata saves only editable fields and carries optimistic version', async f => { const data = ledger(); data.purchases[0].capabilities.canEditOrNumber = false; await f.loaded(data); await f.click('Edit package details'); await f.change(f.label('Package notes'), 'Updated note'); await f.submit(); const body = JSON.parse(f.requests.at(-1).init.body); assert.equal(body.expectedVersion, 2); assert.equal(body.notes, 'Updated note'); assert.ok(!Object.hasOwn(body, 'orNumber')); });
   await check('adjustment requires reason and cannot create negative remaining sessions', async f => { await f.loaded(); await f.click('Adjust sessions'); await f.change(f.label('Session adjustment'), '-9'); await f.change(f.label('Reason'), 'Synthetic correction'); await f.submit(); assert.equal(f.requests.length, 1); assert.match(text(f.renderer.tree), /nonnegative balance/); });
   await check('usage reversal retains explicit reason and both version guards', async f => { const data = ledger({ activeVisitUsages: [{ visitId: 'visit', eventId: ids.event, lineId: ids.line, sessions: 2, version: 1, visitSnapshot }] }); await f.loaded(data); await f.click('Reverse usage'); await f.change(f.label('Reason'), 'Synthetic duplicate recording'); await f.submit(); const body = JSON.parse(f.requests.at(-1).init.body); assert.equal(body.expectedLineVersion, 3); assert.equal(body.expectedUsageVersion, 1); assert.equal(body.reason, 'Synthetic duplicate recording'); });
   await check('usage reversal is hidden when the purchase branch is not editable', async f => { const data = ledger({ activeVisitUsages: [{ visitId: 'visit', eventId: ids.event, lineId: ids.line, sessions: 2, version: 1, visitSnapshot }] }); data.purchases[0].capabilities.canAdjust = false; await f.loaded(data); assert.ok(!find(f.renderer.tree, node => node.type === 'button' && text(node).trim() === 'Reverse usage')); });
   await check('usage reversal is hidden when its treatment branch is unauthorized', async f => { const data = ledger({ activeVisitUsages: [{ visitId: 'visit', eventId: ids.event, lineId: ids.line, sessions: 2, version: 1, visitSnapshot: { ...visitSnapshot, branchId: 'C' } }] }); data.events[0].branchId = 'C'; await f.loaded(data); assert.ok(!find(f.renderer.tree, node => node.type === 'button' && text(node).trim() === 'Reverse usage')); });
-  await check('print refreshes saved server ledger, excludes unsaved drafts and cleans class', async f => { await f.loaded(); await f.click('Record purchase'); await f.change(f.label('Package name'), 'UNSAVED PURCHASE'); await f.click('Print / Save PDF'); const current = ledger(); current.purchases[0].lines[0].remainingSessions = 7; f.requests.at(-1).deliver(current); await f.settle(); f.frames.splice(0).forEach(run => run()); assert.equal(f.printed, 1); const statement = find(f.renderer.tree, node => node.props?.['aria-label'] === 'Saved treatment session statement'); assert.doesNotMatch(text(statement), /UNSAVED PURCHASE/); assert.equal(f.label('Package name').props.value, 'UNSAVED PURCHASE'); });
-  await check('denied fresh print never prints the prior snapshot', async f => { await f.loaded(); await f.click('Print / Save PDF'); f.requests.at(-1).deliver({ error: 'Denied current statement' }, 403); await f.settle(); f.frames.splice(0).forEach(run => run()); assert.equal(f.printed, 0); assert.equal(f.renderer.portals.length, 0); });
+  await check('JSON export refreshes saved data without exporting or discarding an unsaved purchase', async f => {
+    await f.loaded(); await f.click('Record purchase');
+    await f.change(f.label('Package name'), 'UNSAVED PURCHASE');
+    let downloaded: Blob | undefined;
+    const oldCreate = URL.createObjectURL, oldRevoke = URL.revokeObjectURL, oldElement = globals.document.createElement;
+    URL.createObjectURL = blob => { assert.ok(blob instanceof Blob); downloaded = blob; return 'blob:unsaved-purchase'; };
+    URL.revokeObjectURL = () => {};
+    globals.document.createElement = () => ({ click() {} });
+    try {
+      await f.click('Export saved ledger');
+      const current = ledger(); current.purchases[0].lines[0].remainingSessions = 7;
+      f.requests.at(-1).deliver(current); await f.settle();
+      const saved = JSON.parse(await downloaded!.text());
+      assert.equal(saved.purchases[0].lines[0].remainingSessions, 7);
+      assert.doesNotMatch(JSON.stringify(saved), /UNSAVED PURCHASE/);
+      assert.equal(f.label('Package name').props.value, 'UNSAVED PURCHASE');
+      assert.equal(f.printed, 0); assert.equal(f.renderer.portals.length, 0);
+    } finally {
+      URL.createObjectURL = oldCreate; URL.revokeObjectURL = oldRevoke;
+      globals.document.createElement = oldElement;
+    }
+  });
+  for (const status of [401, 403]) await check(`denied fresh JSON export ${status} never downloads the prior snapshot`, async f => {
+    await f.loaded(); let downloadAttempts = 0;
+    const oldCreate = URL.createObjectURL;
+    URL.createObjectURL = () => { downloadAttempts++; return 'blob:denied'; };
+    try {
+      await f.click('Export saved ledger');
+      f.requests.at(-1).deliver({ error: 'Denied current statement' }, status); await f.settle();
+      assert.equal(downloadAttempts, 0); assert.equal(f.printed, 0);
+      assert.equal(f.renderer.portals.length, 0);
+      assert.equal(globals.servicesTestInvalidations, 1);
+    } finally { URL.createObjectURL = oldCreate; }
+  });
   await check('export refreshes saved statement and strips clinical narrative', async f => { await f.loaded(); let downloaded: Blob | undefined; const oldCreate = URL.createObjectURL, oldRevoke = URL.revokeObjectURL, revoked: string[] = []; URL.createObjectURL = blob => { assert.ok(blob instanceof Blob); downloaded = blob; return 'blob:synthetic'; }; URL.revokeObjectURL = url => { revoked.push(url); }; globals.document.createElement = () => ({ click() {} }); try { await f.click('Export saved ledger'); f.requests.at(-1).deliver(ledger()); await f.settle(); const value = JSON.parse(await downloaded!.text()); assert.equal(value.purchases[0].lines[0].remainingSessions, 8); assert.equal(value.history[0].balanceAfter.remainingSessions, 8); assert.equal(value.history[0].visit.timezoneSnapshot, 'Asia/Manila'); assert.equal(value.history[0].visit.performedByDesignation, 'Nurse'); assert.equal(value.history[0].visit.assistingStaffText, 'Saved Assistant'); assert.ok(!JSON.stringify(value).includes('DO NOT EXPORT')); assert.deepEqual(revoked, ['blob:synthetic']); } finally { URL.createObjectURL = oldCreate; URL.revokeObjectURL = oldRevoke; } });
   for (const status of [200, 401, 403, 409]) for (const change of ['patient', 'account', 'invalidate', 'unmount']) await check(`late ledger ${status} discarded after ${change}`, async f => { await f.start(); const old = f.requests[0]; if (change === 'patient') { f.props.patient = { ...f.props.patient, id: 'new-patient' }; f.render(); } if (change === 'account') { globals.servicesTestAuth.currentUser = { ...globals.servicesTestAuth.currentUser, uid: 'new-account' }; f.render(); } if (change === 'invalidate') { for (const listener of globals.appointmentInvalidationListeners) listener(); f.render(); } if (change === 'unmount') f.stop(); old.deliver(status === 200 ? ledger() : { error: 'OLD_SCOPE_ERROR' }, status); await f.settle(); assert.equal(globals.servicesTestInvalidations, 0); assert.doesNotMatch(text(f.renderer.tree), /Saved Treatment Package|OLD_SCOPE_ERROR/); assert.equal(f.renderer.lateSetters, 0); });
   await check('Visit matching sessions include a package purchased at another authorized-use clinic', async f => { await f.loaded(); await f.change(f.label('Use package sessions'), true); assert.equal(f.props.value.lineId, ''); assert.equal(f.props.value.sessions, 1); assert.equal(f.props.value.valid, false); assert.match(text(f.input('visit-session-line')), /Clinic B/); await f.change(f.input('visit-session-line'), ids.line); assert.equal(f.props.value.valid, true); assert.equal(f.props.value.expectedLineVersion, 3); await f.change(f.input('visit-session-count'), '9'); assert.equal(f.props.value.valid, false); }, 'VisitSessionUsagePicker');

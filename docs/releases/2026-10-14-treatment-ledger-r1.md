@@ -170,3 +170,33 @@ Repair schema report:
 Next: final independent scoped commit-readiness review of the repaired ledger.
 Clinical Records R1 remains a separate uncommitted prerequisite; neither its prior
 review nor the pre-repair ledger patch is new staging approval.
+
+
+## Local update — remove Treatment Ledger printing
+
+On October 14, 2026, the user removed Treatment Ledger Print / Save PDF from the
+release scope. The ledger print action, saved statement portal, print scheduling
+and ledger-only stylesheet are removed. Earlier print evidence above describes
+the previous implementation and is retained as history; it does not describe the
+current Treatment Ledger surface.
+
+Export saved ledger remains JSON with the same saved, server-authorized session
+facts. Admin notes/OR# and Staff notes-only metadata regression paths still retain
+the opened version across export, require explicit reload after conflicts, and
+keep uncertain commands locked. Purchases, session balances, Visit usage,
+permissions, origin-branch redaction and existing records are unchanged. Clinical
+chart Print / Save PDF and chart JSON export are unchanged.
+
+The obsolete ledger-print fixture and npm command are removed. The component
+regressions now cover the absence of ledger print controls/portals/calls across
+loading, editing and JSON export, plus saved JSON refresh, denied export and
+preservation of unsaved drafts. Schema change required: NO; committed migrations
+001–005 are unchanged, no migration is run, and current production schema parity
+remains UNVERIFIED. This update is local and unstaged; no commit, push, deployment
+or production action is authorized.
+
+Focused validation for this update: ledger components44/44, protected
+transport20/20, policy136/136 and treatment-time presentation6/6 PASS. Tests use
+controlled synthetic responses and do not claim native browser/print evidence.
+The intentionally interrupted Visit-save case logs its expected simulated
+connection error while its retry regression passes.

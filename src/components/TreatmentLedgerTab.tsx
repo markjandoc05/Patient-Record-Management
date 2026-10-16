@@ -1,6 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { Download, Plus, Printer, X } from 'lucide-react';
+import { Download, Plus, X } from 'lucide-react';
 import { auth } from '../platform';
 import { subscribeProtectedDataInvalidation } from '../dataClient';
 import { currentPermissionProfile, uiCan, uiPermissionScope } from '../permissionState';
@@ -38,20 +37,6 @@ export function treatmentSessionStatement(data: TreatmentLedgerResponse, patient
       visit: event.visitSnapshot ? { branchName: event.visitSnapshot.branchNameSnapshot, timezoneSnapshot: event.visitSnapshot.timezoneSnapshot,
         performedByName: event.visitSnapshot.performedByNameSnapshot, performedByDesignation: event.visitSnapshot.performedByDesignationSnapshot,
         assistingStaffText: event.visitSnapshot.assistingStaffText, serviceName: event.visitSnapshot.serviceNameSnapshot, visitDate: event.visitSnapshot.visitDate } : null })) };
-}
-
-function SavedStatement({ data, patient }: { data: TreatmentLedgerResponse; patient: any }) {
-  return <section className="treatment-ledger-print" aria-label="Saved treatment session statement">
-    <h1>Treatment session statement</h1><p>{data.patientName || patient.name || 'Patient'} · {patient.patientID || data.patientId}</p>
-    <p>Package sessions and recorded treatment usage.</p>
-    {data.purchases.map(purchase => <article key={purchase.id}><h2>{purchase.packageName}</h2><p>Purchased {purchase.purchaseDate} · {purchase.branchNameSnapshot} · {purchase.timezoneSnapshot}</p>{purchase.orNumber && <p>OR#: {purchase.orNumber}</p>}{purchase.notes && <p>Package notes: {purchase.notes}</p>}
-      <table><thead><tr><th>Service</th><th>Purchased</th><th>Adjusted</th><th>Used</th><th>Remaining</th></tr></thead><tbody>{purchase.lines.map(line => <tr key={line.id}><td>{line.serviceNameSnapshot}</td><td>{line.purchasedSessions}</td><td>{line.adjustmentSessions}</td><td>{line.usedSessions}</td><td>{line.remainingSessions}</td></tr>)}</tbody></table>
-    </article>)}
-    <h2>Session history</h2>{!data.events.length ? <p>No session transactions recorded.</p> : <table><thead><tr><th>Recorded / Visit time</th><th>Activity</th><th>Package / Service</th><th>Sessions</th><th>Recorded by / treatment team / reason</th></tr></thead><tbody>{data.events.map(event => {
-      const purchase = data.purchases.find(item => item.id === event.purchaseId), line = purchase?.lines.find(item => item.id === event.lineId);
-      return <tr key={event.id}><td>{formatDateTime(event.recordedAt)}{event.treatmentDate && <p>Visit: {formatLedgerTreatmentTime(event.treatmentDate, event.visitSnapshot?.timezoneSnapshot)}</p>}</td><td>{event.type}</td><td>{purchase?.packageName || 'Recorded package'}{line && <p>{line.serviceNameSnapshot}</p>}</td><td>{activityLabel(event)}{event.balanceAfter && <p>{event.balanceAfter.remainingSessions} remaining after</p>}</td><td>Recorded by: {event.actor.name}{event.visitSnapshot && <><p>Clinic: {event.visitSnapshot.branchNameSnapshot}</p><p>Performed by: {event.visitSnapshot.performedByNameSnapshot || 'Not recorded'}{event.visitSnapshot.performedByDesignationSnapshot ? ` · ${event.visitSnapshot.performedByDesignationSnapshot}` : ''}</p>{event.visitSnapshot.assistingStaffText && <p>Assisting staff: {event.visitSnapshot.assistingStaffText}</p>}</>}{event.reason && <p>Reason: {event.reason}</p>}</td></tr>;
-    })}</tbody></table>}
-  </section>;
 }
 
 function PurchaseForm({ data, disabled, locked, onCancel, onSubmit }: { data: TreatmentLedgerResponse; disabled: boolean; locked: boolean; onCancel: () => void; onSubmit: (body: Record<string, unknown>) => void }) {
@@ -127,13 +112,12 @@ function LedgerWorkspace({ patient, userRole, scope }: { patient: any; userRole?
   const [notes, setNotes] = useState(''), [orNumber, setOrNumber] = useState(''), [reason, setReason] = useState(''), [delta, setDelta] = useState(1);
   const lifetime = useRef({ active: false, generation: 0, request: null as AbortController | null });
   const command = useRef({ key: '', id: crypto.randomUUID() });
-  const currentData = useRef(data); currentData.current = data;
   const currentEditor = editor?.kind === 'metadata' ? data?.purchases.find(purchase => purchase.id === editor.purchaseId) : undefined;
   const lineContext = data?.purchases.flatMap(purchase => purchase.lines.map(line => ({ purchase, line }))) || [];
   const editorLine = editor?.kind === 'adjustment' ? lineContext.find(({ line }) => line.id === editor.lineId) : undefined;
   const editorUsage = editor?.kind === 'reversal' ? data?.activeVisitUsages.find(usage => usage.eventId === editor.eventId) : undefined;
   const usageLine = editorUsage ? lineContext.find(({ line }) => line.id === editorUsage.lineId) : undefined;
-  useLayoutEffect(() => { lifetime.current.active = true; lifetime.current.generation++; return () => { lifetime.current.active = false; lifetime.current.generation++; lifetime.current.request?.abort(); document.documentElement?.classList.remove('treatment-ledger-printing'); }; }, [scope]);
+  useLayoutEffect(() => { lifetime.current.active = true; lifetime.current.generation++; return () => { lifetime.current.active = false; lifetime.current.generation++; lifetime.current.request?.abort(); }; }, [scope]);
   useEffect(() => {
     const controller = new AbortController(), generation = lifetime.current.generation; lifetime.current.request = controller;
     const current = () => lifetime.current.active && lifetime.current.generation === generation && lifetime.current.request === controller && !controller.signal.aborted;
@@ -169,24 +153,18 @@ function LedgerWorkspace({ patient, userRole, scope }: { patient: any; userRole?
       void run(options => reverseTreatmentUsage(patient.id, editorUsage.eventId, body, options), 'Session usage reversed.');
     }
   };
-  const exportSaved = async (print: boolean) => {
+  const exportSaved = async () => {
     if (!data || busy || retryLocked || !actorCurrent()) return;
-    const refreshed = await run(async options => {
+    await run(async options => {
       const saved = await getTreatmentLedger(patient.id, options);
       if (!options.isCurrent() || !actorCurrent()) throw new DOMException('Statement access changed.', 'AbortError');
-      if (!print) {
-        const url = URL.createObjectURL(new Blob([JSON.stringify(treatmentSessionStatement(saved, patient), null, 2)], { type: 'application/json' }));
-        try { const link = document.createElement('a'); link.href = url; link.download = `treatment-sessions-${patient.patientID || patient.id}.json`; link.click(); } finally { URL.revokeObjectURL(url); }
-      }
+      const url = URL.createObjectURL(new Blob([JSON.stringify(treatmentSessionStatement(saved, patient), null, 2)], { type: 'application/json' }));
+      try { const link = document.createElement('a'); link.href = url; link.download = `treatment-sessions-${patient.patientID || patient.id}.json`; link.click(); } finally { URL.revokeObjectURL(url); }
       return saved;
-    }, print ? 'Saved session statement ready to print.' : 'Saved session statement exported.', false);
-    if (print && refreshed && lifetime.current.active && actorCurrent()) {
-      // Allow React to commit the refreshed saved snapshot into its body portal.
-      window.requestAnimationFrame(() => { if (!lifetime.current.active || !actorCurrent() || currentData.current !== refreshed) return; document.documentElement.classList.add('treatment-ledger-printing'); try { window.print(); } finally { document.documentElement?.classList.remove('treatment-ledger-printing'); } });
-    }
+    }, 'Saved session statement exported.', false);
   };
   return <section className="space-y-4" aria-labelledby="treatment-ledger-heading">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div className="max-w-xl"><h3 id="treatment-ledger-heading" className="text-base font-bold text-slate-900">Treatment Ledger</h3><p className="mt-1 text-xs leading-5 text-slate-600">Remaining sessions by package and Service. Sessions can be used at your authorized branches; Service availability still applies.</p></div><div className="flex flex-wrap gap-2">{data?.capabilities.canPurchase && !patient.isArchived && <button type="button" disabled={busy || retryLocked} onClick={() => { setPurchaseOpen(true); setEditor(null); setError(''); }} className={primary}><Plus size={16} />Record purchase</button>}<button type="button" disabled={!data || busy || retryLocked || !data.purchases.length} onClick={() => void exportSaved(true)} className={button}><Printer size={15} />Print / Save PDF</button><button type="button" disabled={!data || busy || retryLocked || !data.purchases.length} onClick={() => void exportSaved(false)} className={button}><Download size={15} />Export saved ledger</button></div></div>
+    <div className="flex flex-wrap items-start justify-between gap-3"><div className="max-w-xl"><h3 id="treatment-ledger-heading" className="text-base font-bold text-slate-900">Treatment Ledger</h3><p className="mt-1 text-xs leading-5 text-slate-600">Remaining sessions by package and Service. Sessions can be used at your authorized branches; Service availability still applies.</p></div><div className="flex flex-wrap gap-2">{data?.capabilities.canPurchase && !patient.isArchived && <button type="button" disabled={busy || retryLocked} onClick={() => { setPurchaseOpen(true); setEditor(null); setError(''); }} className={primary}><Plus size={16} />Record purchase</button>}<button type="button" disabled={!data || busy || retryLocked || !data.purchases.length} onClick={() => void exportSaved()} className={button}><Download size={15} />Export saved ledger</button></div></div>
     {error && <div role="alert" className="space-y-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700"><p>{error}</p><button type="button" disabled={busy} onClick={() => { setEditor(null); setPurchaseOpen(false); setRetryLocked(false); setNotice(''); setRetry(value => value + 1); }} className={button}>Reload balances</button></div>}{notice && <p role="status" className="text-sm text-teal-800">{notice}</p>}
     {!data && !error && <div role="status" aria-label="Loading treatment ledger" className="space-y-3"><div className="h-20 animate-pulse rounded-xl bg-slate-100" /><div className="h-32 animate-pulse rounded-xl bg-slate-100" /></div>}
     {data && purchaseOpen && <PurchaseForm data={data} disabled={busy} locked={retryLocked} onCancel={() => setPurchaseOpen(false)} onSubmit={body => void run(options => createTreatmentPurchase(patient.id, body, options), 'Package purchase saved.')} />}
@@ -199,7 +177,6 @@ function LedgerWorkspace({ patient, userRole, scope }: { patient: any; userRole?
       const purchase = data.purchases.find(item => item.id === event.purchaseId), line = purchase?.lines.find(item => item.id === event.lineId), usage = data.activeVisitUsages.find(item => item.eventId === event.id);
       return <li key={event.id} className="flex flex-wrap items-start justify-between gap-3 py-3"><div className="min-w-0"><p className="text-sm font-semibold capitalize text-slate-900">{event.type} · {purchase?.packageName || 'Recorded package'}{line ? ` · ${line.serviceNameSnapshot}` : ''}</p><p className="mt-1 text-xs text-slate-600">{activityLabel(event)}{event.balanceAfter ? ` · ${event.balanceAfter.remainingSessions} remaining after` : ''} · recorded {formatDateTime(event.recordedAt)} · {event.actor.name}</p>{event.treatmentDate && <p className="mt-1 text-xs text-slate-600">Visit: {formatLedgerTreatmentTime(event.treatmentDate, event.visitSnapshot?.timezoneSnapshot)}{event.visitSnapshot?.branchNameSnapshot ? ` · ${event.visitSnapshot.branchNameSnapshot}` : ''}{event.visitSnapshot?.performedByNameSnapshot ? ` · ${event.visitSnapshot.performedByNameSnapshot}` : ''}</p>}{event.reason && <p className="mt-1 whitespace-pre-wrap break-words text-xs text-slate-600">Reason: {event.reason}</p>}</div>{usage && purchase?.capabilities.canAdjust && data.branches.some(branch => branch.id === event.branchId) && <button type="button" disabled={busy || retryLocked || patient.isArchived} onClick={() => { setEditor({ kind: 'reversal', eventId: event.id }); setReason(''); setError(''); }} className={button}>Reverse usage</button>}</li>;
     })}</ol>}</section>}
-    {data && viewAllowed(userRole) && typeof document !== 'undefined' && createPortal(<SavedStatement data={data} patient={patient} />, document.body)}
   </section>;
 }
 
