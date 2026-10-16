@@ -4,6 +4,7 @@ import { redactClinicalData, protectClinicalWrite, clinicalWriteFields } from '.
 import { mountAccessApi } from './backend/accessApi';
 import { applyVisitServiceSelection } from './backend/visitServices';
 import { isVisitClinicallySealed } from './src/utils/visitServicePolicy';
+import { assertVisitSaveVersion, nextVisitVersion, visitVersion, VisitVersionError } from './src/utils/visitVersionPolicy';
 import { ASSISTING_STAFF_MAX_LENGTH, isEligibleVisitPerformer, visitDoctorIds, visitPerformerSnapshotFields } from './src/utils/visitPerformerPolicy';
 import { AppointmentServiceError, parseAppointmentServiceSelection, appointmentServiceSnapshot } from './backend/appointmentServices';
 import { mountServices } from './backend/services';
@@ -517,6 +518,7 @@ function sendRecordError(res: express.Response, error: unknown, operation: strin
     if (error instanceof AppointmentServiceError) return res.status(error.status).json({ error: error.message, code: error.code });
     if (error instanceof PatientHistoryError) return res.status(error.status).json({ error: error.message, code: error.code });
     if (error instanceof TreatmentLedgerError) return res.status(error.status).json({ error: error.message, code: error.code });
+    if (error instanceof VisitVersionError) return res.status(error.status).json({ error: error.message, code: error.code });
     if (error instanceof RequestError) return res.status(error.status).json({ error: error.message });
     if (error instanceof Error && (error as any).status === 403) return res.status(403).json({ error: error.message });
     console.error(`${operation} failed`, error);
@@ -694,6 +696,7 @@ function optionalDoctorId(value: unknown): string | null {
 }
 
 function parseVisitPayload(payload: Record<string, unknown>, previous?: Record<string, any>): Record<string, any> {
+    if (Object.hasOwn(payload, 'visitVersion')) throw new VisitVersionError(400, 'VISIT_VERSION_METADATA', 'Visit version is supplied by the server');
     if (['creationIntentHash', 'creationRecordHash', 'sessionUsageSnapshot'].some(field => Object.hasOwn(payload, field))) {
         throw new RequestError(400, 'Visit retry and session snapshots are supplied by the server');
     }
@@ -2219,6 +2222,7 @@ app.post("/api/records/visits", async (req, res) => {
         const creationIntent = clientVisitId ? visitCreationIntent(payload) : undefined;
         const visitRef = db.collection('visits').doc(clientVisitId ? String(clientVisitId).toLowerCase() : undefined);
         let alreadyCreated = false;
+        let savedVersion = 1;
         const now = new Date().toISOString();
         const actorName = trustedUserName(authorization);
 
@@ -2245,6 +2249,7 @@ app.post("/api/records/visits", async (req, res) => {
                     if (existing.creationRecordHash !== visitCreatedRecordIntent(existing) || isVisitClinicallySealed(existing)) {
                         throw new TreatmentLedgerError(409, 'CREATE_RETRY_CHANGED', 'This Visit was already saved and has since changed. Reload Visit history to review the saved record.');
                     }
+                    savedVersion = visitVersion(existing) ?? nextVisitVersion(existing);
                     alreadyCreated = true;
                     return;
                 }
@@ -2289,6 +2294,7 @@ app.post("/api/records/visits", async (req, res) => {
             const visitSource = linkedAppointmentRef ? 'Appointment' : 'Walk-In';
             transaction.create(visitRef, {
                 ...visit,
+                visitVersion: savedVersion,
                 ...(creationIntent ? { creationIntentHash: creationIntent, creationRecordHash: visitCreatedRecordIntent({ ...visit, visitSource }) } : {}),
                 visitSource,
                 patientName: typeof context.patientData.name === 'string' ? context.patientData.name : '',
@@ -2345,7 +2351,7 @@ app.post("/api/records/visits", async (req, res) => {
                 });
             }
         });
-        res.status(alreadyCreated ? 200 : 201).json({ id: visitRef.id });
+        res.status(alreadyCreated ? 200 : 201).json({ id: visitRef.id, visitVersion: savedVersion });
     } catch (error) {
         return sendRecordError(res, error, 'Visit creation');
     }
@@ -2364,6 +2370,7 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
         const visitRef = db.collection('visits').doc(req.params.visitId);
         const now = new Date().toISOString();
         const actorName = trustedUserName(authorization);
+        let savedVersion = 0;
 
         await db.runTransaction(async transaction => {
             await refreshVisitAuthorization(transaction, authorization, 'UPDATE');
@@ -2386,6 +2393,7 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
             if (updates.appointmentId !== (visitData.appointmentId || null)) {
                 throw new RequestError(409, 'The linked appointment cannot be changed');
             }
+            savedVersion = assertVisitSaveVersion(payload, visitData);
             await applyVisitPerformer(transaction, payload, updates, visitData);
             assertVisitDoctorOwnership(authorization, updates.doctorId);
             const prospectiveVisit = { ...visitData, ...updates };
@@ -2445,6 +2453,7 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
             }
             const trustedUpdates = {
                 ...updates,
+                visitVersion: savedVersion,
                 visitSource: updates.appointmentId ? 'Appointment' : 'Walk-In',
                 patientName: typeof context.patientData.name === 'string' ? context.patientData.name : '',
                 updatedAt: now,
@@ -2472,7 +2481,7 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
                 changeFields: changedFields
             });
         });
-        res.status(200).json({ id: visitRef.id });
+        res.status(200).json({ id: visitRef.id, visitVersion: savedVersion });
     } catch (error) {
         return sendRecordError(res, error, 'Visit update');
     }
@@ -2530,6 +2539,7 @@ app.delete("/api/records/:kind/:recordId", async (req, res) => {
 
             transaction.update(recordRef, {
                 isArchived: true,
+                ...(req.params.kind === 'visits' ? { visitVersion: nextVisitVersion(recordData) } : {}),
                 archivedAt: now,
                 archivedByUid: authorization.decodedToken.uid,
                 archivedByName: actorName,
@@ -2608,6 +2618,7 @@ app.post("/api/records/:kind/:recordId/restore", async (req, res) => {
 
             transaction.update(recordRef, {
                 isArchived: false,
+                ...(req.params.kind === 'visits' ? { visitVersion: nextVisitVersion(recordData) } : {}),
                 archivedAt: FieldValue.delete(),
                 archivedByUid: FieldValue.delete(),
                 archivedByName: FieldValue.delete(),

@@ -98,14 +98,14 @@ class Fixture {
     visit:{id:'visit',patientId:'patient',doctorId:'doctor',branchId:'A',visitDate:'2029-01-01T10:00',visitType:'Initial Consultation',status:'Completed',treatmentService:'  Legacy custom care  '},userRole:'doctor',
     appointments:[],onSave:()=>{this.saves++;},onClose:()=>{this.closes++;} };
   constructor(){globals.servicesTestInvalidations=0;globals.servicesTestAuth.currentUser={uid:'doctor',email:'doctor@example.invalid',getRequestToken:async()=> 'synthetic'};
-    globals.fetch=(url:string,init:any)=>url === '/api/records/patients/patient/treatment-ledger' ? Promise.resolve(new Response(JSON.stringify({ patientId:'patient', purchases:[], events:[], activeVisitUsages:[], branches:[], capabilities:{canPurchase:false,canAdjust:false,canEditOrNumber:false}, redemptionPolicy:'authorized_branches' }))) : new Promise((resolve,reject)=>this.requests.push({url,init,deliver:(body,status=200)=>resolve(new Response(JSON.stringify(body),{status})),fail:()=>reject(new TypeError('Synthetic network failure'))}));}
+    globals.fetch=(url:string,init:any)=>url === '/api/records/patients/patient/treatment-ledger' ? Promise.resolve(new Response(JSON.stringify({ patientId:'patient', purchases:[], events:[], activeVisitUsages:[], branches:[], capabilities:{canPurchase:false,canAdjust:false,canEditOrNumber:false}, redemptionPolicy:'authorized_branches' }))) : new Promise((resolve,reject)=>this.requests.push({url,init,deliver:(body,status=200)=>{ const receipt = status === 200 && url.startsWith('/api/records/visits') && body?.id && !Object.hasOwn(body, 'visitVersion') ? { ...body, visitVersion: init.method === 'PATCH' ? Number(JSON.parse(init.body).expectedVisitVersion) + 1 : 1 } : body; resolve(new Response(JSON.stringify(receipt),{status})); },fail:()=>reject(new TypeError('Synthetic network failure'))}));}
   render(){this.renderer.render(this.props);}
   async settle(){for(let i=0;i<8;i++){this.renderer.passives.splice(0).forEach(run=>run());await flush();if(this.renderer.dirty)this.render();}}
   async start(){this.render();await this.settle();}
   node(id:string){const node=find(this.renderer.tree,(n:any)=>n.props?.id===id);assert.ok(node,'missing '+id);return node;}
   button(label:string){const node=find(this.renderer.tree,(n:any)=>n.type==='button'&&text(n).trim()===label);assert.ok(node,'missing '+label);return node;}
   latestGet(){return this.requests.filter(r=>r.init.method==='GET').at(-1)!;}
-  latestSave(){return this.requests.filter(r=>r.init.method==='PATCH'||r.init.method==='POST').at(-1)!;}
+  latestSave(){return this.requests.filter(r=>r.url.startsWith('/api/records/')&&(r.init.method==='PATCH'||r.init.method==='POST')).at(-1)!;}
   async loaded(rows=[service(),service('free','free'),service('unpriced','unpriced')],total=rows.length){this.requests.filter(r=>r.init.method==='GET'&&r.url.startsWith('/api/services?')).at(-1)!.deliver({services:rows,total});await this.settle();}
   async select(id='priced'){this.node('visit-service').props.onChange({target:{value:id}});await this.settle();}
   async branch(id='B'){this.node('visit-branch').props.onChange({target:{value:id}});this.render();await this.settle();}
@@ -118,6 +118,103 @@ class Fixture {
 const results: { name: string; passed: boolean; error?: string }[]=[];
 async function test(name:string,run:(f:Fixture)=>Promise<void>){const f=new Fixture();try{await run(f);results.push({name,passed:true});}catch(error:any){results.push({name,passed:false,error:error.message});}finally{f.stop();}}
 try {
+  const visitWriteCount = (f: Fixture) => f.requests.filter(r => r.url.startsWith('/api/records/visits') && ['POST', 'PATCH'].includes(r.init.method)).length;
+  const savedRecord = (f: Fixture, extra: any = {}) => ({ ...f.props.visit, id: 'visit', visitVersion: 2, notes: 'LATEST_SAVED_NOTES', diagnosis: 'LATEST_SAVED_DIAGNOSIS', ...extra });
+  const latestReview = (f: Fixture) => f.requests.filter(r => r.url === '/api/data/query').at(-1)!;
+  const triggerVisitConflict = async (f: Fixture) => {
+    await f.start(); await f.loaded([]); f.node('visit-notes').props.onChange({ target: { value: 'MY_UNSAVED_NOTES' } }); await f.settle(); await f.save();
+    f.latestSave().deliver({ error: 'Visit changed. Your draft has been kept.', code: 'VISIT_VERSION_CHANGED' }, 409); await f.settle();
+  };
+  await test('legacy Visit sends opened version zero without inventing record metadata', async f => {
+    await f.start(); await f.loaded([]); await f.save(); const body = JSON.parse(f.latestSave().init.body);
+    assert.equal(body.expectedVisitVersion, 0); assert.ok(!Object.hasOwn(body, 'visitVersion'));
+  });
+  await test('live Visit polling cannot rebase or replace unsaved notes', async f => {
+    f.props.visit = { ...f.props.visit, visitVersion: 4 }; await f.start(); await f.loaded([]);
+    f.node('visit-notes').props.onChange({ target: { value: 'MY_UNSAVED_NOTES' } }); await f.settle();
+    f.props.visit = { ...f.props.visit, visitVersion: 5, notes: 'NEW_SERVER_NOTES' }; f.render(); await f.settle();
+    assert.equal(f.node('visit-notes').props.value, 'MY_UNSAVED_NOTES'); await f.save(); assert.equal(JSON.parse(f.latestSave().init.body).expectedVisitVersion, 4);
+  });
+  for (const code of ['VISIT_VERSION_CHANGED', 'VISIT_VERSION_REQUIRED', 'VISIT_VERSION_INVALID']) await test(code + ' preserves all clinical draft values and blocks blind retry', async f => {
+    await f.start(); await f.loaded([]);
+    for (const id of ['visit-notes', 'visit-diagnosis', 'visit-plan', 'visit-concern']) f.node(id).props.onChange({ target: { value: 'DRAFT_' + id } }); await f.settle(); await f.save();
+    f.latestSave().deliver({ error: 'Visit needs review', code }, 409); await f.settle();
+    for (const id of ['visit-notes', 'visit-diagnosis', 'visit-plan', 'visit-concern']) assert.equal(f.node(id).props.value, 'DRAFT_' + id);
+    assert.equal(f.button('Save changes').props.disabled, true); await f.save(); assert.equal(visitWriteCount(f), 1); assert.equal(f.saves, 0); assert.equal(f.closes, 0); assert.equal(globals.servicesTestInvalidations, 0);
+  });
+  await test('Review saved Visit shows latest notes without replacing or rebasing the draft', async f => {
+    await triggerVisitConflict(f); f.button('Review saved Visit').props.onClick(); await f.settle();
+    assert.deepEqual(JSON.parse(latestReview(f).init.body), { path: 'visits/visit', kind: 'document' });
+    latestReview(f).deliver({ document: { id: 'visit', data: savedRecord(f) } }); await f.settle();
+    assert.match(text(f.renderer.tree), /LATEST_SAVED_NOTES/); assert.equal(f.node('visit-notes').props.value, 'MY_UNSAVED_NOTES');
+    f.button('Reload saved Visit').props.onClick(); await f.settle(); f.button('Keep my draft').props.onClick(); await f.settle();
+    assert.equal(f.node('visit-notes').props.value, 'MY_UNSAVED_NOTES'); assert.equal(f.button('Save changes').props.disabled, true); assert.equal(visitWriteCount(f), 1);
+  });
+  await test('confirmed reload fetches fresh state before replacing the draft and its opened version', async f => {
+    await triggerVisitConflict(f); f.button('Review saved Visit').props.onClick(); await f.settle(); latestReview(f).deliver({ document: { id: 'visit', data: savedRecord(f) } }); await f.settle();
+    f.button('Reload saved Visit').props.onClick(); await f.settle(); f.button('Discard draft and reload').props.onClick(); await f.settle();
+    assert.equal(f.node('visit-notes').props.value, 'MY_UNSAVED_NOTES');
+    latestReview(f).deliver({ document: { id: 'visit', data: savedRecord(f, { visitVersion: 3, notes: 'NEWER_SAVED_NOTES' }) } }); await f.settle(); await f.loaded([]);
+    assert.equal(f.node('visit-notes').props.value, 'NEWER_SAVED_NOTES'); assert.ok(!text(f.renderer.tree).includes('MY_UNSAVED_NOTES'));
+    f.node('visit-notes').props.onChange({ target: { value: 'REVIEWED_NEW_EDIT' } }); await f.settle(); await f.save();
+    assert.equal(JSON.parse(f.latestSave().init.body).expectedVisitVersion, 3); f.latestSave().deliver({ id: 'visit', visitVersion: 4 }); await f.settle(); assert.equal(f.saves, 1); assert.equal(f.closes, 1);
+  });
+  for (const failure of [503, 'network', 'missing'] as const) await test('confirmed reload ' + failure + ' never discards unsaved notes', async f => {
+    await triggerVisitConflict(f); f.button('Review saved Visit').props.onClick(); await f.settle(); latestReview(f).deliver({ document: { id: 'visit', data: savedRecord(f) } }); await f.settle();
+    f.button('Reload saved Visit').props.onClick(); await f.settle(); f.button('Discard draft and reload').props.onClick(); await f.settle();
+    if (failure === 'network') latestReview(f).fail(); else latestReview(f).deliver(failure === 'missing' ? { document: { id: 'visit', data: null } } : { error: 'Review unavailable' }, failure === 503 ? 503 : 200); await f.settle();
+    assert.equal(f.node('visit-notes').props.value, 'MY_UNSAVED_NOTES'); assert.equal(f.button('Save changes').props.disabled, true); assert.equal(f.closes, 0); assert.equal(globals.servicesTestInvalidations, 0);
+  });
+  for (const status of [200, 401, 403]) for (const change of ['branch', 'scope', 'logout', 'invalidate', 'unmount']) await test('late Visit review ' + status + ' cannot affect ' + change, async f => {
+    await triggerVisitConflict(f); f.button('Review saved Visit').props.onClick(); await f.settle(); const old = latestReview(f);
+    if (change === 'branch') await f.branch('B'); if (change === 'scope') f.scope(); if (change === 'logout') { globals.servicesTestAuth.currentUser = null; f.render(); } if (change === 'invalidate') { for (const fn of globals.appointmentInvalidationListeners) fn(); f.render(); } if (change === 'unmount') f.stop();
+    old.deliver(status === 200 ? { document: { id: 'visit', data: savedRecord(f, { notes: 'STALE_PRIVATE_REVIEW' }) } } : { error: 'STALE_REVIEW_DENIAL' }, status); await flush();
+    assert.equal(globals.servicesTestInvalidations, 0); assert.equal(f.renderer.lateSetters, 0); if (change !== 'unmount') { await f.settle(); assert.doesNotMatch(text(f.renderer.tree), /STALE_PRIVATE_REVIEW|STALE_REVIEW_DENIAL/); }
+  });
+  for (const status of [401, 403]) await test('current Visit review denial ' + status + ' invalidates normally', async f => {
+    await triggerVisitConflict(f); f.button('Review saved Visit').props.onClick(); await f.settle(); latestReview(f).deliver({ error: 'Current review denied' }, status); await f.settle();
+    assert.equal(globals.servicesTestInvalidations, 1); assert.match(text(f.renderer.tree), /Visit access changed/);
+  });
+  for (const change of ['branch', 'scope', 'logout', 'invalidate', 'unmount']) await test('old Visit version conflict cannot lock a new ' + change + ' workspace', async f => {
+    await f.start(); await f.loaded([]); await f.save(); const old = f.latestSave();
+    if (change === 'branch') await f.branch('B'); if (change === 'scope') f.scope(); if (change === 'logout') { globals.servicesTestAuth.currentUser = null; f.render(); } if (change === 'invalidate') { for (const fn of globals.appointmentInvalidationListeners) fn(); f.render(); } if (change === 'unmount') f.stop();
+    old.deliver({ error: 'STALE_RECORD_CONFLICT', code: 'VISIT_VERSION_CHANGED' }, 409); await flush(); assert.equal(f.renderer.lateSetters, 0); assert.equal(globals.servicesTestInvalidations, 0);
+    if (change !== 'unmount') { await f.settle(); assert.doesNotMatch(text(f.renderer.tree), /STALE_RECORD_CONFLICT/); }
+  });
+  await test('record-level conflict still blocks an obsolete save after same-scope Service intent changes', async f => {
+    await f.start(); await f.loaded(); await f.select(); await f.save(); const old = f.latestSave(); await f.select('free');
+    old.deliver({ error: 'Saved Visit changed', code: 'VISIT_VERSION_CHANGED' }, 409); await f.settle(); assert.equal(f.node('visit-service').props.value, 'free'); assert.equal(f.button('Save changes').props.disabled, true); await f.save(); assert.equal(visitWriteCount(f), 1);
+  });
+  await test('acknowledged saved version is used for an unsaved newer Service intent', async f => {
+    f.props.visit = { ...f.props.visit, visitVersion: 6 }; await f.start(); await f.loaded(); await f.select(); await f.save(); const old = f.latestSave(); await f.select('free'); old.deliver({ id: 'visit', visitVersion: 7 }); await f.settle(); await f.save(); assert.equal(JSON.parse(f.latestSave().init.body).expectedVisitVersion, 7);
+  });
+  await test('missing version receipt keeps the created identity and prevents duplicate create', async f => {
+    const original = f.props.visit; delete f.props.visit; f.props.appointment = { ...original, id: 'booking', appointmentDate: original.visitDate }; await f.start(); await f.loaded([]); await f.save();
+    f.latestSave().deliver({ id: 'created-visit', visitVersion: undefined }); await f.settle(); assert.match(text(f.renderer.tree), /not its version/); await f.save(); assert.equal(visitWriteCount(f), 1); assert.equal(f.saves, 0);
+    f.button('Review saved Visit').props.onClick(); await f.settle(); assert.equal(JSON.parse(latestReview(f).init.body).path, 'visits/created-visit');
+  });
+  for (const value of [undefined, -1, '1', 4]) await test('invalid edit version receipt preserves draft and blocks another save', async f => {
+    await f.start(); await f.loaded([]); f.node('visit-notes').props.onChange({ target: { value: 'MY_UNSAVED_NOTES' } }); await f.settle(); await f.save();
+    f.latestSave().deliver({ id: 'visit', visitVersion: value }); await f.settle();
+    assert.equal(f.node('visit-notes').props.value, 'MY_UNSAVED_NOTES'); assert.equal(f.button('Save changes').props.disabled, true);
+    await f.save(); assert.equal(visitWriteCount(f), 1); assert.equal(f.closes, 0);
+  });
+  for (const extra of [{ visitVersion: 'broken' }, { branchId: 'unauthorized' }, { doctorId: 'another-doctor' }]) await test('confirmed reload cannot adopt invalid metadata or unauthorized saved context', async f => {
+    await triggerVisitConflict(f); f.button('Review saved Visit').props.onClick(); await f.settle(); latestReview(f).deliver({ document: { id: 'visit', data: savedRecord(f) } }); await f.settle();
+    f.button('Reload saved Visit').props.onClick(); await f.settle(); f.button('Discard draft and reload').props.onClick(); await f.settle();
+    latestReview(f).deliver({ document: { id: 'visit', data: savedRecord(f, { ...extra, notes: 'DO_NOT_ADOPT' }) } }); await f.settle();
+    assert.equal(f.node('visit-notes').props.value, 'MY_UNSAVED_NOTES'); assert.doesNotMatch(text(f.renderer.tree), /DO_NOT_ADOPT/);
+    assert.equal(f.button('Save changes').props.disabled, true); assert.equal(f.closes, 0);
+  });
+  for (const status of [200, 401, 403]) for (const change of ['scope', 'logout', 'invalidate', 'unmount']) await test('late confirmed Visit reload ' + status + ' cannot replace a new ' + change + ' workspace', async f => {
+    await triggerVisitConflict(f); f.button('Review saved Visit').props.onClick(); await f.settle(); latestReview(f).deliver({ document: { id: 'visit', data: savedRecord(f) } }); await f.settle();
+    f.button('Reload saved Visit').props.onClick(); await f.settle(); f.button('Discard draft and reload').props.onClick(); await f.settle(); const old = latestReview(f);
+    if (change === 'scope') f.scope(); if (change === 'logout') { globals.servicesTestAuth.currentUser = null; f.render(); }
+    if (change === 'invalidate') { for (const fn of globals.appointmentInvalidationListeners) fn(); f.render(); } if (change === 'unmount') f.stop();
+    old.deliver(status === 200 ? { document: { id: 'visit', data: savedRecord(f, { notes: 'STALE_RELOAD_NOTES' }) } } : { error: 'STALE_RELOAD_DENIAL' }, status); await flush();
+    assert.equal(globals.servicesTestInvalidations, 0); assert.equal(f.renderer.lateSetters, 0);
+    if (change !== 'unmount') { await f.settle(); assert.doesNotMatch(text(f.renderer.tree), /STALE_RELOAD_NOTES|STALE_RELOAD_DENIAL/); }
+  });
   await test('priced and Free selectable; unpriced excluded',async f=>{await f.start();await f.loaded();const options=text(f.node('visit-service'));assert.ok(options.includes('Synthetic priced')&&options.includes('Synthetic free'));assert.ok(!options.includes('Synthetic unpriced'));});
   await test('new selection sends only ID/version command; visit type preserved',async f=>{await f.start();await f.loaded();await f.select();await f.save();const body=JSON.parse(f.latestSave().init.body);assert.deepEqual(body.serviceSelection,{serviceId:'priced',expectedVersion:1});assert.equal(body.visitType,'Initial Consultation');assert.ok(!Object.hasOwn(body,'serviceNameSnapshot'));f.latestSave().deliver({id:'appointment'});await f.settle();assert.equal(f.saves,1);});
   await test('historical snapshot displayed and omitted on unrelated edit',async f=>{f.props.visit={...f.props.visit,serviceId:'historical',serviceNameSnapshot:'Recorded inactive name',serviceDurationMinutesSnapshot:20,serviceCatalogueVersion:7};await f.start();await f.loaded([]);f.node('visit-type').props.onChange({target:{value:'Follow-up'}});await f.settle();assert.ok(text(f.renderer.tree).includes('Recorded inactive name'));assert.equal(f.node('visit-service').props.value,'__recorded');await f.save();assert.ok(!Object.hasOwn(JSON.parse(f.latestSave().init.body),'serviceSelection'));});

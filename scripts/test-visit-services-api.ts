@@ -15,6 +15,11 @@ const credentials = new Map<string, { cookie: string; csrf: string }>();
 let server: ReturnType<typeof app.listen>, checks = 0;
 const check = (value: any, message: string) => { assert.ok(value, message); checks++; };
 async function request(path: string, method = 'GET', body?: any, role = 'admin', headers: any = {}) {
+  // Sequential workflow tests model an editor opening the current saved Visit.
+  if (method === 'PATCH' && /^\/api\/records\/visits\/[^/]+$/.test(path) && !Object.hasOwn(body || {}, 'expectedVisitVersion')) {
+    const record = (await db.collection('visits').doc(decodeURIComponent(path.split('/').at(-1)!)).get()).data();
+    body = { ...body, expectedVisitVersion: record?.visitVersion ?? 0 };
+  }
   const c = credentials.get(role);
   const response = await fetch(`http://127.0.0.1:${(server.address() as any).port}${path}`, { method,
     headers: { Origin: origin, ...(c ? { Cookie: c.cookie, Authorization: `Bearer ${c.csrf}` } : {}), 'Content-Type': 'application/json', ...headers },
@@ -24,7 +29,7 @@ async function request(path: string, method = 'GET', body?: any, role = 'admin',
 const read = async (id: string) => (await db.collection('visits').doc(id).get()).data()!;
 const readAppointment = async (id: string) => (await db.collection('appointments').doc(id).get()).data()!;
 const readPatient = async () => (await db.collection('patients').doc('patient').get()).data()!;
-const editPayload = (record: any) => Object.fromEntries(Object.entries(record).filter(([key]) => !['serviceId','serviceNameSnapshot','serviceDurationMinutesSnapshot','serviceCatalogueVersion','performedByNameSnapshot','performedByRoleSnapshot','performedByDesignationSnapshot'].includes(key)));
+const editPayload = (record: any) => Object.fromEntries(Object.entries(record).filter(([key]) => !['visitVersion','serviceId','serviceNameSnapshot','serviceDurationMinutesSnapshot','serviceCatalogueVersion','performedByNameSnapshot','performedByRoleSnapshot','performedByDesignationSnapshot'].includes(key)));
 const snapshot = (record: any) => Object.fromEntries(['serviceId', 'serviceNameSnapshot', 'serviceDurationMinutesSnapshot', 'serviceCatalogueVersion'].map(field => [field, record[field]]));
 let minute = 0;
 const booking = (extra = {}, branchId = 'A') => {

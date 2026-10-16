@@ -44,7 +44,29 @@ async function recordRequest(
     if (response.status === 401 || response.status === 403) invalidateProtectedData(error);
     throw error;
   }
-  return body as { id: string; patientID?: string };
+  return body as { id: string; patientID?: string; visitVersion?: number };
+}
+
+// Uses the existing authorized record-query path; no new read authority or cache.
+export async function getVisitRecord(visitId: string, scope: RecordRequestScope) {
+  const lifetime = captureProtectedRequestScope(), user = auth.currentUser;
+  if (!user) throw new Error('Please sign in again before reviewing this Visit.');
+  const current = () => {
+    lifetime(); scope.signal.throwIfAborted();
+    if (!scope.current() || auth.currentUser?.uid !== user.uid) throw new DOMException('Visit review is no longer current.', 'AbortError');
+  };
+  const token = await user.getRequestToken(); current();
+  const response = await protectedFetch('/api/data/query', { method: 'POST', signal: scope.signal,
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: 'visits/' + visitId, kind: 'document' }) });
+  const body = await response.json().catch(() => null); current();
+  if (!response.ok) {
+    const error = Object.assign(new Error(body?.error || 'Could not load the saved Visit.'), { status: response.status });
+    if (response.status === 401 || response.status === 403) invalidateProtectedData(error);
+    throw error;
+  }
+  if (body?.document?.id !== visitId || !body.document.data) throw new Error('The saved Visit is no longer available. Your draft has been kept.');
+  return { ...body.document.data, id: visitId };
 }
 
 export const createPatientRecord = (payload: Record<string, unknown>, scope?: RecordRequestScope) =>

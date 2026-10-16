@@ -26,6 +26,11 @@ let checks = 0, visitIndex = 0;
 function check(value: unknown, message: string) { assert.ok(value, message); checks++; }
 type Result = { status: number; body: any; cacheControl: string | null };
 async function request(route: string, method = 'GET', body?: any, actor = 'admin', headers: Record<string, string> = {}): Promise<Result> {
+  // Sequential workflow tests model an editor opening the current saved Visit.
+  if (method === 'PATCH' && /^\/api\/records\/visits\/[^/]+$/.test(route) && !Object.hasOwn(body || {}, 'expectedVisitVersion')) {
+    const record = (await db.collection('visits').doc(decodeURIComponent(route.split('/').at(-1)!)).get()).data();
+    body = { ...body, expectedVisitVersion: record?.visitVersion ?? 0 };
+  }
   const session = sessions.get(actor);
   const response = await fetch(`http://127.0.0.1:${(server!.address() as any).port}${route}`, {
     method, headers: { Origin: origin, 'Content-Type': 'application/json',

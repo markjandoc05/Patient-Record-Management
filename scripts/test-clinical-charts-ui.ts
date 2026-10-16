@@ -72,7 +72,76 @@ function nurseResponse(signed = false) {
   if (signed) saved.signedBy = { ...saved.createdBy };
   return value;
 }
+
+// Hold the replacement read open while executing the real Visit and chart UI.
+async function prepareVisitConflict(f: Fixture, person = 'doctor') {
+  const designation = person === 'nurse' ? 'Nurse' : 'Medical Staff';
+  const user = person === 'doctor' ? profile() : { ...profile(), id: person, email: person + '@example.invalid',
+    role: 'staff', staffDesignation: designation, fullName: 'Synthetic ' + person };
+  const record = { ...visit, visitVersion: 1, ...(person === 'doctor' ? {} : { doctorId: null,
+    performedByUserId: person, performedByNameSnapshot: user.fullName, performedByRoleSnapshot: 'staff',
+    performedByDesignationSnapshot: designation }) };
+  globals.servicesTestAuth.currentUser = { uid: person, email: user.email, getRequestToken: async () => 'synthetic' };
+  f.props = { visit: record, users: [user], userRole: user.role, patients: [{ id: 'patient', name: 'Synthetic Patient' }],
+    branches: [{ id: 'A', branchName: 'Synthetic Branch', status: 'Active' }], visits: [], appointments: [], onSave() {}, onClose() {} };
+  await f.start();
+  for (const request of f.requests) {
+    if (request.url.startsWith('/api/services?')) request.deliver({ services: [], total: 0 });
+    if (request.url.endsWith('/treatment-ledger')) request.deliver({ patientId: 'patient', purchases: [], events: [], activeVisitUsages: [],
+      branches: [], capabilities: { canPurchase: false, canAdjust: false, canEditOrNumber: false }, redemptionPolicy: 'authorized_branches' });
+  }
+  await f.settle();
+  for (const id of ['visit-notes', 'visit-diagnosis']) {
+    find(f.renderer.tree, node => node.props?.id === id).props.onChange({ target: { value: 'UNSAVED_' + id } });
+  }
+  await f.settle(); find(f.renderer.tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} }); await f.settle();
+  const save = f.requests.find(request => request.init.method === 'PATCH'); assert.ok(save);
+  save.deliver({ error: 'Saved Visit changed', code: 'VISIT_VERSION_CHANGED' }, 409); await f.settle();
+  return { ...record, visitVersion: 2, notes: 'Latest saved Visit notes', diagnosis: 'Latest saved diagnosis' };
+}
+const latestVisitRead = (f: Fixture) => f.requests.filter(request => request.url === '/api/data/query').at(-1);
+async function beginVisitReload(f: Fixture, record: any) {
+  await f.click('Review saved Visit'); latestVisitRead(f).deliver({ document: { id: 'visit', data: record } }); await f.settle();
+  await f.click('Reload saved Visit'); await f.click('Discard draft and reload');
+  return latestVisitRead(f);
+}
+async function retainDirtyChart(f: Fixture) {
+  await f.click('Open chart');
+  const chart = f.requests.filter(request => request.url === '/api/records/visits/visit/chart').at(-1); assert.ok(chart);
+  const record = f.props.visit;
+  chart.deliver(response({ visitContext: { ...context, doctorId: record.doctorId || '', doctorName: record.doctorId ? actor.name : '',
+    performedByUserId: record.performedByUserId || null, performedByNameSnapshot: record.performedByNameSnapshot || null,
+    performedByRoleSnapshot: record.performedByRoleSnapshot || null, performedByDesignationSnapshot: record.performedByDesignationSnapshot || null } })); await f.settle();
+  assert.equal(f.field('Chart notes').props.readOnly, false);
+  await f.change('Chart notes', 'UNSAVED_CHART_NOTES');
+  let prompts = 0; globals.window.confirm = () => { prompts++; return false; };
+  const close = find(f.renderer.tree, node => node.props?.['aria-label'] === 'Close clinical chart'); assert.ok(close);
+  close.props.onClick(); await f.settle();
+  assert.equal(prompts, 1); assert.ok(chartDialog(f)); assert.equal(f.field('Chart notes').props.value, 'UNSAVED_CHART_NOTES');
+}
 try {
+  for (const person of ['doctor', 'nurse', 'medical']) {
+    for (const status of [200, 503]) await check(`${person}: confirmed Visit reload ${status} blocks chart opening and retains notes until completion`, async f => {
+      const record = await prepareVisitConflict(f, person), pending = await beginVisitReload(f, record);
+      const chartRequests = () => f.requests.filter(request => request.url.includes('/chart')).length;
+      assert.equal(f.button('Open chart').props.disabled, true);
+      // Forced invocation also exercises the action guard, beyond native disabled behavior.
+      await f.click('Open chart'); assert.equal(chartRequests(), 0); assert.ok(!chartDialog(f));
+      for (const id of ['visit-notes', 'visit-diagnosis']) assert.equal(find(f.renderer.tree, node => node.props?.id === id).props.value, 'UNSAVED_' + id);
+      pending.deliver(status === 200 ? { document: { id: 'visit', data: record } } : { error: 'Synthetic reload failure' }, status); await f.settle();
+      assert.equal(f.button('Open chart').props.disabled, false);
+      assert.equal(find(f.renderer.tree, node => node.props?.id === 'visit-notes').props.value, status === 200 ? record.notes : 'UNSAVED_visit-notes');
+      assert.equal(find(f.renderer.tree, node => node.props?.id === 'visit-diagnosis').props.value, status === 200 ? record.diagnosis : 'UNSAVED_visit-diagnosis');
+      await retainDirtyChart(f); assert.equal(globals.servicesTestInvalidations, 0); assert.equal(f.renderer.lateSetters, 0);
+    }, 'VisitForm');
+  }
+  await check('read-only Visit review keeps charting available and cannot discard a dirty chart', async f => {
+    const record = await prepareVisitConflict(f); await f.click('Review saved Visit'); const preview = latestVisitRead(f);
+    assert.equal(f.button('Open chart').props.disabled, false); await retainDirtyChart(f);
+    preview.deliver({ document: { id: 'visit', data: record } }); await f.settle();
+    assert.ok(chartDialog(f)); assert.equal(f.field('Chart notes').props.value, 'UNSAVED_CHART_NOTES');
+    assert.equal(find(f.renderer.tree, node => node.props?.id === 'visit-notes').props.value, 'UNSAVED_visit-notes');
+  }, 'VisitForm');
   await check('loaded chart escapes parent modal into body portal', async f => {
     await f.loaded(chartResponse());
     assert.equal(f.renderer.portals.length, 1);

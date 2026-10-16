@@ -21,6 +21,11 @@ const sessions = new Map<string, { cookie: string; csrf: string }>();
 let server: ReturnType<typeof app.listen> | undefined, checks = 0, slot = 0;
 function check(value: unknown, message: string) { assert.ok(value, message); checks++; }
 async function request(route: string, method = 'GET', body?: any, actor = 'admin', extraHeaders: Record<string, string> = {}) {
+  // Sequential workflow tests model an editor opening the current saved Visit.
+  if (method === 'PATCH' && /^\/api\/records\/visits\/[^/]+$/.test(route) && !Object.hasOwn(body || {}, 'expectedVisitVersion')) {
+    const record = (await db.collection('visits').doc(decodeURIComponent(route.split('/').at(-1)!)).get()).data();
+    body = { ...body, expectedVisitVersion: record?.visitVersion ?? 0 };
+  }
   const session = sessions.get(actor);
   const response = await fetch(`http://127.0.0.1:${(server!.address() as any).port}${route}`, {
     method, headers: { Origin: origin, 'Content-Type': 'application/json',
@@ -287,6 +292,15 @@ try {
   check(noUsageRetry.body.id === unbound.body.id && await eventCount() === noUsageEvents,
     'no-usage Visit retry adds no ledger event');
   const updateLine = lineIn(await ledger(), line.id);
+  const staleUsageBefore = await sqlSnapshot(), staleVisitBefore = JSON.stringify(await read('visits', unbound.body.id));
+  const stalePatientBefore = JSON.stringify(await read('patients', 'patient'));
+  const staleUsage = await request('/api/records/visits/' + unbound.body.id, 'PATCH', { ...unboundPayload,
+    clientVisitId: undefined, serviceSelection: undefined, expectedVisitVersion: 0, sessionUsage: usage(updateLine) });
+  status(staleUsage, 409, 'stale Visit cannot deduct package sessions');
+  check(staleUsage.body.code === 'VISIT_VERSION_CHANGED' && await sqlSnapshot() === staleUsageBefore
+    && JSON.stringify(await read('visits', unbound.body.id)) === staleVisitBefore
+    && JSON.stringify(await read('patients', 'patient')) === stalePatientBefore,
+    'Visit conflict leaves package balance, usage, event history, Visit and patient summaries untouched');
   status(await request('/api/records/visits/' + unbound.body.id, 'PATCH', { ...unboundPayload, clientVisitId: undefined,
     serviceSelection: undefined, sessionUsage: usage(updateLine) }), 200, 'Visit update with usage commits atomically');
   check(lineIn(await ledger(), line.id).remainingSessions === 2, 'explicit Visit update deducts exactly once');

@@ -248,7 +248,7 @@ try {
     await f.start(); await f.loaded(); await f.change('visit-performed-by',id); await f.save();
     const request=f.latestSave(); assert.ok(request);
     const payload=JSON.parse(request.init.body); assert.equal(payload.doctorId,null); assert.equal(payload.performedByUserId,id); assert.equal(payload.appointmentId,'booking');
-    request.deliver({id:'completed'}); await f.settle(); assert.equal(f.saves,1); assert.equal(f.closes,1);
+    request.deliver({id:'completed',visitVersion:1}); await f.settle(); assert.equal(f.saves,1); assert.equal(f.closes,1);
   });
   for(const id of ['nurse','medical','reception']) await test('AppointmentsDashboard', id+' appointment completion entry follows medical defaults', async f=>{
     const actor=users().find(user=>user.id===id)!; globals.servicesTestAuth.currentUser={uid:id,getRequestToken:async()=> 'synthetic'};

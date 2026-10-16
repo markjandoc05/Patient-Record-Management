@@ -3,6 +3,7 @@ import { uiCan, uiPermissionScope } from '../permissionState';
 import AppointmentServicePicker, { type AppointmentServiceChoice } from './AppointmentServicePicker';
 import VisitSessionUsagePicker, { type SessionUsageChoice } from './VisitSessionUsagePicker';
 import { isVisitClinicallySealed } from '../utils/visitServicePolicy';
+import { visitVersion } from '../utils/visitVersionPolicy';
 import { ASSISTING_STAFF_MAX_LENGTH, isEligibleVisitPerformer, visitPerformerLabel, visitPerformerName } from '../utils/visitPerformerPolicy';
 import { matchesPatientLookup } from '../utils/patientLookup';
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -11,7 +12,7 @@ import { CheckCircle2, Clock3, Search } from 'lucide-react';
 import { db, auth } from '../platform';
 import { hasPermission, Role, hasAdministrativeAccess } from '../rbac';
 import { CustomDatePicker } from './CustomDatePicker';
-import { createAppointmentRecord, createVisitRecord, updateVisitRecord } from '../utils/recordApi';
+import { createAppointmentRecord, createVisitRecord, updateVisitRecord, getVisitRecord } from '../utils/recordApi';
 import FileAttachmentSection from './FileAttachmentSection';
 import ClinicalChartModal from './ClinicalChartModal';
 import { formatDateTime } from '../utils';
@@ -44,7 +45,8 @@ type VisitFormProps = {
 
 function VisitFormWorkspace({
   patients, branches, users, defaultBranchId, onClose, onSave, appointment, visit, userRole, visits = [], appointments = [],
-}: VisitFormProps) {
+  onReloadVisit,
+}: VisitFormProps & { onReloadVisit: (record: any) => void }) {
   const initialDateTime = visit?.visitDate || appointment?.appointmentDate || '';
   const [isSaving, setIsSaving] = useState(false);
   const [showChart, setShowChart] = useState(false);
@@ -70,6 +72,14 @@ function VisitFormWorkspace({
   const [followUpInstructions, setFollowUpInstructions] = useState(visit?.followUpInstructions || '');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState('');
+  const openedVersion = useRef(visitVersion(visit));
+  const [visitConflict, setVisitConflict] = useState(false);
+  const [savedReview, setSavedReview] = useState<any>(null);
+  const [reviewError, setReviewError] = useState('');
+  const [reviewing, setReviewing] = useState(false);
+  const [reloadConfirmation, setReloadConfirmation] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const reviewLifetime = useRef({ active: false, generation: 0, request: null as AbortController | null });
   const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
   const [logs, setLogs] = useState<any[]>([]);
   const booked = appointment || appointments.find(item => item.id === visit?.appointmentId);
@@ -100,6 +110,11 @@ function VisitFormWorkspace({
   useLayoutEffect(() => {
     saveLifetime.current.active = true; saveLifetime.current.generation++; setIsSaving(false);
     return () => { saveLifetime.current.active = false; saveLifetime.current.generation++; saveLifetime.current.request?.abort(); };
+  }, [branchId]);
+  useLayoutEffect(() => {
+    reviewLifetime.current.active = true; reviewLifetime.current.generation++;
+    setSavedReview(null); setReviewError(''); setReviewing(false); setReloading(false); setReloadConfirmation(false);
+    return () => { reviewLifetime.current.active = false; reviewLifetime.current.generation++; reviewLifetime.current.request?.abort(); };
   }, [branchId]);
   const setCurrentServiceChoice = (next: AppointmentServiceChoice) => {
     serviceIntent.current = { revision: serviceIntent.current.revision + 1, choice: next };
@@ -150,13 +165,40 @@ function VisitFormWorkspace({
     return next;
   });
   const fieldClass = (field: string, extra = '') => `w-full rounded-xl border bg-white px-3 text-sm font-medium text-slate-800 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 ${errors[field] ? 'border-rose-300 bg-rose-50/30' : 'border-slate-300'} ${extra}`;
-  const closeForm = () => { if (!isSaving) onClose(); };
+  const closeForm = () => { if (!isSaving && !reloading) onClose(); };
+
+  const reviewSavedVisit = async (replaceDraft = false) => {
+    const id = savedVisitId.current;
+    if (!id || isSaving || reviewing || reloading) return;
+    reviewLifetime.current.request?.abort();
+    const controller = new AbortController(), generation = reviewLifetime.current.generation;
+    reviewLifetime.current.request = controller;
+    const current = () => reviewLifetime.current.active && reviewLifetime.current.generation === generation
+      && reviewLifetime.current.request === controller && !controller.signal.aborted;
+    setReviewError(''); setReviewing(true); setReloading(replaceDraft);
+    try {
+      const record = await getVisitRecord(id, { signal: controller.signal, current });
+      if (!current()) return;
+      const actor = users.find(user => user.id === auth.currentUser?.uid || user.email === auth.currentUser?.email);
+      if (!uiRecordPermission(actor || userRole, 'visitHistory', 'update')
+        || !branches.some(branch => branch.id === record.branchId)
+        || (userRole === 'doctor' && record.doctorId !== auth.currentUser?.uid)) {
+        throw new Error('You can no longer edit this saved Visit. Your draft has been kept; close and refresh your access.');
+      }
+      if (replaceDraft) {
+        if (visitVersion(record) === null) throw new Error('The saved Visit has invalid version metadata. Your draft has been kept.');
+        onReloadVisit(record);
+      } else setSavedReview(record);
+    } catch (error: any) {
+      if (current() && error.name !== 'AbortError') setReviewError(error?.message || 'Could not load the saved Visit. Your draft has been kept.');
+    } finally { if (current()) { setReviewing(false); setReloading(false); } }
+  };
 
   useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !isSaving && !document.querySelector('[data-clinical-chart-dialog]')) closeForm(); };
+    const handleEscape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !isSaving && !reloading && !document.querySelector('[data-clinical-chart-dialog]')) closeForm(); };
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, [isSaving]);
+  }, [isSaving, reloading]);
 
   useEffect(() => {
     if (!visit?.id || !canViewHistory || activeTab !== 'history') return;
@@ -203,7 +245,7 @@ function VisitFormWorkspace({
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (isSaving || sealed) return;
+    if (isSaving || sealed || reloading || visitConflict) return;
     const actorProfile = users.find(user => user.id === auth.currentUser?.uid || user.email === auth.currentUser?.email);
     if (!uiRecordPermission(actorProfile || userRole, 'visitHistory', visit ? 'update' : 'create')) {
       setSaveError('You are not authorized to save this visit.');
@@ -239,9 +281,11 @@ function VisitFormWorkspace({
     setSaveError('');
     setServiceSaveNotice('');
     setIsSaving(true);
+    const submittedVisitId = savedVisitId.current, submittedVisitVersion = openedVersion.current;
     const submittedIntent = serviceIntent.current;
     const submittedChoice = submittedIntent.choice;
     const visitData = {
+      ...(savedVisitId.current ? { expectedVisitVersion: openedVersion.current } : {}),
       ...(sessionUsage ? { sessionUsage: { commandId: sessionUsage.commandId, lineId: sessionUsage.lineId, sessions: sessionUsage.sessions, expectedLineVersion: sessionUsage.expectedLineVersion, expectedUsageVersion: 0 }, ...(!savedVisitId.current ? { clientVisitId: clientVisitId.current } : {}) } : {}),
       ...(submittedChoice.kind === 'unchanged' ? {} : { serviceSelection: submittedChoice.kind === 'removed' ? null : { serviceId: submittedChoice.serviceId, expectedVersion: submittedChoice.expectedVersion } }),
       // Untouched historical records keep their original provider representation.
@@ -268,6 +312,13 @@ function VisitFormWorkspace({
       // A successful create already exists on the server. Preserve its identity so
       // saving the newer draft updates it instead of creating a second Visit.
       savedVisitId.current = saved.id;
+      if (!Number.isSafeInteger(saved.visitVersion) || Number(saved.visitVersion) < 0
+        || (submittedVisitId && saved.visitVersion !== Number(submittedVisitVersion) + 1)) {
+        setVisitConflict(true);
+        setSaveError('The server confirmed this Visit but not its version. Your draft has been kept. Review the saved Visit before saving again.');
+        return;
+      }
+      openedVersion.current = saved.visitVersion!;
       if (!currentIntent()) {
         setServiceSaveNotice('The submitted Visit was saved. Your newer Service choice is still unsaved; save again to apply it.');
         return;
@@ -289,7 +340,12 @@ function VisitFormWorkspace({
       onSave();
       onClose();
     } catch (error: any) {
-      if (!currentIntent() || error.name === 'AbortError') return;
+      if (!current() || error.name === 'AbortError') return;
+      if (['VISIT_VERSION_CHANGED', 'VISIT_VERSION_REQUIRED', 'VISIT_VERSION_INVALID'].includes(error.code)) {
+        setVisitConflict(true); setSavedReview(null); setReloadConfirmation(false);
+        setSaveError(error.message); return;
+      }
+      if (!currentIntent()) return;
       if (error.code === 'SERVICE_VERSION_CHANGED') requireServiceReview();
       if (sessionUsage && (!error.status || error.status >= 500 || error.code === 'CREATE_RETRY_CHANGED')) {
         setSessionRetryLocked(true);
@@ -309,17 +365,30 @@ function VisitFormWorkspace({
       <form noValidate onSubmit={handleSubmit} aria-labelledby="visit-form-title" className="relative z-[101] max-h-[92vh] w-full max-w-5xl space-y-6 overflow-y-auto rounded-2xl border border-slate-100 bg-white p-5 shadow-2xl sm:p-7">
         <header className="-mx-5 -mt-5 flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-5 py-5 sm:-mx-7 sm:-mt-7 sm:px-7">
           <div><h2 id="visit-form-title" className="text-xl font-bold tracking-tight text-slate-950 sm:text-2xl">{visit ? 'Edit visit' : 'Add visit'}</h2><p className="mt-1 text-sm text-slate-500">{appointment ? 'Complete the linked appointment and record the clinical visit.' : visit ? 'Update the visit record and save verified changes.' : 'Record a completed walk-in visit in the shared patient record.'}</p></div>
-          <button type="button" aria-label="Close visit form" onClick={closeForm} disabled={isSaving} className="rounded-xl p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"><svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg></button>
+          <button type="button" aria-label="Close visit form" onClick={closeForm} disabled={isSaving || reloading} className="rounded-xl p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"><svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg></button>
         </header>
 
-        {visit?.id && uiCan(userRole, 'clinical.view') && uiCan(userRole, 'visits.view') && <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-teal-200 bg-teal-50 p-3"><p className="text-xs text-teal-900">Charting uses this saved Visit. Save Visit changes before updating its chart.</p><button type="button" disabled={isSaving} onClick={() => setShowChart(true)} className="min-h-9 rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white">Open chart</button></div>}
+        {visit?.id && uiCan(userRole, 'clinical.view') && uiCan(userRole, 'visits.view') && <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-teal-200 bg-teal-50 p-3"><p className="text-xs text-teal-900">Charting uses this saved Visit. Save Visit changes before updating its chart.</p><button type="button" disabled={isSaving || reloading} onClick={() => { if (!isSaving && !reloading) setShowChart(true); }} className="min-h-9 rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white">Open chart</button></div>}
         {sealed && <p role="status" className="text-sm text-amber-700">This archived, signed or finalized Visit is read-only. Visit record amendments are not configured.</p>}
         {saveError && <div role="alert" aria-live="polite" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">{saveError}</div>}
+        {visitConflict && <section aria-label="Visit save conflict" className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-slate-800">
+          <p className="font-semibold">Your unsaved notes and other changes are still in this form.</p>
+          <p>Review what was saved. Reloading replaces this draft; it does not merge or overwrite the saved Visit.</p>
+          <button type="button" disabled={reviewing || reloading} onClick={() => void reviewSavedVisit()} className="rounded-lg border border-amber-300 bg-white px-3 py-2 font-semibold text-teal-800 disabled:opacity-50">{reviewing && !reloading ? 'Loading saved Visit…' : 'Review saved Visit'}</button>
+          {reviewError && <p role="alert" className="text-rose-700">{reviewError}</p>}
+          {savedReview && <div className="space-y-3 rounded-lg border border-amber-200 bg-white p-3">
+            <h3 className="font-semibold">Latest saved Visit</h3>
+            <p className="text-xs text-slate-600">{formatDateTime(savedReview.visitDate)} · {branches.find(branch => branch.id === savedReview.branchId)?.branchName || 'Recorded clinic'} · {savedReview.serviceNameSnapshot || savedReview.treatmentService || savedReview.visitType}</p>
+            {savedReview.updatedBy && <p className="text-xs text-slate-600">Last saved by {savedReview.updatedBy}{savedReview.updatedAt ? ' · ' + formatDateTime(savedReview.updatedAt) : ''}</p>}
+            <dl className="grid gap-3 sm:grid-cols-2">{[['Clinical notes', 'notes'], ['Diagnosis', 'diagnosis'], ['Treatment plan', 'treatmentPlan'], ['Main concern', 'mainConcern'], ['Assisting staff', 'assistingStaffText'], ['Follow-up instructions', 'followUpInstructions']].map(([label, field]) => <div key={field} className="min-w-0"><dt className="text-xs font-semibold text-slate-600">{label}</dt><dd className="mt-1 whitespace-pre-wrap break-words">{typeof savedReview[field] === 'string' ? savedReview[field] || 'Not recorded' : savedReview[field] == null ? 'Not recorded' : 'Previously recorded non-text content'}</dd></div>)}</dl>
+            {!reloadConfirmation ? <button type="button" disabled={reviewing || reloading} onClick={() => setReloadConfirmation(true)} className="rounded-lg border border-slate-300 px-3 py-2 font-semibold">Reload saved Visit</button> : <div className="space-y-2 border-t border-amber-200 pt-3"><p>Reloading will discard your unsaved notes and all other draft changes. Keep or copy anything you need before continuing.</p><div className="flex flex-wrap gap-2"><button type="button" disabled={reloading} onClick={() => setReloadConfirmation(false)} className="rounded-lg border border-slate-300 px-3 py-2 font-semibold">Keep my draft</button><button type="button" disabled={reviewing || reloading} onClick={() => void reviewSavedVisit(true)} className="rounded-lg bg-teal-700 px-3 py-2 font-semibold text-white">{reloading ? 'Reloading…' : 'Discard draft and reload'}</button></div></div>}
+          </div>}
+        </section>}
         {serviceSaveNotice && <p role="status" className="text-sm text-teal-700">{serviceSaveNotice}</p>}
         {visit && canViewHistory && <div className="inline-flex rounded-xl bg-slate-100 p-1"><button type="button" onClick={() => setActiveTab('form')} className={`rounded-lg px-4 py-2 text-xs font-bold ${activeTab === 'form' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Details</button><button type="button" onClick={() => setActiveTab('history')} className={`rounded-lg px-4 py-2 text-xs font-bold ${activeTab === 'history' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>History</button></div>}
 
         {activeTab === 'history' ? <section className="space-y-3"><h3 className="text-base font-bold text-slate-900">Visit history</h3>{logs.length ? logs.map(log => <article key={log.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm"><div className="flex justify-between gap-3 text-xs text-slate-500"><span>{formatDateTime(log.timestamp)}</span><span className="font-bold text-teal-700">{log.action}</span></div><p className="mt-2 text-slate-700">{log.details}</p><p className="mt-2 text-xs text-slate-500">Updated by {log.userName || log.userEmail || 'Unknown user'}</p></article>) : <p className="rounded-xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-500">No recorded visit changes.</p>}</section> : (
-          <fieldset disabled={sealed || isSaving || sessionRetryLocked} className="grid gap-8 md:grid-cols-2">
+          <fieldset disabled={sealed || isSaving || sessionRetryLocked || reloading} className="grid gap-8 md:grid-cols-2">
             <section className="space-y-4"><div className="border-b border-slate-200 pb-3"><h3 className="text-base font-bold text-slate-900">Visit information</h3><p className="mt-0.5 text-xs text-slate-500">Patient, clinic, provider, and completed visit time.</p></div>
               {appointment && <p className="rounded-xl border border-teal-100 bg-teal-50/70 px-3 py-2.5 text-xs font-medium text-teal-800">This visit keeps the booked patient, clinic, doctor assignment and schedule. Record who actually performed the visit below.</p>}
               <div className="relative space-y-1.5"><label htmlFor="visit-patient" className="text-xs font-semibold text-slate-600">Patient <span className="text-rose-500">*</span></label><div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input id="visit-patient" data-visit-field="patientId" aria-invalid={Boolean(errors.patientId)} disabled={isAppointment || Boolean(visit)} value={patientId ? (selectedPatient?.name || '') : patientSearch} onChange={event => { setPatientSearch(event.target.value); setPatientId(''); setIsPatientMenuOpen(true); clearError('patientId'); }} onFocus={() => setIsPatientMenuOpen(true)} placeholder="Search name, ID or mobile number" autoComplete="off" className={fieldClass('patientId', `h-[42px] pl-9 ${(isAppointment || visit) ? 'cursor-not-allowed bg-slate-50 text-slate-500' : ''}`)} /></div>{selectedPatient && <div className="flex items-center justify-between gap-3 rounded-xl border border-teal-100 bg-teal-50/60 px-3 py-2.5"><div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-800">{selectedPatient.name}</p><p className="mt-0.5 text-xs text-slate-500">{selectedPatient.patientID || 'Patient record'}{selectedPatient.contactNumber ? ` · ${selectedPatient.contactNumber}` : ''}</p></div>{!isAppointment && !visit && <button type="button" onClick={() => { setPatientId(''); setPatientSearch(''); setIsPatientMenuOpen(false); }} className="shrink-0 text-xs font-bold text-teal-700 transition hover:text-teal-900">Change</button>}</div>}{errors.patientId && <p className="text-xs font-medium text-rose-600">{errors.patientId}</p>}{isPatientMenuOpen && !patientId && patientSearch.trim() && <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">{visiblePatients.length ? visiblePatients.map(patient => <button key={patient.id} type="button" onMouseDown={event => event.preventDefault()} onClick={() => selectPatient(patient)} className="flex w-full items-center justify-between gap-3 border-b border-slate-100 px-3 py-3 text-left text-sm last:border-0 hover:bg-slate-50"><span className="font-semibold text-slate-800">{patient.name}</span><span className="shrink-0 text-xs text-slate-500">{patient.patientID || 'No ID'}</span></button>) : <p className="px-3 py-3 text-sm text-slate-500">No active patients match this search.</p>}</div>}</div>
@@ -354,10 +423,19 @@ function VisitFormWorkspace({
             </section>
           </fieldset>
         )}
-        <footer className="-mx-5 -mb-5 flex flex-col-reverse gap-3 border-t border-slate-200 bg-white px-5 py-4 sm:-mx-7 sm:-mb-7 sm:flex-row sm:justify-end sm:px-7"><button type="button" onClick={closeForm} disabled={isSaving} className="rounded-xl bg-slate-100 px-5 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40">Cancel</button>{activeTab === 'form' && <button type="submit" disabled={isSaving || sealed || serviceUnresolved} className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500">{isSaving ? <><Clock3 className="h-4 w-4 animate-spin" />Saving…</> : <><CheckCircle2 className="h-4 w-4" />{visit ? 'Save changes' : 'Save visit'}</>}</button>}</footer>
+        <footer className="-mx-5 -mb-5 flex flex-col-reverse gap-3 border-t border-slate-200 bg-white px-5 py-4 sm:-mx-7 sm:-mb-7 sm:flex-row sm:justify-end sm:px-7"><button type="button" onClick={closeForm} disabled={isSaving || reloading} className="rounded-xl bg-slate-100 px-5 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40">Cancel</button>{activeTab === 'form' && <button type="submit" disabled={isSaving || sealed || reloading || visitConflict || serviceUnresolved} className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500">{isSaving ? <><Clock3 className="h-4 w-4 animate-spin" />Saving…</> : <><CheckCircle2 className="h-4 w-4" />{visit ? 'Save changes' : 'Save visit'}</>}</button>}</footer>
       </form>
     </div>{showChart && visit?.id && <ClinicalChartModal visit={visit} users={users} userRole={userRole} onClose={() => setShowChart(false)} />}</>
   );
+}
+
+// Only a confirmed, successful reload replaces a draft. Scope changes remount
+// this boundary; ordinary record polling never changes its opened save version.
+function VisitDraftBoundary(props: VisitFormProps) {
+  const [replacement, setReplacement] = useState<any>(null);
+  const [revision, setRevision] = useState(0);
+  return <VisitFormWorkspace key={revision} {...props} visit={replacement || props.visit}
+    onReloadVisit={record => { setReplacement(record); setRevision(value => value + 1); }} />;
 }
 
 // Reuse the appointment scope boundary: stale transports may complete after
@@ -374,7 +452,7 @@ export default function VisitForm(props: VisitFormProps) {
   if (!profile?.active || invalidatedScope === scope || (sourceBranch && !branches.some(branch => branch.id === sourceBranch))) {
     return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 p-4"><div role="alert" className="space-y-4 rounded-2xl bg-white p-6"><p>Visit access changed. Close and reopen after your access is refreshed.</p><button type="button" onClick={props.onClose}>Close</button></div></div>;
   }
-  return <VisitFormWorkspace key={scope} {...props} branches={branches} userRole={profile.role}
+  return <VisitDraftBoundary key={scope} {...props} branches={branches} userRole={profile.role}
     appointments={props.appointments?.filter(item => branches.some(branch => branch.id === item.branchId))}
     defaultBranchId={branches.some(branch => branch.id === props.defaultBranchId) ? props.defaultBranchId : undefined} />;
 }

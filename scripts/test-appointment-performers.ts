@@ -24,6 +24,11 @@ let server: ReturnType<typeof app.listen> | undefined;
 let checks = 0, slot = 0;
 function check(value: unknown, message: string) { assert.ok(value, message); checks++; }
 async function request(route: string, method = 'GET', body?: any, actor = 'admin') {
+  // Sequential workflow tests model an editor opening the current saved Visit.
+  if (method === 'PATCH' && /^\/api\/records\/visits\/[^/]+$/.test(route) && !Object.hasOwn(body || {}, 'expectedVisitVersion')) {
+    const record = (await db.collection('visits').doc(decodeURIComponent(route.split('/').at(-1)!)).get()).data();
+    body = { ...body, expectedVisitVersion: record?.visitVersion ?? 0 };
+  }
   const session = sessions.get(actor);
   const response = await fetch(`http://127.0.0.1:${(server!.address() as any).port}${route}`, {
     method, headers: { Origin: origin, 'Content-Type': 'application/json',
@@ -306,7 +311,7 @@ try {
   for (const permission of ['visits.create', 'visits.edit', 'clinical.edit_draft', 'clinical.view']) {
     status(await request('/api/users/staff/access', 'PATCH', { expectedAccessRevision: (await read('users', 'staff')).accessRevision, permissionChanges: { [permission]: 'deny' } }), 200, 'explicit medical Staff denial configured');
     if (permission !== 'visits.edit') status(await request('/api/records/visits', 'POST', visit({ doctorId: null, performedByUserId: 'staff' }), 'staff'), 403, 'explicit denial overrides inherited medical completion');
-    else status(await request('/api/records/visits/' + designatedId, 'PATCH', { ...await read('visits', designatedId), performedByNameSnapshot: undefined, performedByRoleSnapshot: undefined, performedByDesignationSnapshot: undefined }, 'staff'), 403, 'explicit denial overrides inherited medical Visit editing');
+    else status(await request('/api/records/visits/' + designatedId, 'PATCH', { ...await read('visits', designatedId), visitVersion: undefined, performedByNameSnapshot: undefined, performedByRoleSnapshot: undefined, performedByDesignationSnapshot: undefined }, 'staff'), 403, 'explicit denial overrides inherited medical Visit editing');
     status(await request('/api/users/staff/access', 'PATCH', { expectedAccessRevision: (await read('users', 'staff')).accessRevision, permissionChanges: { [permission]: 'inherit' } }), 200, 'restore synthetic inherited permission');
   }
   const queuedPayload = visit({ doctorId: null, performedByUserId: 'nurse' });
