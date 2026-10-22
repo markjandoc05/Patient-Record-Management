@@ -8,10 +8,11 @@ import { sessionIdentity, trustedWriteOrigin } from './auth';
 import { RBAC, SUPPORT_DEVELOPER, administrativeRoles, clinicalPatientRoles, isSupportDeveloper } from '../src/rbac';
 import { assertDevelopmentRole } from './developmentAccess';
 import { assertAppointmentRead, scopeAppointmentRead } from './appointmentReadAccess';
+import { inventoryQuantity, inventoryText, parseInventorySupplier } from '../src/inventoryPolicy';
 const publicSettings = new Set(['branding', 'timezone', 'footer', 'media']);
 const roles = new Set(Object.keys(RBAC));
 const globalRoles = new Set<string>(administrativeRoles);
-const inventoryCollections = new Set(['inventory_items', 'inventory_stocks', 'suppliers', 'stock_transfers']);
+const inventoryCollections = new Set(['inventory_items', 'inventory_categories', 'inventory_stocks', 'suppliers', 'stock_transfers']);
 export function parseRecordPath(value: unknown, document: boolean) {
   if (typeof value !== 'string' || value.length > 500 || !/^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(value)) throw new Error('Invalid record path');
   const parts = value.split('/');
@@ -152,11 +153,17 @@ export function mountDataApi(app: express.Express) {
             Object.assign(data, { patientId, authorId: identity.uid, authorName: profile.fullName, createdAt: { __operation: 'timestamp' } }); resource = 'Patient';
           } else if (inventoryCollections.has(collection)) {
             if (!hasCapability(profile, 'inventory.manage') || operation.mode !== 'create' || !['inventory_items', 'suppliers'].includes(collection)) forbidden('Use inventory endpoints');
-            if (typeof data.name !== 'string' || !data.name.trim() || data.name.length > 200) throw new Error('Invalid item or supplier name');
+            inventoryText(data.name, 200, 'item or supplier name', true);
             if (collection === 'inventory_items') {
-              if (typeof data.sku !== 'string' || !data.sku.trim() || !Number.isFinite(data.lowStockThreshold) || data.lowStockThreshold < 0) throw new Error('Invalid inventory item');
-              if (!(await tx.get(db.collection(collection).where('sku', '==', data.sku))).empty) throw new Error('SKU already exists');
-            }
+              if (['categoryId', 'categoryNameSnapshot', 'categoryVersion', 'categoryCatalogueVersion', 'recordedCategory'].some(key => Object.hasOwn(data, key))) forbidden('Use the inventory item endpoint to select a category');
+              const sku = inventoryText(data.sku, 80, 'SKU', true);
+              inventoryQuantity(data.lowStockThreshold, false, true);
+              // Older clients did not require a unit/category. Preserve their
+              // create contract; new dedicated item requests require a unit.
+              if (data.unit !== undefined) inventoryText(data.unit, 40, 'stock unit');
+              if (data.category !== undefined) inventoryText(data.category, 80, 'category');
+              if ((await tx.get(db.collection(collection))).docs.some(doc => String(doc.data()?.sku || '').trim().toLowerCase() === sku.toLowerCase())) throw new Error('SKU already exists');
+            } else parseInventorySupplier(data);
             resource = 'Inventory';
           } else forbidden('Use the dedicated record endpoint');
           if (operation.mode === 'delete') tx.delete(ref);

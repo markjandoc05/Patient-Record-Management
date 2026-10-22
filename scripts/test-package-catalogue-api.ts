@@ -6,6 +6,7 @@ import path from 'node:path';
 import { app } from '../server';
 import { db, pool } from '../backend/database';
 import { migrateDatabase } from './migrate-database';
+import { assertCurrentMigrationChain } from './platform-test-support';
 
 const database = new URL(process.env.DATABASE_URL || 'postgresql://invalid');
 const origin = new URL(process.env.APP_URL || 'https://invalid').origin;
@@ -46,7 +47,7 @@ const visit = (service: any, line: any, sessions = 1) => {
 try {
   check(Number((await pool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")).rows[0].count) === 0, 'API suite requires an empty disposable database');
   await migrateDatabase(); await migrateDatabase();
-  check((await pool.query('SELECT count(*) FROM schema_migrations')).rows[0].count === '6', 'complete checksummed chain 001–006');
+  check(await assertCurrentMigrationChain(), 'complete current checksummed migration chain');
   for (const [id, state] of [['A', 'Active'], ['B', 'Active'], ['I', 'Inactive']]) await db.collection('branches').doc(id).set({ branchName: 'Synthetic clinic ' + id, status: state });
   for (const [id, fields] of Object.entries({
     admin: { role: 'admin', assignedBranches: ['A', 'B'] },

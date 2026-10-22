@@ -825,7 +825,7 @@ export default function App() {
                 {activeView === 'VisitHistory' && canOpenView(userProfile, 'VisitHistory') && <VisitHistoryDashboard db={db} role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
                 {activeView === 'Services' && canOpenView(userProfile, 'Services') && <ServicesDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
                 {activeView === 'Insights' && canOpenView(userProfile, 'Insights') && <InsightsAnalyticsDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
-                {activeView === 'Inventory' && canOpenView(userProfile, 'Inventory') && <InventoryDashboard userProfile={userProfile} />}
+                {activeView === 'Inventory' && canOpenView(userProfile, 'Inventory') && <InventoryDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
                 {activeView === 'Inventory' && !canOpenView(userProfile, 'Inventory') && (
                   <div className="p-8 text-center"><p className="text-slate-500 font-medium">Access Denied: Inventory controls are restricted to administrators.</p></div>
                 )}

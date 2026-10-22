@@ -1,5 +1,28 @@
 # Vine incremental production roadmap
 
+## Inventory categories — October 22 local follow-up
+
+Manage categories adds create, rename and deactivate/reactivate actions using
+existing inventory management authority. New item forms use an active-category
+dropdown, and stock levels support category filtering. Existing recorded text,
+stock balances and movement history remain unchanged. The existing JSONB store
+is adequate; no new migration or production action. This extends the uncommitted
+Simple Inventory R1 work below. See [category implementation and schema report](docs/releases/2026-10-22-inventory-categories.md).
+Next: independent scoped commit-readiness review of the combined Inventory work.
+
+## Simple Inventory R1 — October 22 local
+
+Extend the existing three Inventory tabs with branch stock receiving, manual
+usage, Admin corrections, attributed movement history and repeat-safe transfers.
+Existing capability defaults, branch restrictions and historical JSONB IDs remain.
+No batch/expiry, automatic Visit deductions, packages, billing or production work.
+Committed migrations are 001–006 (including committed Package Catalogue R1);
+new additive 007 is applied locally and remains uncommitted. This supersedes the
+older package entry's implementation-time migration/commit status below.
+Production version was not inspected. See [implementation and schema report](docs/releases/2026-10-22-inventory-r1.md).
+Next: independent scoped commit-readiness review; browser limitations remain
+recorded separately. No staging, commit, push or deployment in this task.
+
 ## Package Catalogue R1 — October 22 local
 
 Services → Packages adds versioned Service/session definitions. Treatment Ledger
@@ -246,3 +269,12 @@ close either workstream by relabeling Support access as another role's evidence.
 The referenced prepared demo/staff fixtures above are historical acceptance evidence.
 They were subsequently removed in the user-requested development cleanup. Do not
 reseed the clean development database for onboarding tests; use disposable fixtures.
+# Inventory Excel management — October 22 local follow-up
+
+Added branch-scoped XLSX export for Stocks & Levels, Suppliers and Stock Transfers,
+plus a template/preview/confirm import for new items and optional opening receipts.
+Existing SKUs are skipped; existing purchases, records, quantities, stock history
+and permissions remain unchanged. No new migration. Local synthetic browser import,
+repeat-file protection and all three exports pass; focused and regression results
+are in [the Excel release report](docs/releases/2026-10-22-inventory-excel.md).
+Not staged or committed; no push, deployment, production or DARF changes.

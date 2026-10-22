@@ -29,7 +29,9 @@ export async function assertCurrentMigrationChain(): Promise<boolean> {
 export async function resetDisposablePlatformRecords() {
   assertDisposableDatabase();
   // Explicit dependent tables avoid CASCADE and retain schema/checksum history.
-  const known = ['treatment_ledger_visit_usage', 'treatment_ledger_events', 'treatment_ledger_lines',
+  const known = ['inventory_movements', 'inventory_commands', 'inventory_accounts',
+    'package_catalogue_lines', 'package_catalogue_versions', 'package_catalogue',
+    'treatment_ledger_visit_usage', 'treatment_ledger_events', 'treatment_ledger_lines',
     'treatment_ledger_purchases', 'service_branch_settings', 'services', 'service_categories',
     'app_records', 'auth_sessions', 'auth_identities', 'oauth_attempts'];
   const present: string[] = [];

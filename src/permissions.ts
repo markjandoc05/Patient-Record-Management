@@ -46,9 +46,9 @@ export const permissionDefinitions = [
   ['audit.view', 'Audit', 'View audit and login activity', admin],
   ['audit.export', 'Audit', 'Export audit records', admin],
   ['reports.view', 'Reports', 'View Insights', all],
-  ['inventory.view', 'Inventory', 'View existing inventory', admin],
-  ['inventory.manage', 'Inventory', 'Manage existing items and suppliers', admin],
-  ['inventory.transfer', 'Inventory', 'Manage existing stock transfers', admin],
+  ['inventory.view', 'Inventory', 'View stock levels and movement history', admin],
+  ['inventory.manage', 'Inventory', 'Manage categories, items, suppliers, receiving and usage', admin],
+  ['inventory.transfer', 'Inventory', 'Manage stock transfers', admin],
   ['developer.access', 'Developer', 'Use guarded Developer tools', developerRoles],
 ] as const;
 

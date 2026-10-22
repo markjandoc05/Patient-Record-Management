@@ -87,7 +87,16 @@
     "test:package-catalogue-policy": "node --import tsx scripts/test-package-catalogue-policy.ts",
     "test:package-catalogue-api": "node --import tsx scripts/test-package-catalogue-api.ts",
     "test:package-catalogue-migration": "node --import tsx scripts/test-package-catalogue-migration.ts",
-    "test:package-catalogue-ui": "node --import tsx scripts/test-package-catalogue-ui.ts"
+    "test:package-catalogue-ui": "node --import tsx scripts/test-package-catalogue-ui.ts",
+    "test:inventory-policy": "node --import tsx scripts/test-inventory-policy.ts",
+    "test:inventory-api": "node --import tsx scripts/test-inventory-api.ts",
+    "test:inventory-migration": "node --import tsx scripts/test-inventory-migration.ts",
+    "test:inventory-transport": "node --import tsx scripts/test-inventory-transport.ts",
+    "test:inventory-ui": "node --import tsx scripts/test-inventory-ui.ts",
+    "test:inventory-categories-api": "node --import tsx scripts/test-inventory-categories-api.ts",
+    "test:inventory-import-api": "node --import tsx scripts/test-inventory-import-api.ts",
+    "test:inventory-excel": "node --import tsx scripts/test-inventory-excel.ts",
+    "test:inventory-excel-ui": "node --import tsx scripts/test-inventory-excel-ui.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
@@ -97,11 +106,13 @@
     "date-fns": "^4.4.0",
     "date-fns-tz": "^3.2.0",
     "dotenv": "^17.2.3",
+    "exceljs": "4.4.0",
     "express": "^4.21.2",
     "google-auth-library": "^11.1.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "multer": "^2.1.1",
+    "pako": "3.0.2",
     "pg": "^8.23.1",
     "react": "^19.0.1",
     "react-big-calendar": "^1.20.0",
@@ -115,10 +126,15 @@
     "@types/pg": "^8.23.1",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
+    "firebase-admin": "^13.10.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3",
-    "firebase-admin": "^13.10.0"
+    "vite": "^6.2.3"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
   }
 }

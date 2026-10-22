@@ -77,7 +77,7 @@ export function find(node: any, predicate: (node: any) => boolean): any {
 export function text(node: any): string {
   return Array.isArray(node) ? node.map(text).join(' ') : node && typeof node === 'object' ? text(node.props?.children) : String(node ?? '');
 }
-export async function buildControlledForms(names: string[], target = process.cwd(), options: { mockImageCompression?: boolean; mockAttachmentDocuments?: boolean; exposePermissionState?: boolean; useProductionInvalidation?: boolean } = {}) {
+export async function buildControlledForms(names: string[], target = process.cwd(), options: { mockImageCompression?: boolean; mockAttachmentDocuments?: boolean; mockInventoryExcel?: boolean; exposePermissionState?: boolean; useProductionInvalidation?: boolean } = {}) {
   const require = createRequire(path.join(target, 'package.json'));
   const temporary = await mkdtemp(path.join(tmpdir(), 'vine-controlled-performers-'));
   const saved = { fetch: globals.fetch, window: globals.window, document: globals.document, confirm: globals.confirm, alert: globals.alert };
@@ -97,14 +97,16 @@ export function invalidateProtectedData(reason){globalThis.servicesTestInvalidat
 export function subscribeProtectedDataInvalidation(f){globalThis.appointmentInvalidationListeners.add(f);return()=>globalThis.appointmentInvalidationListeners.delete(f);}`}
 export const collection=(_db,name)=>({path:name}),query=(ref)=>ref,limit=()=>({}),orderBy=()=>({}),where=()=>({}),getDocs=async()=>({docs:[]});
 export const onSnapshot=(ref,callback)=>{${options.mockImageCompression ? `if(ref.path==='settings/media'){globalThis.galleryTestMediaListeners.add(callback);callback({exists:()=>globalThis.servicesTestMediaSettings!==undefined&&globalThis.servicesTestMediaSettings!==null,data:()=>globalThis.servicesTestMediaSettings});return()=>globalThis.galleryTestMediaListeners.delete(callback);}` : ''}${options.mockAttachmentDocuments ? `if(globalThis.attachmentTestDocuments?.[ref.path]){callback({exists:()=>true,data:()=>globalThis.attachmentTestDocuments[ref.path]});return()=>{};}` : ''}callback({docs:(globalThis.historyRows?.[ref.path]||[]).map(row=>({id:row.id,data:()=>row}))});return()=>{};};`);
-  await writeFile(path.join(temporary, 'time.mjs'), "export const getActiveDatePrefix=()=> '2035-01-01';export const getActiveDateTimeInput=()=> '2035-01-01T09:00';export const formatTimezone=value=>value;");
+  await writeFile(path.join(temporary, 'time.mjs'), "export const getActiveDatePrefix=()=> '2035-01-01';export const getActiveDateTimeInput=()=> '2035-01-01T09:00';export const getActiveTimezoneSettings=()=>({timezone:'Asia/Manila'});export const formatTimezone=value=>value;");
   await writeFile(path.join(temporary, 'utils.mjs'), 'export const formatDateTime=value=>value;');
   await writeFile(path.join(temporary, 'attachments.mjs'), 'export default ()=>null;');
   if (options.mockImageCompression) await writeFile(path.join(temporary, 'image-compression.mjs'), 'export default (...args)=>globalThis.galleryTestImageCompression(...args);');
+  if (options.mockInventoryExcel) await writeFile(path.join(temporary, 'inventory-excel.mjs'), 'export const readInventoryImportFile=(...args)=>globalThis.inventoryTestExcel.read(...args);export const inventoryImportTemplate=(...args)=>globalThis.inventoryTestExcel.template(...args);export const inventoryExcelFile=(...args)=>globalThis.inventoryTestExcel.write(...args);export const downloadInventoryExcel=(...args)=>globalThis.inventoryTestExcel.download(...args);');
   await writeFile(path.join(temporary, 'calendar.mjs'), `import React from ${JSON.stringify(require.resolve('react'))};export const dateFnsLocalizer=()=>({});export const Calendar=props=>React.createElement('div',{'data-controlled-calendar':true,events:props.events,tooltipAccessor:props.tooltipAccessor});`);
   await writeFile(path.join(temporary, 'date.mjs'), `import React from ${JSON.stringify(require.resolve('react'))};export const CustomDatePicker=props=>React.createElement('input',{...props,'data-controlled-date':true});`);
   const plugins = [{ name: 'controlled-performer-forms', setup(builder: any) {
     if (options.mockImageCompression) builder.onResolve({ filter: /^browser-image-compression$/ }, () => ({ path: path.join(temporary, 'image-compression.mjs') }));
+    if (options.mockInventoryExcel) builder.onResolve({ filter: /utils\/inventoryExcel$/ }, () => ({ path: path.join(temporary, 'inventory-excel.mjs') }));
     builder.onResolve({ filter: /^react$/ }, () => ({ path: path.join(temporary, 'react.mjs') }));
     builder.onResolve({ filter: /session$/ }, () => ({ path: path.join(temporary, 'platform.mjs') }));
     builder.onResolve({ filter: /foundation\.mjs$/ }, () => ({ path: path.join(temporary, 'foundation.mjs'), external: true }));

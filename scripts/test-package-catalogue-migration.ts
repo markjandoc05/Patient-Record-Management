@@ -29,17 +29,21 @@ const schema = async () => JSON.stringify((await pool.query(`
 `)).rows);
 try {
   check(Number((await pool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")).rows[0].count)===0,'requires an empty disposable database');
-  const names=(await readdir('migrations')).filter(n=>n.endsWith('.sql')).sort();check(names.length===6&&names[5]==='006_package_catalogue.sql','one ordered new006');
+  const names=(await readdir('migrations')).filter(n=>n.endsWith('.sql')&&n<'007_').sort();check(names.length===6&&names[5]==='006_package_catalogue.sql','focused ordered package migration chain through006');
   const sources=await Promise.all(names.map(n=>readFile(path.join(original,'migrations',n),'utf8')));
   const expected=['67e8a46d4714a66514feee5f75152c1c884d37635766f687a9225be6c3a3af53','8eefa5f8bb13f1f83a6611b22ae380788ed2b12d8d58f74c75b721e12da628d2','7c1f6534769aa22b6a7bb2a0db99c22acb0c77dafb210c83b24f237493aca77c','8d7c187555c848c0a615492ca58ed1e874f84ed17e57fec737dcc431ae3fc83c','e9c0e5ffac8ca4f373ecf57735031c1e2562576632f4ce0454ab2103dfd51c2a'];
   for(let i=0;i<5;i++)check(hash(sources[i])===expected[i],names[i]+' remains immutable');
+  // Both comparisons must use this release's exact chain even when the workspace has later migrations.
+  temporary=await mkdtemp(path.join(tmpdir(),'vine-package-migrations-'));await mkdir(path.join(temporary,'migrations'));
+  for(let i=0;i<names.length;i++)await writeFile(path.join(temporary,'migrations',names[i]),sources[i]);
+  process.chdir(temporary);
   await migrateDatabase();const fresh=await schema(),freshMigrations=await migrations();
+  check(JSON.stringify(JSON.parse(freshMigrations).map((row:any)=>row.name))===JSON.stringify(names),'fresh package baseline applies exactly001–006, excluding later workspace migrations');
   for(const table of ['package_catalogue','package_catalogue_versions','package_catalogue_lines'])check((await pool.query(`SELECT count(*) FROM ${table}`)).rows[0].count==='0','no catalogue fixtures seeded');
   await migrateDatabase();check(await schema()===fresh&&await migrations()===freshMigrations,'fresh rerun is inert');
   await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
-  temporary=await mkdtemp(path.join(tmpdir(),'vine-package-migrations-'));await mkdir(path.join(temporary,'migrations'));
-  for(let i=0;i<5;i++)await writeFile(path.join(temporary,'migrations',names[i]),sources[i]);
-  process.chdir(temporary);await migrateDatabase();
+  await rm(path.join(temporary,'migrations',names[5]));await migrateDatabase();
+  check(JSON.stringify(JSON.parse(await migrations()).map((row:any)=>row.name))===JSON.stringify(names.slice(0,5)),'retained-record setup applies exactly001–005');
   const service=randomUUID(),purchase=randomUUID(),line=randomUUID(),buyEvent=randomUUID(),useEvent=randomUUID();
   await pool.query(`INSERT INTO app_records(collection_path,id,data) VALUES('branches','A','{"branchName":"Synthetic original branch","status":"Active"}'),('patients','patient','{"name":"Synthetic old patient","legacyField":{"preserve":true}}'),('visits','old-visit','{"patientId":"patient","notes":"Synthetic old notes","legacyTreatment":"Original text"}')`);
   await pool.query('INSERT INTO services(id,name,default_duration_minutes,standard_price,created_by,updated_by) VALUES($1,\'Synthetic retained Service\',30,0,\'test\',\'test\')',[service]);
@@ -51,6 +55,7 @@ try {
   await pool.query("INSERT INTO auth_identities(google_subject,user_id,email) VALUES('synthetic','synthetic','synthetic@example.invalid')");
   const before=await snapshot(),applied=await migrations();
   await writeFile(path.join(temporary,'migrations',names[5]),sources[5]);await migrateDatabase();
+  check(JSON.stringify(JSON.parse(await migrations()).map((row:any)=>row.name))===JSON.stringify(names),'upgrade package baseline applies exactly001–006');
   check(await snapshot()===before,'005→006 preserves every legacy row, event, snapshot, balance and Visit binding');
   check((await pool.query('SELECT catalogue_package_id,catalogue_package_version FROM treatment_ledger_purchases')).rows.every(r=>r.catalogue_package_id===null&&r.catalogue_package_version===null),'old purchases remain unlinked/manual without backfill');
   check(JSON.stringify((await pool.query("SELECT * FROM schema_migrations WHERE name<>'006_package_catalogue.sql' ORDER BY name")).rows)===applied,'old applied checksums/timestamps unchanged');
