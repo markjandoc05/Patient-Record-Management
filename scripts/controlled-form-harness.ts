@@ -77,7 +77,7 @@ export function find(node: any, predicate: (node: any) => boolean): any {
 export function text(node: any): string {
   return Array.isArray(node) ? node.map(text).join(' ') : node && typeof node === 'object' ? text(node.props?.children) : String(node ?? '');
 }
-export async function buildControlledForms(names: string[], target = process.cwd(), options: { mockImageCompression?: boolean; mockAttachmentDocuments?: boolean } = {}) {
+export async function buildControlledForms(names: string[], target = process.cwd(), options: { mockImageCompression?: boolean; mockAttachmentDocuments?: boolean; exposePermissionState?: boolean; useProductionInvalidation?: boolean } = {}) {
   const require = createRequire(path.join(target, 'package.json'));
   const temporary = await mkdtemp(path.join(tmpdir(), 'vine-controlled-performers-'));
   const saved = { fetch: globals.fetch, window: globals.window, document: globals.document, confirm: globals.confirm, alert: globals.alert };
@@ -91,8 +91,10 @@ export async function buildControlledForms(names: string[], target = process.cwd
   await writeFile(path.join(temporary, 'react.mjs'), `import actual from ${JSON.stringify(require.resolve('react'))};\n${['useState', 'useRef', 'useEffect', 'useLayoutEffect', 'useMemo'].map(name => `export const ${name}=(...args)=>globalThis.servicesTestHooks.${name}(...args);`).join('\n')}\nexport const createContext=actual.createContext,useContext=context=>context._currentValue;\nexport default {...actual,useState,useRef,useEffect,useLayoutEffect,useMemo,createContext,useContext};`);
   await writeFile(path.join(temporary, 'platform.mjs'), 'export const auth=globalThis.servicesTestAuth; export const db={};');
   await writeFile(path.join(temporary, 'data.mjs'), `export {captureProtectedRequestScope,protectedFetch,doc,updateDoc,addDoc,serverTimestamp} from "./foundation.mjs";
-export function invalidateProtectedData(){globalThis.servicesTestInvalidations++;for(const f of globalThis.appointmentInvalidationListeners)f();}
-export function subscribeProtectedDataInvalidation(f){globalThis.appointmentInvalidationListeners.add(f);return()=>globalThis.appointmentInvalidationListeners.delete(f);}
+${options.useProductionInvalidation ? `import {invalidateProtectedData as productionInvalidate} from "./foundation.mjs";
+export {subscribeProtectedDataInvalidation} from "./foundation.mjs";
+export function invalidateProtectedData(reason){globalThis.servicesTestInvalidations++;productionInvalidate(reason);}` : `export function invalidateProtectedData(){globalThis.servicesTestInvalidations++;for(const f of globalThis.appointmentInvalidationListeners)f();}
+export function subscribeProtectedDataInvalidation(f){globalThis.appointmentInvalidationListeners.add(f);return()=>globalThis.appointmentInvalidationListeners.delete(f);}`}
 export const collection=(_db,name)=>({path:name}),query=(ref)=>ref,limit=()=>({}),orderBy=()=>({}),where=()=>({}),getDocs=async()=>({docs:[]});
 export const onSnapshot=(ref,callback)=>{${options.mockImageCompression ? `if(ref.path==='settings/media'){globalThis.galleryTestMediaListeners.add(callback);callback({exists:()=>globalThis.servicesTestMediaSettings!==undefined&&globalThis.servicesTestMediaSettings!==null,data:()=>globalThis.servicesTestMediaSettings});return()=>globalThis.galleryTestMediaListeners.delete(callback);}` : ''}${options.mockAttachmentDocuments ? `if(globalThis.attachmentTestDocuments?.[ref.path]){callback({exists:()=>true,data:()=>globalThis.attachmentTestDocuments[ref.path]});return()=>{};}` : ''}callback({docs:(globalThis.historyRows?.[ref.path]||[]).map(row=>({id:row.id,data:()=>row}))});return()=>{};};`);
   await writeFile(path.join(temporary, 'time.mjs'), "export const getActiveDatePrefix=()=> '2035-01-01';export const getActiveDateTimeInput=()=> '2035-01-01T09:00';export const formatTimezone=value=>value;");
@@ -119,8 +121,8 @@ export const onSnapshot=(ref,callback)=>{${options.mockImageCompression ? `if(re
   const modules: Record<string, any> = {};
   for (const name of names) {
     const outfile = path.join(temporary, name + '.mjs');
-    const entry = options.mockAttachmentDocuments && name === 'FileAttachmentSection'
-      ? { stdin: { contents: `export {default} from ${JSON.stringify(path.join(target, 'src/components/' + name + '.tsx'))}; export {publishPermissionProfile} from ${JSON.stringify(path.join(target, 'src/permissionState.ts'))};`, resolveDir: target, sourcefile: 'attachment-selection-test.tsx' } }
+    const entry = options.exposePermissionState || options.mockAttachmentDocuments && name === 'FileAttachmentSection'
+      ? { stdin: { contents: `export {default} from ${JSON.stringify(path.join(target, 'src/components/' + name + '.tsx'))}; export * from ${JSON.stringify(path.join(target, 'src/components/' + name + '.tsx'))}; export {publishPermissionProfile} from ${JSON.stringify(path.join(target, 'src/permissionState.ts'))}; ${options.useProductionInvalidation ? `export {invalidateProtectedData} from ${JSON.stringify(path.join(target, 'src/dataClient'))};` : ''}`, resolveDir: target, sourcefile: 'attachment-selection-test.tsx' } }
       : { entryPoints: [path.join(target, 'src/components/' + name + '.tsx')] };
     await build({ ...entry, outfile, bundle: true, platform: 'node', format: 'esm', jsx: 'transform', packages: 'external', plugins });
     modules[name] = await import(pathToFileURL(outfile).href);

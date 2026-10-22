@@ -46,15 +46,22 @@ const schema = async () => JSON.stringify((await pool.query(`
   ORDER BY kind,relation,name
 `)).rows);
 let temporary: string | undefined;
+let ledgerCwd: string | undefined;
 try {
   check(!(await pool.query("SELECT to_regclass('public.app_records') AS records")).rows[0].records,
     'migration suite starts in an empty disposable database');
   check((await pool.query("SELECT count(*)::integer AS count FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")).rows[0].count === 0,
     'disposable migration database contains no unrelated user tables');
-  const names = (await readdir(path.join(originalCwd, 'migrations'))).filter(name => name.endsWith('.sql')).sort();
+  const names = (await readdir(path.join(originalCwd, 'migrations'))).filter(name => name.endsWith('.sql') && name < '006_').sort();
   check(names.length === 5 && names.slice(0, 4).join() === previousNames.join() && /^005_/.test(names[4]),
     'one ordered forward migration follows unchanged 001–004');
   const sources = await Promise.all(names.map(name => readFile(path.join(originalCwd, 'migrations', name), 'utf8')));
+  // Pin this regression to its original 004→005 boundary; later migrations
+  // have independent fresh/upgrade suites. All copied bytes remain checksummed.
+  ledgerCwd = await mkdtemp(path.join(os.tmpdir(), 'vine-ledger-005-boundary-'));
+  await mkdir(path.join(ledgerCwd, 'migrations'));
+  for (let i = 0; i < names.length; i++) await writeFile(path.join(ledgerCwd, 'migrations', names[i]), sources[i]);
+  process.chdir(ledgerCwd);
   for (let index = 0; index < 4; index++) check(hash(sources[index]) === previousChecksums[index], `${names[index]} retains audited bytes`);
   await migrateDatabase();
   check((await pool.query('SELECT name FROM schema_migrations ORDER BY name')).rows.map(row => row.name).join() === names.join(),
@@ -76,7 +83,7 @@ try {
   temporary = await mkdtemp(path.join(os.tmpdir(), 'vine-treatment-ledger-migrations-'));
   await mkdir(path.join(temporary, 'migrations'));
   for (let index = 0; index < 4; index++) await writeFile(path.join(temporary, 'migrations', names[index]), sources[index]);
-  process.chdir(temporary); await migrateDatabase(); process.chdir(originalCwd);
+  process.chdir(temporary); await migrateDatabase(); process.chdir(ledgerCwd!);
   check((await pool.query('SELECT name FROM schema_migrations ORDER BY name')).rows.map(row => row.name).join() === previousNames.join(),
     'upgrade fixture starts at committed schema 004');
   const oldApplied = await migrationRows();
@@ -115,7 +122,7 @@ try {
     await assert.rejects(migrateDatabase(), new RegExp('Applied migration changed: ' + names[index])); checks++;
     await writeFile(path.join(temporary, 'migrations', names[index]), sources[index]);
   }
-  process.chdir(originalCwd);
+  process.chdir(ledgerCwd!);
   check(await migrationRows() === upgradedLedger && await retainedRows() === retained && await schema() === freshSchema,
     'checksum failures roll back without changing schema, records or migration ledger');
   for (let index = 0; index < names.length; index++) check(hash(await readFile(path.join(originalCwd, 'migrations', names[index]), 'utf8')) === hash(sources[index]),
@@ -124,5 +131,6 @@ try {
 } finally {
   process.chdir(originalCwd);
   if (temporary) await rm(temporary, { recursive: true, force: true });
+  if (ledgerCwd) await rm(ledgerCwd, { recursive: true, force: true });
   await pool.end();
 }

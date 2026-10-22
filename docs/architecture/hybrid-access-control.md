@@ -3,6 +3,23 @@
 Local implementation, October 3, 2026. This document records the approved policy and
 implemented foundation. Clinical Records R1 workflows remain a separate release.
 
+## Package Catalogue R1 — October 22 local
+
+`packages.view` inherits the existing all-role viewing defaults; `packages.manage`
+inherits Administrator and guarded Support defaults. Explicit hybrid overrides
+remain authoritative. Both catalogue reads and writes require `services.view`,
+and writes additionally require `packages.manage`. Catalogue definitions are
+shared; no price amounts or patient records are exposed by their endpoints.
+Branch eligibility queries require an existing authorized branch and do not grant
+global scope. Current actor/access is rechecked inside the serialized transaction.
+
+Catalogue-backed patient purchases additionally retain the existing Treatment
+Ledger, clinical/patient and purchase-branch checks. OR# editing retains its Admin
+restriction. Manual purchases and historical purchases do not acquire a new
+catalogue permission dependency. Catalogue changes do not rewrite balances or
+expand Visit redemption authority. See
+[R1 release evidence](../releases/2026-10-22-package-catalogue-r1.md).
+
 ## Medical Staff and Nurse workflow defaults — October 13 local
 
 The user's subsequent approved policy gives active Staff designated Nurse or

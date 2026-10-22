@@ -1,5 +1,18 @@
 # Vine incremental production roadmap
 
+## Package Catalogue R1 — October 22 local
+
+Services → Packages adds versioned Service/session definitions. Treatment Ledger
+purchases can select a reviewed catalogue version or retain the existing Manual
+package workflow. The server freezes authoritative terms; existing purchases,
+balances, Visit usage, Admin OR# and branch boundaries remain. No billing, expiry,
+reservations or new role. Additive migration 006 is locally applied and uncommitted;
+committed migrations remain 001–005. Production was not inspected or changed in
+this task; its previously verified 005 baseline implies a pending 006 release gap.
+See [implementation, regression and schema evidence](docs/releases/2026-10-22-package-catalogue-r1.md).
+Next: independent scoped commit-readiness review. No staging, commit, push or
+deployment is authorized by this implementation.
+
 ## Nurse and Medical Staff Visit workflow — October 13 local
 
 User-approved follow-up gives active Staff designated Nurse or Medical Staff the

@@ -24,6 +24,8 @@ export const permissionDefinitions = [
   ['services.view', 'Services', 'View catalogue and permitted prices', all],
   ['services.manage', 'Services', 'Manage catalogue', admin],
   ['services.pricing', 'Services', 'Change prices', admin],
+  ['packages.view', 'Packages', 'View package definitions', all],
+  ['packages.manage', 'Packages', 'Manage versioned package definitions', admin],
   ['treatment_ledger.view', 'Treatment Ledger', 'View patient packages and session history', all],
   ['treatment_ledger.purchase', 'Treatment Ledger', 'Record purchases and edit package notes', [...admin, 'staff', 'manager']],
   ['treatment_ledger.adjust', 'Treatment Ledger', 'Adjust sessions and reverse recorded usage', admin],

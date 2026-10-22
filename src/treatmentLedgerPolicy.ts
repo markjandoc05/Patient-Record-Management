@@ -20,6 +20,7 @@ export type TreatmentPurchase = {
   id: string; patientId: string; packageName: string; purchaseDate: string; branchId: string;
   branchNameSnapshot: string; timezoneSnapshot: string; notes: string; orNumber: string | null;
   version: number; recordedAt: string; actor: TreatmentActor; lines: TreatmentLine[]; metadataRedacted: boolean;
+  catalogue?: { packageId: string; version: number } | null;
   capabilities: { canEditNotes: boolean; canAdjust: boolean; canEditOrNumber: boolean };
 };
 export type TreatmentLedgerEvent = {

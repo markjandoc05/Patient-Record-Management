@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import path from 'node:path';
+import { readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { app } from '../server';
 import { db, pool } from '../backend/database';
@@ -91,7 +92,7 @@ try {
   check((await pool.query("SELECT count(*)::integer AS count FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")).rows[0].count === 0,
     'disposable API database contains no unrelated user tables');
   await migrateDatabase(); await migrateDatabase();
-  check((await pool.query('SELECT name FROM schema_migrations ORDER BY name')).rows.length === 5, 'fresh checksummed 001–005 schema, repeat-safe');
+  check((await pool.query('SELECT name FROM schema_migrations ORDER BY name')).rows.length === (await readdir('migrations')).filter(name => name.endsWith('.sql')).length, 'fresh complete checksummed migration chain, repeat-safe');
   for (const [id, branchStatus] of [['A', 'Active'], ['B', 'Active'], ['C', 'Inactive']]) await db.collection('branches').doc(id).set({
     branchName: 'Original synthetic branch ' + id, status: branchStatus, timezone: 'Asia/Manila' });
   const allLedger = { 'treatment_ledger.view': 'allow', 'treatment_ledger.purchase': 'allow', 'treatment_ledger.adjust': 'allow', 'treatment_ledger.reference': 'allow' };

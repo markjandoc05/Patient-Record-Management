@@ -8,6 +8,7 @@ import { assertVisitSaveVersion, nextVisitVersion, visitVersion, VisitVersionErr
 import { ASSISTING_STAFF_MAX_LENGTH, isEligibleVisitPerformer, visitDoctorIds, visitPerformerSnapshotFields } from './src/utils/visitPerformerPolicy';
 import { AppointmentServiceError, parseAppointmentServiceSelection, appointmentServiceSnapshot } from './backend/appointmentServices';
 import { mountServices } from './backend/services';
+import { mountPackageCatalogue } from './backend/packageCatalogue';
 import { mountClinicalCharts } from './backend/clinicalCharts';
 import { mountTreatmentLedger, applyVisitSessionUsage } from './backend/treatmentLedger';
 import { TreatmentLedgerError } from './src/treatmentLedgerPolicy';
@@ -72,6 +73,7 @@ mountDataApi(app);
 mountAccessApi(app);
 mountInventory(app);
 mountServices(app);
+mountPackageCatalogue(app);
 mountClinicalCharts(app);
 mountTreatmentLedger(app);
 app.get("/api/health", async (_req, res) => {

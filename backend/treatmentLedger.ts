@@ -4,11 +4,14 @@ import { db, type RecordTransaction } from './database';
 import { currentActor, assertCapability } from './permissions';
 import { hasBranchScope, hasCapability, hasGlobalBranchScope } from '../src/permissions';
 import { appointmentServiceSnapshot } from './appointmentServices';
+import { resolveCataloguePurchase } from './packageCatalogue';
+import { parseCataloguePurchase } from '../src/packageCataloguePolicy';
 import {
   TreatmentLedgerError, assertTreatmentUsageCompatible, canEditTreatmentOrNumber, canViewTreatmentLedger,
   ledgerFail, ledgerObject, ledgerRecordId, ledgerSessions, ledgerText, ledgerUuid, ledgerVersion,
   parseSessionUsage, parseTreatmentPurchase, treatmentBalance, treatmentVisitBinding,
   type TreatmentActor, type TreatmentLedgerResponse, type TreatmentUsage, type TreatmentVisitSnapshot,
+  type TreatmentPurchaseInput,
 } from '../src/treatmentLedgerPolicy';
 
 export { TreatmentLedgerError } from '../src/treatmentLedgerPolicy';
@@ -173,6 +176,7 @@ async function readLedger(tx: RecordTransaction, actor: Actor, patientId: string
     purchases: purchases.map(row => {
       const scoped = hasBranchScope(actor.profile, row.branch_id);
       return { id: row.id, patientId: row.patient_id, packageName: row.package_name, purchaseDate: purchaseDate(row.purchase_date), branchId: row.branch_id,
+        catalogue: row.catalogue_package_id ? { packageId: row.catalogue_package_id, version: row.catalogue_package_version } : null,
         branchNameSnapshot: row.branch_name_snapshot, timezoneSnapshot: row.timezone_snapshot, notes: scoped ? row.notes : '', orNumber: scoped ? row.or_number : null,
         version: row.version, recordedAt: dateText(row.recorded_at), actor: row.actor, metadataRedacted: !scoped,
         capabilities: { canEditNotes: scoped && hasCapability(actor.profile, 'treatment_ledger.purchase'), canAdjust: scoped && hasCapability(actor.profile, 'treatment_ledger.adjust'), canEditOrNumber: canEditTreatmentOrNumber(actor.profile, row.branch_id) },
@@ -221,24 +225,30 @@ export function mountTreatmentLedger(app: express.Express) {
   const result = async (tx: RecordTransaction, actor: Actor, patientId: string, commandId: string, eventId: string, replayed: boolean) => ({ ...(await readLedger(tx, actor, patientId)), command: { id: commandId, eventId, replayed } });
   route('get', '', async (_req, tx, actor, patientId) => readLedger(tx, actor, patientId));
   route('post', '/purchases', async (req, tx, actor, patientId) => {
-    const p = parseTreatmentPurchase(req.body);
-    assertCapability(actor.profile, 'treatment_ledger.purchase', { branchId: p.branchId });
-    assertBranch(actor, p.branchId);
-    if (Object.hasOwn(p, 'orNumber')) assertReference(actor, p.branchId);
-    const requestHash = commandHash('purchase', patientId, p), prior = await replay(tx, actor, p.commandId, requestHash);
-    if (prior) return { status: 200, body: await result(tx, actor, patientId, p.commandId, prior.id, true) };
+    const catalogueInput = Object.hasOwn(req.body ?? {}, 'catalogueSelection') ? parseCataloguePurchase(req.body) : null;
+    const input = catalogueInput ?? parseTreatmentPurchase(req.body);
+    assertCapability(actor.profile, 'treatment_ledger.purchase', { branchId: input.branchId });
+    assertBranch(actor, input.branchId);
+    if (Object.hasOwn(input, 'orNumber')) assertReference(actor, input.branchId);
+    // Replay the original submitted intent before resolving today's catalogue.
+    // A lost successful response must not create a second purchase after an edit.
+    const requestHash = commandHash('purchase', patientId, input), prior = await replay(tx, actor, input.commandId, requestHash);
+    if (prior) return { status: 200, body: await result(tx, actor, patientId, input.commandId, prior.id, true) };
+    const resolved = catalogueInput ? await resolveCataloguePurchase(tx, actor, input.branchId, catalogueInput.catalogueSelection) : null;
+    const p = resolved ? { ...input, packageName: resolved.packageName, lines: resolved.lines } : input as TreatmentPurchaseInput;
     const clinic = await branch(tx, p.branchId);
     if (clinic.status !== 'Active') ledgerFail(409, 'BRANCH_INACTIVE', 'Select an active clinic for a package purchase.');
     const snapshots = [];
     for (const selected of p.lines) snapshots.push(await appointmentServiceSnapshot(tx, { serviceId: selected.serviceId, expectedVersion: selected.expectedServiceVersion }, p.branchId));
     const purchaseId = randomUUID();
-    await tx.sql(`INSERT INTO treatment_ledger_purchases(id,command_id,patient_id,branch_id,package_name,purchase_date,branch_name_snapshot,timezone_snapshot,notes,or_number,actor)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`, [purchaseId, p.commandId, patientId, p.branchId, p.packageName, p.purchaseDate, String(clinic.branchName || ''), await timezone(tx), p.notes, p.orNumber ?? null, JSON.stringify(actorSnapshot(actor))]);
+    await tx.sql(`INSERT INTO treatment_ledger_purchases(id,command_id,patient_id,branch_id,package_name,purchase_date,branch_name_snapshot,timezone_snapshot,notes,or_number,actor,catalogue_package_id,catalogue_package_version)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13)`, [purchaseId, p.commandId, patientId, p.branchId, p.packageName, p.purchaseDate, String(clinic.branchName || ''), await timezone(tx), p.notes, p.orNumber ?? null, JSON.stringify(actorSnapshot(actor)), resolved?.catalogue.packageId ?? null, resolved?.catalogue.version ?? null]);
     const initialLines = p.lines.map((selected, i) => ({ id: randomUUID(), serviceId: selected.serviceId, serviceNameSnapshot: snapshots[i].serviceNameSnapshot,
       serviceCatalogueVersion: snapshots[i].serviceCatalogueVersion, purchasedSessions: selected.purchasedSessions }));
     for (const selected of initialLines) await tx.sql('INSERT INTO treatment_ledger_lines(id,purchase_id,service_id,service_name_snapshot,service_catalogue_version,purchased_sessions) VALUES($1,$2,$3,$4,$5,$6)', [selected.id, purchaseId, selected.serviceId, selected.serviceNameSnapshot, selected.serviceCatalogueVersion, selected.purchasedSessions]);
     const eventId = await addEvent(tx, actor, { commandId: p.commandId, requestHash, type: 'purchase', purchaseId, branchId: p.branchId,
-      metadata: { packageName: p.packageName, purchaseDate: p.purchaseDate, notes: p.notes, orNumber: p.orNumber ?? null, lines: initialLines } });
+      metadata: { packageName: p.packageName, purchaseDate: p.purchaseDate, notes: p.notes, orNumber: p.orNumber ?? null, lines: initialLines,
+        ...(resolved ? { catalogue: resolved.catalogue } : {}) } });
     return { status: 201, body: await result(tx, actor, patientId, p.commandId, eventId, false) };
   });
   route('patch', '/purchases/:purchaseId', async (req, tx, actor, patientId) => {

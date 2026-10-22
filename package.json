@@ -83,7 +83,11 @@
     "test:patient-gallery-policy": "node --import tsx scripts/test-patient-gallery-policy.ts",
     "test:patient-gallery-api": "node --import tsx scripts/test-patient-gallery-api.ts",
     "test:patient-gallery-ui": "node --import tsx scripts/test-patient-gallery-ui.ts",
-    "test:patient-gallery-transport": "node --import tsx scripts/test-patient-gallery-transport.ts"
+    "test:patient-gallery-transport": "node --import tsx scripts/test-patient-gallery-transport.ts",
+    "test:package-catalogue-policy": "node --import tsx scripts/test-package-catalogue-policy.ts",
+    "test:package-catalogue-api": "node --import tsx scripts/test-package-catalogue-api.ts",
+    "test:package-catalogue-migration": "node --import tsx scripts/test-package-catalogue-migration.ts",
+    "test:package-catalogue-ui": "node --import tsx scripts/test-package-catalogue-ui.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

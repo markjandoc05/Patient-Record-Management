@@ -4,6 +4,7 @@ import { ArrowLeft, Plus, Search } from 'lucide-react';
 import { canManageServices, parseServicePrice, priceInput, priceLabel, effectiveServicePrice, type PriceInput } from '../servicesPolicy';
 import { servicesRequest } from '../utils/servicesApi';
 import { auth } from '../platform';
+import PackageCatalogueDashboard from './PackageCatalogueDashboard';
 
 const inputClass = 'w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-600/20 disabled:bg-slate-100';
 const buttonClass = 'rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 disabled:opacity-50';
@@ -124,9 +125,15 @@ export default function ServicesDashboard({ userProfile, activeBranchId }: any) 
     accessGeneration.current = { scope, generation: accessGeneration.current.generation + 1 };
     return () => { accessGeneration.current.generation++; };
   }, [scope]);
-  return <ServicesWorkspace key={scope} scope={scope} accessGeneration={accessGeneration} userProfile={userProfile} activeBranchId={activeBranchId} />;
+  return <CatalogueSections key={scope} scope={scope} accessGeneration={accessGeneration} userProfile={userProfile} activeBranchId={activeBranchId} />;
 }
-function ServicesWorkspace({ userProfile, activeBranchId, scope, accessGeneration }: any) {
+function CatalogueSections(props: any) {
+  const [section, setSection] = useState('services');
+  return section === 'packages' && uiCan(props.userProfile, 'packages.view')
+    ? <PackageCatalogueDashboard userProfile={props.userProfile} activeBranchId={props.activeBranchId} onServices={() => setSection('services')} />
+    : <ServicesWorkspace {...props} onPackages={() => setSection('packages')} />;
+}
+function ServicesWorkspace({ userProfile, activeBranchId, scope, accessGeneration, onPackages }: any) {
   const writable = uiCan(userProfile, 'services.manage');
   const pricing = uiCan(userProfile, 'services.pricing');
   const [data, setData] = useState<any>(null), [categories, setCategories] = useState<any[]>([]);
@@ -171,6 +178,7 @@ function ServicesWorkspace({ userProfile, activeBranchId, scope, accessGeneratio
   const saved = () => { if (!lifetime.current.active) return; close(); setRefresh(v => v + 1); };
   return <div className="p-4 text-slate-900 sm:p-6 lg:p-8">
     {editor ? <ServiceEditor key={editor.key} service={editor.service} branches={editor.branches} categories={categories} writable={writable} pricing={pricing} loadError={error} onClose={close} onSaved={saved} onReload={() => editor.service ? open(editor.service.id) : saved()} scope={scope} accessGeneration={accessGeneration} /> : <div className="space-y-6">
+      {!managingCategories && uiCan(userProfile, 'packages.view') && <nav aria-label="Service catalogues" className="flex gap-2"><button type="button" aria-current="page" className={primaryClass}>Services</button><button type="button" className={buttonClass} onClick={onPackages}>Packages</button></nav>}
       <header className="flex flex-wrap items-start justify-between gap-4"><div><h1 className="text-2xl font-semibold tracking-tight text-slate-950">Services</h1><p className="mt-2 max-w-2xl text-sm text-slate-600">Manage treatments, estimated duration, branch availability, and current prices.</p></div>{writable && <div className="flex flex-wrap gap-2"><button className={buttonClass} disabled={loading || !!error} onClick={() => setManagingCategories(v => !v)}>{managingCategories ? 'Close categories' : 'Manage categories'}</button><button className={`${primaryClass} inline-flex items-center gap-2`} disabled={loading || !!error} onClick={() => { close(); setEditor({ service: null, branches: data.branches, key: crypto.randomUUID() }); }}><Plus size={16} /> Create service</button></div>}</header>
       <div className="flex flex-wrap gap-3"><div className="relative min-w-0 flex-1 basis-64"><Search className="absolute left-3 top-3 h-4 w-4 text-slate-600" /><input aria-label="Search services" className={`${inputClass} pl-9`} placeholder="Search services" value={q} onChange={e => setQ(e.target.value)} /></div><select aria-label="Filter by category" className={`${inputClass} sm:w-52`} value={category} onChange={e => { setCategory(e.target.value); setPage(1); }}><option value="">All categories</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}{!c.active ? ' (inactive)' : ''}</option>)}</select><select aria-label="Filter by service status" className={`${inputClass} sm:w-40`} value={status} onChange={e => { setStatus(e.target.value); setPage(1); }}><option value="all">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
       {error ? <Failure error={error} retry={() => setRefresh(v => v + 1)} /> : loading ? <p role="status" className="py-10 text-sm text-slate-600">Loading services…</p> : data?.services.length === 0 ? <div role="status" className="border-y border-slate-200 py-12"><h2 className="font-semibold text-slate-900">{q || category || status !== 'all' ? 'No matching services' : 'No services yet'}</h2><p className="mt-2 text-sm text-slate-600">{q || category || status !== 'all' ? 'Adjust the search or filters.' : writable ? 'Create a service and enable the branches where it is offered.' : 'An administrator can configure the service catalogue.'}</p></div> : <>
