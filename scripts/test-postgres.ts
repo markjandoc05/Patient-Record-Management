@@ -1,3 +1,4 @@
+import { expectedBookingContext } from '../src/utils/visitPricingPolicy';
 import { resetDisposablePlatformRecords } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { app } from '../server';
@@ -48,6 +49,10 @@ for (const role of ['admin', 'staff', 'doctor', 'pending', 'support_developer'])
   tokens[role] = { cookie: `${secure ? '__Host-vine_session' : 'vine_session'}=${token}`, csrf };
 }
 async function post(endpoint: string, body: any, role?: string, extra?: Record<string, string>) {
+  if (endpoint === '/api/records/visits' && body?.appointmentId && !Object.hasOwn(body, 'expectedBookingContext')) {
+    const booking = (await db.collection('appointments').doc(body.appointmentId).get()).data();
+    body = { ...body, expectedBookingContext: expectedBookingContext(booking) };
+  }
   const token = role ? tokens[role] : undefined;
   return fetch(`http://127.0.0.1:${port}${endpoint}`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', ...(token ? { Cookie: token.cookie, Authorization: `Bearer ${token.csrf}` } : {}), ...extra }, body: JSON.stringify(body) });
 }

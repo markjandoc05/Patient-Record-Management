@@ -23,8 +23,19 @@ class Fixture {
   constructor(kind: ComponentName) {
     globals.servicesTestInvalidations = 0;
     globals.servicesTestAuth.currentUser = { uid: 'admin', email: 'admin@example.invalid', getRequestToken: async () => 'synthetic' };
-    globals.fetch = (url: string, init: any) => new Promise(resolve => this.requests.push({ url, init,
-      deliver: (body, status = 200) => resolve(new Response(JSON.stringify(body), { status })) }));
+    globals.fetch = (url: string, init: any) => new Promise(resolve => {
+      const request = { url, init, deliver: (body: any, status = 200) => resolve(new Response(JSON.stringify(body), { status })) };
+      this.requests.push(request);
+      // Linked Visit drafts now read the current authorized appointment before
+      // rendering performer fields. Preserve the ordinary-role test assertions.
+      const query = url === '/api/data/query' ? JSON.parse(init.body) : null;
+      if (query?.kind === 'document' && query.path?.startsWith('appointments/')) {
+        const id = query.path.slice('appointments/'.length);
+        const booking = this.props.appointment?.id === id ? this.props.appointment
+          : (this.props.appointments || globals.historyRows?.appointments || []).find((row: any) => row.id === id);
+        request.deliver({ document: { id, data: booking } });
+      }
+    });
     this.renderer = new Renderer(harness.components[kind]);
     this.props = { patients: [{ id: 'patient', name: 'Synthetic Patient' }], users: users(),
       branches: [{ id: 'A', branchName: 'Branch A', status: 'Active' }, { id: 'B', branchName: 'Branch B', status: 'Active' }],
@@ -40,7 +51,7 @@ class Fixture {
   node(id: string) { const node = find(this.renderer.tree, value => value.props?.id === id); assert.ok(node, 'missing ' + id); return node; }
   button(label: string) { const node = find(this.renderer.tree, value => value.type === 'button' && text(value).trim() === label); assert.ok(node, 'missing ' + label); return node; }
   async change(id: string, value: string) { this.node(id).props.onChange({ target: { value } }); await this.settle(); }
-  latestSave() { return this.requests.filter(value => ['POST', 'PATCH'].includes(value.init.method)).at(-1); }
+  latestSave() { return this.requests.filter(value => value.url !== '/api/data/query' && ['POST', 'PATCH'].includes(value.init.method)).at(-1); }
   async loaded() { for (const request of this.requests.filter(value => value.init.method === 'GET')) request.deliver({ services: [], total: 0 }); await this.settle(); }
   async save() { find(this.renderer.tree, value => value.type === 'form').props.onSubmit({ preventDefault() {} }); await this.settle(); }
   scope() { this.props.users = this.props.users.map((user: any) => user.id === 'admin' ? { ...user, role: 'manager', assignedBranches: ['A'] } : user); this.props.userRole = 'manager'; this.render(); }

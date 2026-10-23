@@ -1,3 +1,4 @@
+import { expectedBookingContext } from '../src/utils/visitPricingPolicy';
 import { assertCurrentMigrationChain } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
@@ -24,6 +25,12 @@ let server: ReturnType<typeof app.listen> | undefined;
 let checks = 0, slot = 0;
 function check(value: unknown, message: string) { assert.ok(value, message); checks++; }
 async function request(route: string, method = 'GET', body?: any, actor = 'admin') {
+  // Sequential linked-creation fixtures model reviewing the latest booking.
+  if (method === 'POST' && route === '/api/records/visits' && body?.appointmentId
+    && !Object.hasOwn(body, 'expectedBookingContext')) {
+    const booking = (await db.collection('appointments').doc(body.appointmentId).get()).data();
+    body = { ...body, expectedBookingContext: expectedBookingContext(booking) };
+  }
   // Sequential workflow tests model an editor opening the current saved Visit.
   if (method === 'PATCH' && /^\/api\/records\/visits\/[^/]+$/.test(route) && !Object.hasOwn(body || {}, 'expectedVisitVersion')) {
     const record = (await db.collection('visits').doc(decodeURIComponent(route.split('/').at(-1)!)).get()).data();

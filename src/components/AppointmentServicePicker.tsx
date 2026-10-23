@@ -24,9 +24,10 @@ const choiceLabel = (choice: SelectedAppointmentService) => `${choice.name} · $
 // selection and an explicitly requested review are separate transitions. Only a
 // new Visit's booked proposal can be confirmed automatically, after checking its
 // unchanged version and current eligibility; historical Visit snapshots stay put.
-export default function AppointmentServicePicker({ branchId, readOnly, recorded, choice, onChange, onReviewRequired, unresolved, error, fieldId = 'appointment-service', label = 'Service (optional)' }: {
+export default function AppointmentServicePicker({ branchId, readOnly, recorded, choice, onChange, onBookedVerified, onReviewRequired, unresolved, error, fieldId = 'appointment-service', label = 'Service (optional)' }: {
   branchId: string; readOnly: boolean; recorded?: any; choice: AppointmentServiceChoice;
   onChange: (choice: AppointmentServiceChoice) => void; onReviewRequired: () => void;
+  onBookedVerified?: (choice: AppointmentServiceChoice) => void;
   unresolved: boolean; error?: string; fieldId?: string; label?: string;
 }) {
   const principal = currentPermissionProfile();
@@ -91,12 +92,12 @@ export default function AppointmentServicePicker({ branchId, readOnly, recorded,
         const candidate = eligibleChoice(service, branchId);
         setReview({ key: selectionKey, request: controller, candidate,
           name: service.name, duration: service.default_duration_minutes, version: service.version, ready: true, error: '' });
-        if (verifyBooked) onChange(candidate?.serviceId === selected.serviceId && candidate.expectedVersion === selected.expectedVersion
+        if (verifyBooked) (onBookedVerified || onChange)(candidate?.serviceId === selected.serviceId && candidate.expectedVersion === selected.expectedVersion
           ? candidate : { ...selected, verificationPending: false, reviewRequired: true });
       } catch (failure: any) {
         if (current() && failure.name !== 'AbortError') {
           setReview({ key: selectionKey, request: controller, candidate: null, name: '', duration: 0, version: 0, ready: true, error: failure.message });
-          if (verifyBooked) onChange({ ...selected, verificationPending: false, reviewRequired: true });
+          if (verifyBooked) (onBookedVerified || onChange)({ ...selected, verificationPending: false, reviewRequired: true });
         }
       }
     })();

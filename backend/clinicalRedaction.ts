@@ -1,4 +1,4 @@
-import { hasCapability, type PermissionActor } from '../src/permissions';
+import { hasCapability, hasGlobalBranchScope, type PermissionActor } from '../src/permissions';
 
 // Closed operational projections: new/unknown JSONB fields are never assumed safe.
 const common = `id patientId patientID patientName name branchId branchName homeBranchId homeBranchName
@@ -13,8 +13,8 @@ const fields: Record<string, Set<string>> = {
   patients: new Set((common + ` firstName middleName lastName suffix fullName sex gender birthdate dateOfBirth birthdateType birthYear birthMonth
     birthDateSource birthDatePrecision birthday birthDateStatus estimatedAge estimatedAgeAsOf estimatedBirthYear emergencyContact age ageAtRegistration recordedAge ageRecordedAt ageAsOfDate contactNumber email address
     emergencyContactName emergencyContactRelationship emergencyContactNumber referralSource occupation civilStatus nationality`).split(/\s+/)),
-  appointments: new Set(common.split(/\s+/)),
-  visits: new Set((common + ' performedByUserId performedByNameSnapshot performedByRoleSnapshot performedByDesignationSnapshot').split(/\s+/)),
+  appointments: new Set((common + ' specialPrice specialPriceUpdatedAt specialPriceUpdatedByUid specialPriceUpdatedByName bookingQuote bookingPricingRevision').split(/\s+/)),
+  visits: new Set((common + ' performedByUserId performedByNameSnapshot performedByRoleSnapshot performedByDesignationSnapshot visitQuote').split(/\s+/)),
 };
 export const safeAuditQueryFields = new Set(['action', 'resource', 'resourceId', 'branchId', 'timestamp', 'userId', 'userName', 'userRole', 'eventType', 'source']);
 function scalar(value: any): any {
@@ -22,12 +22,30 @@ function scalar(value: any): any {
   if (value && typeof value === 'object' && typeof value.__timestamp === 'string') return { __timestamp: value.__timestamp };
   return undefined;
 }
+const bookingQuoteFields = new Set(`version currency branchId serviceId serviceCatalogueVersion servicePrice specialPrice total source quotedAt quotedByUid quotedByName`.split(/\s+/));
+const visitQuoteFields = new Set([...bookingQuoteFields, 'bookingAppointmentId', 'bookingPricingRevision']);
+function operationalValue(collection: string, key: string, value: any): any {
+  if (collection === 'appointments' && key === 'bookingQuote' || collection === 'visits' && key === 'visitQuote') {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const allowed = key === 'visitQuote' ? visitQuoteFields : bookingQuoteFields;
+    return Object.fromEntries(Object.entries(value).filter(([field, entry]) => allowed.has(field) && scalar(entry) !== undefined)
+      .map(([field, entry]) => [field, scalar(entry)]));
+  }
+  return scalar(value);
+}
 export function operationalField(collection: string, field: string): boolean { return fields[collection]?.has(field) === true; }
 export function redactClinicalData(collection: string, data: any, actor: PermissionActor): any {
+  // Visit clinical history remains shared under the existing read policy. Price
+  // quotes retain the operating-branch boundary used by bookings and catalogue.
+  if (collection === 'visits' && data && !hasGlobalBranchScope(actor)
+    && (!Array.isArray(actor.assignedBranches) || !actor.assignedBranches.includes(data.branchId))
+    && ['visitQuote', 'creationRecordHash', 'creationIntentHash'].some(field => Object.hasOwn(data, field))) {
+    data = Object.fromEntries(Object.entries(data).filter(([field]) => !['visitQuote', 'creationRecordHash', 'creationIntentHash'].includes(field)));
+  }
   if (!data || hasCapability(actor, 'clinical.view')) return data;
   if (fields[collection]) return Object.fromEntries(Object.entries(data)
-    .filter(([key, value]) => operationalField(collection, key) && scalar(value) !== undefined)
-    .map(([key, value]) => [key, scalar(value)]));
+    .filter(([key, value]) => operationalField(collection, key) && operationalValue(collection, key, value) !== undefined)
+    .map(([key, value]) => [key, operationalValue(collection, key, value)]));
   if (/\/privateNotes$/.test(collection)) return null;
   if (collection === 'audit_logs') {
     // Legacy audit bodies can contain clinical text. Access events contain only validated policy metadata.
@@ -38,10 +56,17 @@ export function redactClinicalData(collection: string, data: any, actor: Permiss
   return data;
 }
 export function assertClinicalQuery(actor: PermissionActor, collection: string, constraints: any[]) {
+  // Never let filtering/sorting on a quote object infer hidden branch amounts.
+  if (collection === 'visits' && constraints.some(constraint => constraint.field === 'visitQuote'
+    || ['creationRecordHash', 'creationIntentHash'].includes(constraint.field) && !hasGlobalBranchScope(actor))) {
+    throw Object.assign(new Error('Visit quote query fields are not permitted'), { status: 403 });
+  }
   if (hasCapability(actor, 'clinical.view')) return;
   const permitted = collection === 'audit_logs' ? safeAuditQueryFields : fields[collection];
   if (!permitted) return;
-  if (constraints.some(constraint => constraint.field && !permitted.has(constraint.field))) {
+  if (constraints.some(constraint => constraint.field && (!permitted.has(constraint.field)
+    || collection === 'appointments' && constraint.field === 'bookingQuote'
+    || collection === 'visits' && constraint.field === 'visitQuote'))) {
     throw Object.assign(new Error('Clinical query fields are not permitted'), { status: 403 });
   }
 }

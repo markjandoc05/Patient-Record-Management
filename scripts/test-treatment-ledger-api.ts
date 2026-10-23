@@ -1,3 +1,4 @@
+import { expectedBookingContext } from '../src/utils/visitPricingPolicy';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -7,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { app } from '../server';
 import { db, pool } from '../backend/database';
 import { migrateDatabase } from './migrate-database';
+import { legacyVisitFingerprint469ff1f, legacyVisitIntentFingerprint469ff1f } from './visit-retry-test-support';
 
 const database = new URL(process.env.DATABASE_URL || 'postgresql://invalid');
 const configuredOrigin = new URL(process.env.APP_URL || 'https://invalid');
@@ -22,6 +24,12 @@ const sessions = new Map<string, { cookie: string; csrf: string }>();
 let server: ReturnType<typeof app.listen> | undefined, checks = 0, slot = 0;
 function check(value: unknown, message: string) { assert.ok(value, message); checks++; }
 async function request(route: string, method = 'GET', body?: any, actor = 'admin', extraHeaders: Record<string, string> = {}) {
+  // Sequential linked-creation fixtures model reviewing the latest booking.
+  if (method === 'POST' && route === '/api/records/visits' && body?.appointmentId
+    && !Object.hasOwn(body, 'expectedBookingContext')) {
+    const booking = (await db.collection('appointments').doc(body.appointmentId).get()).data();
+    body = { ...body, expectedBookingContext: expectedBookingContext(booking) };
+  }
   // Sequential workflow tests model an editor opening the current saved Visit.
   if (method === 'PATCH' && /^\/api\/records\/visits\/[^/]+$/.test(route) && !Object.hasOwn(body || {}, 'expectedVisitVersion')) {
     const record = (await db.collection('visits').doc(decodeURIComponent(route.split('/').at(-1)!)).get()).data();
@@ -204,10 +212,41 @@ try {
   const directReplay = await request('/api/records/visits', 'POST', directPayload); status(directReplay, 200, 'lost Visit response retries stable clientVisitId');
   check(directReplay.body.id === directId && await eventCount() === eventsAfterUse, 'Visit retry creates neither new Visit nor usage event');
   status(await request('/api/records/visits', 'POST', { ...directPayload, notes: 'Changed retry' }), 409, 'same Visit/command identity changed payload denied');
+  // Retain a real consumed-session Visit across the pre-quote code upgrade.
+  // Restore the current-format fixture afterward for the existing edit checks.
+  const currentRetryRecord = await read('visits', directId), retainedRetryRecord = { ...currentRetryRecord };
+  delete retainedRetryRecord.visitQuote;
+  retainedRetryRecord.creationRecordHash = legacyVisitFingerprint469ff1f(retainedRetryRecord);
+  check(retainedRetryRecord.creationIntentHash === legacyVisitIntentFingerprint469ff1f(directPayload),
+    'retained usage fixture keeps the exact pre-quote submitted intent fingerprint');
+  await db.collection('visits').doc(directId).set(retainedRetryRecord);
+  try {
+    const retainedRecords = JSON.stringify((await pool.query('SELECT * FROM app_records ORDER BY collection_path,id')).rows);
+    const retainedLedger = await sqlSnapshot();
+    const upgradeReplay = await request('/api/records/visits', 'POST', directPayload);
+    status(upgradeReplay, 200, 'unchanged retained session-usage Visit retries across quote upgrade');
+    check(upgradeReplay.body.id === directId && upgradeReplay.body.visitVersion === retainedRetryRecord.visitVersion,
+      'legacy session-usage retry preserves Visit identity and version');
+    check(JSON.stringify((await pool.query('SELECT * FROM app_records ORDER BY collection_path,id')).rows) === retainedRecords,
+      'legacy session-usage retry preserves all records, historical quote absence, patient counters, timestamps and audits');
+    check(await sqlSnapshot() === retainedLedger,
+      'legacy session-usage retry changes no purchase, line balance, usage binding or immutable session event');
+  } finally {
+    await db.collection('visits').doc(directId).set(currentRetryRecord);
+  }
   const editBase = { ...directPayload, clientVisitId: undefined, sessionUsage: undefined, serviceSelection: undefined };
   status(await request('/api/records/visits/' + directId, 'PATCH', { ...editBase, notes: 'Edited clinical documentation' }), 200, 'repeat save retains explicit usage');
   status(await request('/api/records/visits/' + directId, 'PATCH', { ...editBase, notes: 'Edited clinical documentation' }), 200, 'identical repeat save safe');
   check(await eventCount() === eventsAfterUse && lineIn(await ledger(), line.id).usedSessions === 1, 'ordinary repeated saves never auto-deduct sessions');
+  const usageBeforePrice = await sqlSnapshot();
+  status(await request('/api/records/visits/' + directId, 'PATCH', { ...editBase, specialPrice: '125.5' }), 200,
+    'active session usage permits a separate Visit Special Price quote');
+  check((await read('visits', directId)).visitQuote.total === '125.50' && await sqlSnapshot() === usageBeforePrice,
+    'Special Price changes no package balance, immutable usage event or performance binding');
+  status(await request('/api/records/visits/' + directId, 'PATCH', { ...editBase, specialPrice: null }), 200,
+    'active session usage permits clearing a separate Visit Special Price quote');
+  check((await read('visits', directId)).visitQuote.total === '0.00' && await sqlSnapshot() === usageBeforePrice,
+    'clearing Special Price restores frozen base without touching consumed sessions');
   const beforeChangedRetry = await sqlSnapshot(), visitBeforeChangedRetry = JSON.stringify(await read('visits', directId));
   const changedRetry = await request('/api/records/visits', 'POST', directPayload);
   status(changedRetry, 409, 'original create retry conflicts after ordinary PATCH supersedes clinical notes');

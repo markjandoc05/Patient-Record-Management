@@ -8,9 +8,12 @@ import { CheckCircle2, Clock3, Search } from 'lucide-react';
 import { developerRoles, hasAdministrativeAccess } from '../rbac';
 import { db, auth } from '../platform';
 import { CustomDatePicker } from './CustomDatePicker';
-import { createAppointmentRecord, updateAppointmentRecord } from '../utils/recordApi';
+import { createAppointmentRecord, getAppointmentRecord, updateAppointmentRecord } from '../utils/recordApi';
 import { formatDateTime } from '../utils';
 import { getActiveDatePrefix, getActiveDateTimeInput } from '../utils/timezone';
+import { appointmentPricingRevision, parseAppointmentSpecialPrice } from '../utils/appointmentSpecialPrice';
+import { appointmentBookingPricePreview, readAppointmentBookingQuote } from '../utils/appointmentBookingQuote';
+import { priceLabel } from '../servicesPolicy';
 
 const timeSlots = Array.from({ length: 19 }, (_, index) => {
   const totalMinutes = 10 * 60 + index * 30;
@@ -22,6 +25,15 @@ const formatSlot = (time: string) => {
   const hour = hourValue % 12 || 12;
   return `${hour}:${String(minute).padStart(2, '0')} ${hourValue >= 12 ? 'PM' : 'AM'}`;
 };
+
+const specialPriceFormatter = new Intl.NumberFormat('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function specialPriceDisplay(value: string, editing: boolean) {
+  if (editing) return value;
+  try {
+    const amount = parseAppointmentSpecialPrice(value);
+    return amount === null ? value : specialPriceFormatter.format(Number(amount));
+  } catch { return value; }
+}
 
 type AppointmentFormProps = {
   patients: any[];
@@ -66,6 +78,21 @@ function AppointmentFormWorkspace({
   const [logs, setLogs] = useState<any[]>([]);
   const [serviceChoice, setServiceChoice] = useState<AppointmentServiceChoice>({ kind: 'unchanged' });
   const [serviceBranchNotice, setServiceBranchNotice] = useState(false);
+  const [specialPrice, setSpecialPrice] = useState(() => appointment?.specialPrice == null ? '' : String(appointment.specialPrice));
+  const [specialPriceEditing, setSpecialPriceEditing] = useState(false);
+  const [specialPriceChanged, setSpecialPriceChanged] = useState(false);
+  const [specialPriceNotice, setSpecialPriceNotice] = useState(false);
+  // A prop refresh cannot silently acknowledge pricing that this draft never reviewed.
+  const [pricingRecord, setPricingRecord] = useState<any>(() => appointment
+    ? { ...appointment, bookingQuote: appointment.bookingQuote && { ...appointment.bookingQuote } } : undefined);
+  const [pricingReview, setPricingReview] = useState({ conflict: false, loading: false, candidate: null as any, error: '' });
+  const pricingReviewLifetime = useRef({ active: false, generation: 0, request: null as AbortController | null });
+  useLayoutEffect(() => {
+    pricingReviewLifetime.current.active = true; pricingReviewLifetime.current.generation++;
+    setPricingReview(current => current.loading || current.candidate || current.error
+      ? { ...current, loading: false, candidate: null, error: '' } : current);
+    return () => { pricingReviewLifetime.current.active = false; pricingReviewLifetime.current.generation++; pricingReviewLifetime.current.request?.abort(); };
+  }, [branchId, patientId]);
   const saveLifetime = useRef({ active: false, generation: 0, request: null as AbortController | null });
   useLayoutEffect(() => {
     saveLifetime.current.active = true; saveLifetime.current.generation++;
@@ -165,7 +192,8 @@ function AppointmentFormWorkspace({
 
   const handleBranchChange = (nextBranchId: string) => {
     if (nextBranchId !== branchId) {
-      if (!appointment?.serviceId && serviceChoice.kind === 'selected') {
+      clearSpecialPriceForContext();
+      if (!pricingRecord?.serviceId && serviceChoice.kind === 'selected') {
         setServiceChoice({ kind: 'unchanged' });
         setServiceBranchNotice(true);
       }
@@ -182,20 +210,85 @@ function AppointmentFormWorkspace({
     if (!appointment && date === today && selectedTime && selectedTime <= nowTime) setSelectedTime('');
   };
 
-  const serviceUnresolved = (serviceChoice.kind === 'unchanged' && Boolean(appointment?.serviceId) && branchId !== appointment.branchId)
+  const serviceUnresolved = (serviceChoice.kind === 'unchanged' && Boolean(pricingRecord?.serviceId) && branchId !== pricingRecord.branchId)
     || (serviceChoice.kind === 'selected' && (serviceChoice.branchId !== branchId || serviceChoice.reviewRequired));
+  const savedBookingQuote = readAppointmentBookingQuote(pricingRecord);
+  const keepingRecordedService = serviceChoice.kind === 'unchanged' && branchId === pricingRecord?.branchId;
+  const serviceQuotePrice = serviceChoice.kind === 'selected' && serviceChoice.branchId === branchId
+    && !serviceChoice.reviewRequired && !serviceChoice.verificationPending
+    ? serviceChoice.referencePrice : keepingRecordedService ? savedBookingQuote?.servicePrice ?? null : null;
+  const bookingPrice = appointmentBookingPricePreview(serviceQuotePrice, specialPrice);
+  const showingSavedQuote = keepingRecordedService && !specialPriceChanged && Boolean(savedBookingQuote);
+  const hasSummaryService = serviceChoice.kind === 'selected' && serviceChoice.branchId === branchId
+    || keepingRecordedService && Boolean(pricingRecord?.serviceId);
+  const clearSpecialPriceForContext = () => {
+    if (!specialPrice.trim()) return;
+    setSpecialPrice('');
+    setSpecialPriceChanged(true);
+    setSpecialPriceNotice(true);
+    clearError('specialPrice');
+  };
+  const serviceContext = (choice: AppointmentServiceChoice) => JSON.stringify(choice.kind === 'selected'
+    ? [choice.serviceId, choice.expectedVersion]
+    : choice.kind === 'unchanged' ? [pricingRecord?.serviceId ?? null, pricingRecord?.serviceCatalogueVersion ?? null] : [null, null]);
   const changeService = (next: AppointmentServiceChoice) => {
+    if (isReadOnly || isSaving) return;
+    if (serviceContext(next) !== serviceContext(serviceChoice)) clearSpecialPriceForContext();
     setServiceChoice(next);
     clearError('serviceSelection');
     setSaveError('');
   };
   const requireServiceReview = () => setServiceChoice(current => current.kind === 'selected' ? { ...current, reviewRequired: true } : current);
 
+  const latestPricing = pricingReview.candidate;
+  const latestQuote = readAppointmentBookingQuote(latestPricing);
+  const reviewBase = serviceChoice.kind === 'selected' && serviceChoice.branchId === branchId
+    && !serviceChoice.reviewRequired && !serviceChoice.verificationPending ? serviceChoice.referencePrice
+    : serviceChoice.kind === 'unchanged' && latestPricing?.branchId === branchId ? latestQuote?.servicePrice ?? null : null;
+  const reviewedDraftPrice = appointmentBookingPricePreview(reviewBase, specialPrice);
+  const canUseReviewedPricing = Boolean(latestPricing) && latestPricing.branchId === pricingRecord?.branchId
+    && latestPricing.patientId === pricingRecord?.patientId && !latestPricing.isArchived && !latestPricing.visitHistoryCreated
+    && (latestPricing.status !== 'Completed' || canModifySealed);
+  const reviewLatestPricing = async () => {
+    if (!appointment?.id || isReadOnly || isSaving || !pricingReview.conflict) return;
+    pricingReviewLifetime.current.request?.abort();
+    const controller = new AbortController(), generation = pricingReviewLifetime.current.generation;
+    pricingReviewLifetime.current.request = controller;
+    const current = () => pricingReviewLifetime.current.active && pricingReviewLifetime.current.generation === generation
+      && pricingReviewLifetime.current.request === controller && !controller.signal.aborted;
+    setPricingReview(value => ({ ...value, loading: true, candidate: null, error: '' }));
+    try {
+      const latest = await getAppointmentRecord(appointment.id, { signal: controller.signal, current });
+      if (!current()) return;
+      appointmentPricingRevision(latest);
+      setPricingReview({ conflict: true, loading: false, candidate: latest, error: '' });
+    } catch (error: any) {
+      if (current() && error.name !== 'AbortError') setPricingReview({ conflict: true, loading: false, candidate: null,
+        error: error.message || 'Could not review the latest pricing. Your draft has been kept.' });
+    }
+  };
+  const useReviewedPricing = () => {
+    if (isReadOnly || isSaving || pricingReview.loading || !canUseReviewedPricing) return;
+    setPricingRecord(latestPricing);
+    setPricingReview({ conflict: false, loading: false, candidate: null, error: '' });
+    clearError('specialPrice');
+    setSaveError('');
+  };
+
   const saveAppointment = async () => {
-    if (isSaving || isReadOnly) return;
+    if (isSaving || isReadOnly || pricingReview.conflict) return;
     const finalStatus = status;
     const appointmentDate = selectedDate && selectedTime ? `${selectedDate}T${selectedTime}` : '';
     const validationErrors: Record<string, string> = {};
+    let quotedPrice: string | null = null;
+    let expectedPricingRevision: number | undefined;
+    if (specialPriceChanged) {
+      try {
+        quotedPrice = parseAppointmentSpecialPrice(specialPrice);
+        if (appointment) expectedPricingRevision = appointmentPricingRevision(pricingRecord);
+      }
+      catch (error: any) { validationErrors.specialPrice = error.message; }
+    }
     if (serviceUnresolved) validationErrors.serviceSelection = 'Choose an eligible Service, confirm the reviewed Service, or explicitly remove it before saving.';
     if (!patientId || !selectedPatient) validationErrors.patientId = 'Select a patient from the results.';
     if (!branchId) validationErrors.branchId = 'Select the clinic for this appointment.';
@@ -218,6 +311,8 @@ function AppointmentFormWorkspace({
     setErrors({});
     setIsSaving(true);
     const payload = {
+      ...(expectedPricingRevision === undefined ? {} : { expectedPricingRevision }),
+      ...(specialPriceChanged && (appointment || quotedPrice !== null) ? { specialPrice: quotedPrice } : {}),
       ...(serviceChoice.kind === 'unchanged' ? {} : { serviceSelection: serviceChoice.kind === 'removed' ? null : { serviceId: serviceChoice.serviceId, expectedVersion: serviceChoice.expectedVersion } }),
       patientId,
       appointmentDate,
@@ -245,6 +340,11 @@ function AppointmentFormWorkspace({
     } catch (error: any) {
       if (!current() || error.name === 'AbortError') return;
       if (error.code === 'SERVICE_VERSION_CHANGED') requireServiceReview();
+      if (error.code === 'SPECIAL_PRICE_REVIEW_REQUIRED') setErrors(current => ({ ...current, specialPrice: error.message }));
+      if (error.code === 'SPECIAL_PRICE_CONTEXT_CHANGED') {
+        pricingReviewLifetime.current.request?.abort();
+        setPricingReview({ conflict: true, loading: false, candidate: null, error: '' });
+      }
       console.error('Error saving appointment:', error);
       setSaveError(error?.message || 'The appointment could not be saved. Please try again.');
     } finally {
@@ -297,7 +397,40 @@ function AppointmentFormWorkspace({
               <div className="space-y-1.5"><label htmlFor="appointment-branch" className="text-xs font-semibold text-slate-600">Clinic <span className="text-rose-500">*</span></label><select id="appointment-branch" data-appointment-field="branchId" value={branchId} onChange={event => handleBranchChange(event.target.value)} disabled={isReadOnly} className={fieldClass('branchId', `h-[42px] ${isReadOnly ? 'cursor-not-allowed bg-slate-50 text-slate-500' : ''}`)}><option value="">Select clinic</option>{branches.filter(branch => branch.status === 'Active' || branch.id === appointment?.branchId).map(branch => <option key={branch.id} value={branch.id}>{branch.branchName}</option>)}</select>{errors.branchId && <p className="text-xs font-medium text-rose-600">{errors.branchId}</p>}</div>
 
               {serviceBranchNotice && <p role="status" className="text-xs text-amber-700">Clinic changed. Choose a Service for this clinic, or continue without a Service.</p>}
-              <AppointmentServicePicker key={branchId} branchId={branchId} readOnly={isReadOnly} recorded={appointment} choice={serviceChoice} onChange={changeService} onReviewRequired={requireServiceReview} unresolved={serviceUnresolved} error={errors.serviceSelection} />
+              <fieldset disabled={isSaving} className="min-w-0 space-y-4 border-0 p-0">
+                <AppointmentServicePicker key={branchId} branchId={branchId} readOnly={isReadOnly} recorded={pricingRecord} choice={serviceChoice} onChange={changeService} onReviewRequired={requireServiceReview} unresolved={serviceUnresolved} error={errors.serviceSelection} />
+                <div className="space-y-1.5">
+                  <label htmlFor="appointment-special-price" className="text-xs font-semibold text-slate-600">Special Price:</label>
+                  <div className="relative"><span aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-600">₱</span><input id="appointment-special-price" data-appointment-field="specialPrice" type="text" inputMode="decimal" maxLength={32} value={specialPriceDisplay(specialPrice, specialPriceEditing)} disabled={isReadOnly || isSaving} aria-invalid={Boolean(errors.specialPrice)} aria-describedby={`appointment-special-price-hint${errors.specialPrice ? ' appointment-special-price-error' : ''}`} onFocus={() => { if (!isReadOnly && !isSaving) setSpecialPriceEditing(true); }} onBlur={() => setSpecialPriceEditing(false)} onChange={event => { if (isReadOnly || isSaving) return; setSpecialPriceEditing(true); setSpecialPrice(event.target.value); setSpecialPriceChanged(true); setSpecialPriceNotice(false); clearError('specialPrice'); setSaveError(''); }} placeholder="Optional amount" className={fieldClass('specialPrice', `h-[42px] pl-7 ${(isReadOnly || isSaving) ? 'cursor-not-allowed bg-slate-50 text-slate-500' : ''}`)} /></div>
+                  <p id="appointment-special-price-hint" className="text-xs text-slate-600">Overrides the Service price for this booking quote. Leave blank to use the Service price. ₱0 means Free.</p>
+                  {specialPriceNotice && <p role="status" className="text-xs text-amber-700">Special Price cleared because the Service or clinic changed. Enter it again if it applies.</p>}
+                  {errors.specialPrice && <p id="appointment-special-price-error" className="text-xs font-medium text-rose-600">{errors.specialPrice}</p>}
+                </div>
+                <section aria-label="Booking Price Summary" data-booking-price-summary="true" className="space-y-3 border-t border-slate-200 pt-4">
+                  <h4 className="text-sm font-semibold text-slate-800">Price summary</h4>
+                  {hasSummaryService && <dl className="text-sm"><div data-booking-price-row="servicePrice" className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1"><dt className="text-slate-600">Service price</dt><dd className="font-medium tabular-nums text-slate-800">{bookingPrice.servicePrice === null ? 'Price not set' : priceLabel(bookingPrice.servicePrice)}</dd></div></dl>}
+                  {!bookingPrice.invalid && bookingPrice.specialPrice !== null && <p data-booking-price-row="specialPrice" className="text-xs font-medium text-teal-800">Special Price applied</p>}
+                  <dl><div data-booking-price-row="total" className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2"><dt className="text-sm font-semibold text-slate-800">Quoted total</dt><dd aria-live="polite" aria-atomic="true" className={`min-w-0 max-w-full break-words font-semibold leading-tight tabular-nums ${bookingPrice.invalid ? 'text-sm text-rose-700' : bookingPrice.total === null ? 'text-sm text-slate-600' : 'text-xl text-teal-800 sm:text-2xl'}`}>{bookingPrice.invalid ? 'Enter a valid Special Price' : bookingPrice.total === null ? 'Price not set' : priceLabel(bookingPrice.total)}</dd></div></dl>
+                  <p className="text-xs text-slate-600">Quote only. Payment is recorded separately.</p>
+                  {showingSavedQuote && <p className="text-xs text-slate-600">Saved booking quote. Catalogue changes do not change this amount.</p>}
+                  {keepingRecordedService && pricingRecord?.serviceId && serviceQuotePrice === null && <p className="text-xs text-slate-600">To set a Service price for this booking, select and confirm the current Service.</p>}
+                </section>
+                {pricingReview.conflict && <section aria-label="Pricing conflict review" className="space-y-3 border-t border-slate-200 pt-4 text-sm text-slate-800">
+                  <p role="alert">This booking’s pricing changed after you opened it. Your unsaved draft has been kept. Review the latest pricing before saving.</p>
+                  <button type="button" disabled={isReadOnly || isSaving || pricingReview.loading} onClick={() => void reviewLatestPricing()} className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold hover:bg-slate-50 disabled:opacity-50">{pricingReview.loading ? 'Loading latest pricing…' : 'Review latest pricing'}</button>
+                  {pricingReview.error && <p role="alert" className="text-rose-700">{pricingReview.error}</p>}
+                  {latestPricing && <div className="space-y-2">
+                    <p>Latest saved Service: {latestPricing.serviceNameSnapshot || 'No Service'}{latestPricing.serviceCatalogueVersion ? ` · v${latestPricing.serviceCatalogueVersion}` : ''}</p>
+                    <p>Latest Service price: {latestQuote?.servicePrice != null ? priceLabel(latestQuote.servicePrice) : 'Price not set'}</p>
+                    <p>Latest saved quote: {latestQuote?.total != null ? priceLabel(latestQuote.total) : latestPricing.specialPrice != null ? priceLabel(latestPricing.specialPrice) : 'Price not set'}</p>
+                    {canUseReviewedPricing ? <>
+                      <p>Your draft total after review: {reviewedDraftPrice.invalid ? 'Enter a valid Special Price' : reviewedDraftPrice.total === null ? 'Price not set' : priceLabel(reviewedDraftPrice.total)}</p>
+                      <p className="text-xs text-slate-600">This keeps your draft Service choice, Special Price, notes and appointment details. Your changes are saved only when you save the appointment.</p>
+                      <button type="button" disabled={isReadOnly || isSaving || pricingReview.loading} onClick={useReviewedPricing} className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold hover:bg-slate-50 disabled:opacity-50">Use reviewed pricing and keep my draft</button>
+                    </> : <p role="alert">The saved patient, clinic or appointment availability changed. Your draft is kept here; reopen the latest booking before making further changes.</p>}
+                  </div>}
+                </section>}
+              </fieldset>
 
               <div className="space-y-1.5"><label htmlFor="appointment-doctor" className="text-xs font-semibold text-slate-600">Doctor (optional)</label><select id="appointment-doctor" data-appointment-field="doctorId" aria-describedby="appointment-doctor-hint" value={doctorId} onChange={event => { setDoctorId(event.target.value); clearError('doctorId'); clearError('appointmentDate'); }} disabled={isReadOnly || !branchId} className={fieldClass('doctorId', `h-[42px] ${(isReadOnly || !branchId) ? 'cursor-not-allowed bg-slate-50 text-slate-500' : ''}`)}><option value="">Unassigned — assign later</option>{historicalDoctor && <option value={doctorId}>{historicalDoctorName} (recorded)</option>}{availableDoctors.map(doctor => <option key={doctor.id} value={doctor.id}>{doctor.fullName || doctor.name}</option>)}</select><p id="appointment-doctor-hint" className="text-xs text-slate-600">You can assign a doctor later through Edit appointment. Unassigned bookings do not reserve a doctor's time.</p>{errors.doctorId && <p className="text-xs font-medium text-rose-600">{errors.doctorId}</p>}</div>
 
@@ -320,7 +453,7 @@ function AppointmentFormWorkspace({
         <footer className="-mx-5 -mb-5 flex flex-col-reverse gap-3 border-t border-slate-200 bg-white px-5 py-4 sm:-mx-7 sm:-mb-7 sm:flex-row sm:justify-end sm:px-7">
           {isView && !isLocked && <button type="button" onClick={() => setCurrentMode('edit')} className="rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-teal-700">Edit appointment</button>}
           <button type="button" onClick={closeForm} disabled={isSaving} className="rounded-xl bg-slate-100 px-5 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40">{isView ? 'Close' : 'Cancel'}</button>
-          {!isReadOnly && activeTab === 'details' && <button type="submit" disabled={isSaving || serviceUnresolved} className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500">{isSaving ? <><Clock3 className="h-4 w-4 animate-spin" /> Saving…</> : <><CheckCircle2 className="h-4 w-4" /> {appointment ? 'Save changes' : 'Save appointment'}</>}</button>}
+          {!isReadOnly && activeTab === 'details' && <button type="submit" disabled={isSaving || serviceUnresolved || pricingReview.conflict} className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500">{isSaving ? <><Clock3 className="h-4 w-4 animate-spin" /> Saving…</> : <><CheckCircle2 className="h-4 w-4" /> {appointment ? 'Save changes' : 'Save appointment'}</>}</button>}
         </footer>
       </form>
     </div>

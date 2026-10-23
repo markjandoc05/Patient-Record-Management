@@ -1,3 +1,4 @@
+import { expectedBookingContext } from '../src/utils/visitPricingPolicy';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
@@ -75,6 +76,9 @@ db.runTransaction = (async (callback: any) => {
   const tx: any = { get: (ref: any) => ref.get(), sql: async (sql: string, values: any[]) => {
     if (sql.includes('FROM auth_sessions s')) return pool.query(sql, values);
     if (sql === 'SELECT 1 FROM service_branch_settings WHERE branch_id=$1 LIMIT 1') return { rows: [] }; // No service fixtures in this in-memory suite.
+    if (sql === `SELECT 1 FROM treatment_ledger_purchases WHERE branch_id=$1
+                UNION ALL SELECT 1 FROM treatment_ledger_events WHERE branch_id=$1 LIMIT 1`) return { rows: [] }; // No ledger fixtures in this in-memory suite.
+    if (sql === 'SELECT * FROM treatment_ledger_visit_usage WHERE visit_id=$1 FOR UPDATE') return { rows: [] }; // No session usage fixtures; all unexpected SQL remains rejected.
     if (sql.includes('SELECT 1 FROM auth_identities')) return pool.query(sql, values);
     if (!sql.startsWith('DELETE FROM auth_')) throw new Error('Unexpected mutation SQL');
     if (sql.startsWith('DELETE FROM auth_sessions')) staged.push(() => {
@@ -104,6 +108,16 @@ const server = app.listen(0, '127.0.0.1');
 await once(server, 'listening');
 const base = `http://127.0.0.1:${(server.address() as any).port}`;
 async function request(path: string, body?: any, role = SUPPORT_DEVELOPER as string, method = 'POST', extra: Record<string, string> = {}) {
+  // Sequential linked-creation fixtures model reviewing the latest booking.
+  if (method === 'POST' && path === '/api/records/visits' && body?.appointmentId
+    && !Object.hasOwn(body, 'expectedBookingContext')) {
+    const booking = (await db.collection('appointments').doc(body.appointmentId).get()).data();
+    body = { ...body, expectedBookingContext: expectedBookingContext(booking) };
+  }
+  if (method === 'PATCH' && /^\/api\/records\/visits\/[^/]+$/.test(path) && !Object.hasOwn(body || {}, 'expectedVisitVersion')) {
+    const visit = get('visits/' + decodeURIComponent(path.split('/').at(-1)!));
+    body = { ...body, expectedVisitVersion: visit?.visitVersion ?? 0 };
+  }
   const token = tokens[role];
   const response = await fetch(base + path, { method, headers: { Origin: 'http://localhost:3000', 'Content-Type': 'application/json', ...(token ? { Cookie: token.cookie, Authorization: `Bearer ${token.csrf}` } : {}), ...extra }, ...(method !== 'GET' ? { body: JSON.stringify(body || {}) } : {}) });
   return { status: response.status, body: response.status === 204 ? null : await response.json() };

@@ -69,6 +69,28 @@ export async function getVisitRecord(visitId: string, scope: RecordRequestScope)
   return { ...body.document.data, id: visitId };
 }
 
+// Pricing review uses the same authorized document read as the appointment list.
+export async function getAppointmentRecord(appointmentId: string, scope: RecordRequestScope) {
+  const lifetime = captureProtectedRequestScope(), user = auth.currentUser;
+  if (!user) throw new Error('Please sign in again before reviewing this appointment.');
+  const current = () => {
+    lifetime(); scope.signal.throwIfAborted();
+    if (!scope.current() || auth.currentUser?.uid !== user.uid) throw new DOMException('Appointment pricing review is no longer current.', 'AbortError');
+  };
+  const token = await user.getRequestToken(); current();
+  const response = await protectedFetch('/api/data/query', { method: 'POST', signal: scope.signal,
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: 'appointments/' + appointmentId, kind: 'document' }) });
+  const body = await response.json().catch(() => null); current();
+  if (!response.ok) {
+    const error = Object.assign(new Error(body?.error || 'Could not load the saved appointment pricing.'), { status: response.status });
+    if (response.status === 401 || response.status === 403) invalidateProtectedData(error);
+    throw error;
+  }
+  if (body?.document?.id !== appointmentId || !body.document.data) throw new Error('The saved appointment is no longer available. Your draft has been kept.');
+  return { ...body.document.data, id: appointmentId };
+}
+
 export const createPatientRecord = (payload: Record<string, unknown>, scope?: RecordRequestScope) =>
   recordRequest('patients', 'POST', payload, undefined, undefined, scope);
 

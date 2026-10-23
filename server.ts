@@ -7,6 +7,9 @@ import { isVisitClinicallySealed } from './src/utils/visitServicePolicy';
 import { assertVisitSaveVersion, nextVisitVersion, visitVersion, VisitVersionError } from './src/utils/visitVersionPolicy';
 import { ASSISTING_STAFF_MAX_LENGTH, isEligibleVisitPerformer, visitDoctorIds, visitPerformerSnapshotFields } from './src/utils/visitPerformerPolicy';
 import { AppointmentServiceError, parseAppointmentServiceSelection, appointmentServiceSnapshot } from './backend/appointmentServices';
+import { AppointmentSpecialPriceError, parseSpecialPriceCommand, appointmentSpecialPriceUpdates, parseExpectedPricingRevision, assertSpecialPriceRevision } from './backend/appointmentSpecialPrice';
+import { AppointmentBookingQuoteError, assertBookingQuoteServerOwned, appointmentBookingQuoteUpdates } from './backend/appointmentBookingQuote';
+import { VisitPricingError, parseVisitSpecialPriceCommand, assertExpectedBookingContext, visitPriceQuoteUpdates } from './backend/visitPricing';
 import { mountServices } from './backend/services';
 import { mountPackageCatalogue } from './backend/packageCatalogue';
 import { mountClinicalCharts } from './backend/clinicalCharts';
@@ -518,6 +521,9 @@ async function assertDoctorAvailability(
 function sendRecordError(res: express.Response, error: unknown, operation: string) {
     if (error instanceof Error && error.message === 'Unauthorized') return res.status(401).json({ error: 'Unauthorized' });
     if (error instanceof AppointmentServiceError) return res.status(error.status).json({ error: error.message, code: error.code });
+    if (error instanceof AppointmentSpecialPriceError) return res.status(error.status).json({ error: error.message, code: error.code });
+    if (error instanceof AppointmentBookingQuoteError) return res.status(error.status).json({ error: error.message, code: error.code });
+    if (error instanceof VisitPricingError) return res.status(error.status).json({ error: error.message, code: error.code });
     if (error instanceof PatientHistoryError) return res.status(error.status).json({ error: error.message, code: error.code });
     if (error instanceof TreatmentLedgerError) return res.status(error.status).json({ error: error.message, code: error.code });
     if (error instanceof VisitVersionError) return res.status(error.status).json({ error: error.message, code: error.code });
@@ -549,6 +555,9 @@ function visitCreatedRecordIntent(visit: Record<string, any>): string {
         'appointmentId', 'followUpRequired', 'status', 'serviceId', 'serviceNameSnapshot',
         'serviceDurationMinutesSnapshot', 'serviceCatalogueVersion', 'performedByUserId',
         ...visitPerformerSnapshotFields, 'assistingStaffText'];
+    // Pre-quote Visits retain their original retry fingerprint without backfill.
+    // Quote-aware records still bind the field, including an explicit null.
+    if (Object.hasOwn(visit, 'visitQuote')) fields.push('visitQuote');
     return visitCreationIntent(Object.fromEntries(fields.map(field => [field, visit[field] ?? null])));
 }
 
@@ -2077,6 +2086,9 @@ app.post("/api/records/appointments", async (req, res) => {
         const payload = requestPayload(req);
         const appointment = parseAppointmentPayload(payload);
         const selection = parseAppointmentServiceSelection(payload);
+        const specialPrice = parseSpecialPriceCommand(payload);
+        parseExpectedPricingRevision(payload);
+        assertBookingQuoteServerOwned(payload);
         const appointmentRef = db.collection('appointments').doc();
         const now = new Date().toISOString();
         const actorName = trustedUserName(authorization);
@@ -2095,9 +2107,18 @@ app.post("/api/records/appointments", async (req, res) => {
             if (context.branchData.status !== 'Active') throw new RequestError(400, 'Branch is not active');
             await assertDoctorAvailability(transaction, appointment.doctorId, appointment.appointmentDate);
             const serviceSnapshot = await appointmentServiceSnapshot(transaction, selection, appointment.branchId);
+            const specialPriceUpdates = appointmentSpecialPriceUpdates(specialPrice, { ...appointment, ...serviceSnapshot }, {
+                uid: authorization.decodedToken.uid, name: actorName, now
+            });
+            const bookingQuoteUpdates = await appointmentBookingQuoteUpdates(transaction, selection, specialPrice,
+                { ...appointment, ...serviceSnapshot, ...specialPriceUpdates }, {
+                    uid: authorization.decodedToken.uid, name: actorName, now
+                });
             transaction.create(appointmentRef, {
                 ...appointment,
                 ...serviceSnapshot,
+                ...specialPriceUpdates,
+                ...bookingQuoteUpdates,
                 patientName: typeof context.patientData.name === 'string' ? context.patientData.name : '',
                 attachments: [],
                 createdAt: now,
@@ -2110,7 +2131,8 @@ app.post("/api/records/appointments", async (req, res) => {
                 resource: 'Appointment',
                 resourceId: appointmentRef.id,
                 resourceName: typeof context.patientData.patientID === 'string' ? context.patientData.patientID : '',
-                branchId: appointment.branchId
+                branchId: appointment.branchId,
+                changeFields: [...Object.keys(specialPriceUpdates), ...Object.keys(bookingQuoteUpdates)]
             });
         });
         res.status(201).json({ id: appointmentRef.id });
@@ -2129,6 +2151,9 @@ app.patch("/api/records/appointments/:appointmentId", async (req, res) => {
         const payload = requestPayload(req);
 
         const selection = parseAppointmentServiceSelection(payload);
+        const specialPrice = parseSpecialPriceCommand(payload);
+        const expectedPricingRevision = parseExpectedPricingRevision(payload);
+        assertBookingQuoteServerOwned(payload);
         const appointmentRef = db.collection('appointments').doc(req.params.appointmentId);
         const now = new Date().toISOString();
         const actorName = trustedUserName(authorization);
@@ -2174,10 +2199,20 @@ app.patch("/api/records/appointments/:appointmentId", async (req, res) => {
             await assertDoctorAvailability(transaction, updates.doctorId, updates.appointmentDate, {
                 appointmentId: appointmentRef.id
             });
+            assertSpecialPriceRevision(specialPrice, expectedPricingRevision, appointmentData);
             const serviceSnapshot = await appointmentServiceSnapshot(transaction, selection, updates.branchId, appointmentData);
+            const specialPriceUpdates = appointmentSpecialPriceUpdates(specialPrice, { ...appointmentData, ...updates, ...serviceSnapshot }, {
+                uid: authorization.decodedToken.uid, name: actorName, now
+            }, appointmentData);
+            const bookingQuoteUpdates = await appointmentBookingQuoteUpdates(transaction, selection, specialPrice,
+                { ...appointmentData, ...updates, ...serviceSnapshot, ...specialPriceUpdates }, {
+                    uid: authorization.decodedToken.uid, name: actorName, now
+                }, appointmentData);
             const trustedUpdates: Record<string, unknown> = {
                 ...updates,
                 ...serviceSnapshot,
+                ...specialPriceUpdates,
+                ...bookingQuoteUpdates,
                 patientName: typeof context.patientData.name === 'string' ? context.patientData.name : '',
                 updatedAt: now,
                 updatedByUid: authorization.decodedToken.uid,
@@ -2188,7 +2223,7 @@ app.patch("/api/records/appointments/:appointmentId", async (req, res) => {
                 trustedUpdates.lastStatusChangedByUid = authorization.decodedToken.uid;
                 trustedUpdates.lastStatusChangedByName = actorName;
             }
-            const changedFields = getChangedFieldNames(appointmentData, { ...updates, ...serviceSnapshot });
+            const changedFields = getChangedFieldNames(appointmentData, { ...updates, ...serviceSnapshot, ...specialPriceUpdates, ...bookingQuoteUpdates });
             transaction.update(appointmentRef, trustedUpdates);
             stageAuditLog(transaction, {
                 authorization,
@@ -2215,6 +2250,7 @@ app.post("/api/records/visits", async (req, res) => {
         const payload = requestPayload(req);
         const visit = parseVisitPayload(payload);
         const selection = parseAppointmentServiceSelection(payload);
+        const specialPriceCommand = parseVisitSpecialPriceCommand(payload);
         const hasSessionUsage = Object.hasOwn(payload, 'sessionUsage');
         const clientVisitId = payload.clientVisitId;
         if ((hasSessionUsage || clientVisitId !== undefined) && (typeof clientVisitId !== 'string'
@@ -2269,6 +2305,7 @@ app.post("/api/records/visits", async (req, res) => {
             if (context.branchData.status !== 'Active') throw new RequestError(400, 'Branch is not active');
 
             let linkedAppointmentRef: DocumentReference | null = null;
+            let linkedAppointmentData: Record<string, any> | undefined;
             if (visit.appointmentId) {
                 linkedAppointmentRef = db.collection('appointments').doc(visit.appointmentId);
                 const appointmentSnapshot = await transaction.get(linkedAppointmentRef);
@@ -2278,6 +2315,8 @@ app.post("/api/records/visits", async (req, res) => {
                 if (!canAccessBranch(authorization.userProfile, appointmentData.branchId)) {
                     throw new RequestError(403, 'Appointment access denied');
                 }
+                assertExpectedBookingContext(payload, appointmentData);
+                linkedAppointmentData = appointmentData;
                 if (appointmentData.visitHistoryCreated === true) throw new RequestError(409, 'A visit already exists for this appointment');
                 if (appointmentData.patientId !== visit.patientId
                     || appointmentData.branchId !== visit.branchId
@@ -2291,6 +2330,8 @@ app.post("/api/records/visits", async (req, res) => {
                 appointmentId: visit.appointmentId
             });
             await applyVisitServiceSelection(transaction, selection, payload, visit);
+            Object.assign(visit, await visitPriceQuoteUpdates(transaction, selection, specialPriceCommand, visit,
+                { uid: authorization.decodedToken.uid, name: actorName, now }, undefined, linkedAppointmentData));
             await applyVisitSessionUsage(transaction, { identity: authorization.decodedToken, profile: authorization.userProfile },
                 visitRef.id, visit, payload.sessionUsage);
             const visitSource = linkedAppointmentRef ? 'Appointment' : 'Walk-In';
@@ -2338,7 +2379,7 @@ app.post("/api/records/visits", async (req, res) => {
                 resourceId: visitRef.id,
                 resourceName: typeof context.patientData.patientID === 'string' ? context.patientData.patientID : '',
                 branchId: visit.branchId,
-                changeFields: ['performedByUserId', ...visitPerformerSnapshotFields, 'assistingStaffText']
+                changeFields: ['performedByUserId', ...visitPerformerSnapshotFields, 'assistingStaffText', 'visitQuote']
             });
             if (linkedAppointmentRef) {
                 stageAuditLog(transaction, {
@@ -2368,6 +2409,7 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
         if (!isValidDocumentId(req.params.visitId)) throw new RequestError(400, 'Invalid visit ID');
         const payload = requestPayload(req);
         const selection = parseAppointmentServiceSelection(payload);
+        const specialPriceCommand = parseVisitSpecialPriceCommand(payload);
         if (Object.hasOwn(payload, 'clientVisitId')) throw new RequestError(400, 'clientVisitId is only valid when creating a Visit');
         const visitRef = db.collection('visits').doc(req.params.visitId);
         const now = new Date().toISOString();
@@ -2431,6 +2473,8 @@ app.patch("/api/records/visits/:visitId", async (req, res) => {
             });
 
             await applyVisitServiceSelection(transaction, selection, payload, updates, visitData);
+            Object.assign(updates, await visitPriceQuoteUpdates(transaction, selection, specialPriceCommand,
+                { ...visitData, ...updates }, { uid: authorization.decodedToken.uid, name: actorName, now }, visitData));
             await applyVisitSessionUsage(transaction, { identity: authorization.decodedToken, profile: authorization.userProfile },
                 visitRef.id, { ...visitData, ...updates }, payload.sessionUsage, visitData);
             const visitsSnapshot = await transaction.get(

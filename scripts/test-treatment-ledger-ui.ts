@@ -21,7 +21,15 @@ class Fixture {
     globals.fetch = (url: string, init: any) => {
       if (url.startsWith('/api/services?')) return Promise.resolve(new Response(JSON.stringify({ services: [service], total: 1 })));
       if (url.startsWith('/api/services/')) return Promise.resolve(new Response(JSON.stringify(service)));
-      return new Promise((resolve, reject) => this.requests.push({ url, init, deliver: (body: any, status = 200) => resolve(new Response(JSON.stringify(body), { status })), fail: () => reject(new TypeError('Connection interrupted')) }));
+      return new Promise((resolve, reject) => {
+        const request = { url, init, deliver: (body: any, status = 200) => resolve(new Response(JSON.stringify(body), { status })), fail: () => reject(new TypeError('Connection interrupted')) };
+        this.requests.push(request);
+        // A linked Visit now starts from an authorized fresh booking read. The
+        // fixture still controls ledger and save responses independently.
+        const query = url === '/api/data/query' ? JSON.parse(init.body) : null;
+        if (query?.kind === 'document' && query.path?.startsWith('appointments/'))
+          request.deliver({ document: { id: query.path.slice('appointments/'.length), data: this.props.appointment } });
+      });
     };
     this.renderer = new Renderer(harness.components[component]);
     this.props = { patient: { id: 'patient', name: 'Synthetic Patient', patientID: 'PT-SYNTHETIC' }, userRole: 'admin' };
@@ -225,6 +233,22 @@ try {
   await check('Visit matching sessions include a package purchased at another authorized-use clinic', async f => { await f.loaded(); await f.change(f.label('Use package sessions'), true); assert.equal(f.props.value.lineId, ''); assert.equal(f.props.value.sessions, 1); assert.equal(f.props.value.valid, false); assert.match(text(f.input('visit-session-line')), /Clinic B/); await f.change(f.input('visit-session-line'), ids.line); assert.equal(f.props.value.valid, true); assert.equal(f.props.value.expectedLineVersion, 3); await f.change(f.input('visit-session-count'), '9'); assert.equal(f.props.value.valid, false); }, 'VisitSessionUsagePicker');
   await check('performed Service change clears package choice and old response cannot restore it', async f => { await f.loaded(); await f.change(f.label('Use package sessions'), true); await f.change(f.input('visit-session-line'), ids.line); f.props.serviceId = 'other-service'; f.render(); await f.settle(); assert.equal(f.props.value, null); }, 'VisitSessionUsagePicker');
   await check('existing active usage is read-only and freezes binding fields while unrelated saves omit usage', async f => { await f.loaded(ledger({ activeVisitUsages: [{ visitId: 'visit', eventId: ids.event, lineId: ids.line, sessions: 2, version: 1, visitSnapshot }] })); assert.match(text(f.renderer.tree), /Recorded session usage/); for (const id of ['visit-branch', 'visit-doctor', 'visit-performed-by', 'visit-assisting-staff']) assert.equal(f.input(id).props.disabled, true); await f.change(f.input('visit-notes'), 'Unrelated note'); await f.submit(); assert.ok(!Object.hasOwn(JSON.parse(f.requests.at(-1).init.body), 'sessionUsage')); }, 'VisitForm');
+  for (const action of ['set', 'clear']) await check('active session usage retains binding locks while Special Price ' + action + ' saves independently', async f => {
+    f.props.visit.visitQuote = { version: 1, currency: 'PHP', branchId: 'A', serviceId: ids.service, serviceCatalogueVersion: 4,
+      servicePrice: '0.00', specialPrice: '50.00', total: '50.00', source: 'special', quotedAt: '2026-10-23T01:00:00Z', quotedByUid: 'admin', quotedByName: actor.name,
+      bookingAppointmentId: null, bookingPricingRevision: null };
+    const data = ledger({ activeVisitUsages: [{ visitId: 'visit', eventId: ids.event, lineId: ids.line, sessions: 2, version: 1, visitSnapshot }] });
+    const original = JSON.stringify(data); await f.loaded(data);
+    for (const id of ['visit-branch', 'visit-doctor', 'visit-performed-by', 'visit-assisting-staff']) assert.equal(f.input(id).props.disabled, true);
+    assert.equal(f.input('visit-special-price').props.disabled, false); assert.equal(f.input('visit-special-price').props.value, '50.00');
+    await f.change(f.input('visit-special-price'), action === 'set' ? '80' : ''); await f.change(f.input('visit-notes'), 'Unrelated note retained'); await f.submit();
+    const request = f.requests.at(-1), body = JSON.parse(request.init.body);
+    assert.equal(request.url, '/api/records/visits/visit'); assert.equal(request.init.method, 'PATCH'); assert.equal(body.expectedVisitVersion, 0);
+    assert.equal(body.specialPrice, action === 'set' ? '80.00' : null); assert.equal(body.notes, 'Unrelated note retained');
+    assert.ok(!Object.hasOwn(body, 'sessionUsage') && !Object.hasOwn(body, 'serviceSelection') && !Object.hasOwn(body, 'visitQuote'));
+    assert.equal(JSON.stringify(data), original); assert.equal(f.requests.filter(request => request.url.includes('/treatment-ledger') && request.init.method !== 'GET').length, 0);
+    assert.equal(f.input('visit-special-price').props.disabled, true);
+  }, 'VisitForm');
   await check('persisted Visit binding fields are disabled during ledger lookup and unlock only for unbound Visit', async f => { await f.start(); for (const id of ['visit-branch', 'visit-doctor', 'visit-performed-by', 'visit-assisting-staff']) assert.equal(f.input(id).props.disabled, true); assert.ok(!find(f.renderer.tree, node => node.props?.id === 'visit-service')); f.requests[0].deliver(ledger()); await f.settle(); assert.equal(f.input('visit-branch').props.disabled, false); assert.ok(f.input('visit-service')); }, 'VisitForm');
   await check('persisted Visit failed binding lookup retains protection and offers an explicit Retry', async f => { await f.start(); f.requests[0].deliver({ error: 'Temporary ledger failure' }, 503); await f.settle(); assert.equal(f.input('visit-performed-by').props.disabled, true); assert.equal(f.input('visit-assisting-staff').props.value, ''); await f.click('Retry session balances'); const data = ledger({ activeVisitUsages: [{ visitId: 'visit', eventId: ids.event, lineId: ids.line, sessions: 2, version: 1, visitSnapshot }] }); f.requests.at(-1).deliver(data); await f.settle(); assert.equal(f.input('visit-performed-by').props.value, 'provider'); assert.equal(f.input('visit-performed-by').props.disabled, true); assert.match(text(f.renderer.tree), /Recorded session usage/); }, 'VisitForm');
   await check('Visit submits explicit usage and locks every draft field while saving', async f => { await f.loaded(); await f.change(f.label('Use package sessions'), true); await f.change(f.input('visit-session-line'), ids.line); await f.submit(); const body = JSON.parse(f.requests.at(-1).init.body); assert.deepEqual(Object.keys(body.sessionUsage).sort(), ['commandId', 'expectedLineVersion', 'expectedUsageVersion', 'lineId', 'sessions'].sort()); assert.equal(body.sessionUsage.sessions, 1); assert.ok(find(f.renderer.tree, node => node.type === 'fieldset' && node.props.disabled)); }, 'VisitForm');

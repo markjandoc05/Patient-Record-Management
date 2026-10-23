@@ -1,3 +1,4 @@
+import { expectedBookingContext } from '../src/utils/visitPricingPolicy';
 import { resetDisposablePlatformRecords } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
@@ -18,6 +19,12 @@ let server: ReturnType<typeof app.listen> | undefined;
 let checks = 0;
 function check(value: unknown, message: string) { assert.ok(value, message); checks++; }
 async function request(path: string, body: any, role = 'staff', method = 'POST') {
+  // Sequential linked-creation fixtures model reviewing the latest booking.
+  if (method === 'POST' && path === '/api/records/visits' && body?.appointmentId
+    && !Object.hasOwn(body, 'expectedBookingContext')) {
+    const booking = (await db.collection('appointments').doc(body.appointmentId).get()).data();
+    body = { ...body, expectedBookingContext: expectedBookingContext(booking) };
+  }
   const c = credentials.get(role)!;
   return fetch(`http://127.0.0.1:${(server!.address() as any).port}${path}`, { method,
     headers: { Origin: origin, Cookie: c.cookie, Authorization: `Bearer ${c.csrf}`, 'Content-Type': 'application/json' },
