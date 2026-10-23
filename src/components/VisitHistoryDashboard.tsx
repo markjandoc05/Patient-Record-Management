@@ -1,3 +1,4 @@
+import { hasCapability } from '../permissions';
 import { uiCan, uiRecordPermission } from '../permissionState';
 import { performedServiceLabel, isVisitClinicallySealed } from '../utils/visitServicePolicy';
 import { visitPerformerName } from '../utils/visitPerformerPolicy';
@@ -30,7 +31,7 @@ function visitStatusClass(status?: string) {
   return 'bg-blue-50 text-blue-700 ring-blue-600/10';
 }
 
-export default function VisitHistoryDashboard({ db, role, userProfile, activeBranchId }: { db: any, role: string | null, userProfile: any, activeBranchId?: string }) {
+export default function VisitHistoryDashboard({ db, role, userProfile, activeBranchId, onOpenPos }: { db: any, role: string | null, userProfile: any, activeBranchId?: string, onOpenPos?: (source: {patientId:string;branchId:string;visitId:string}) => void }) {
   const [visits, setVisits] = useState<any[]>([]);
   const [appointments, setAppointments] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
@@ -392,6 +393,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
                 </section>
               )}
 
+              {onOpenPos && !selectedVisit.isArchived && hasCapability(userProfile, 'pos.view', { branchId: selectedVisit.branchId }) && hasCapability(userProfile, 'pos.manage', { branchId: selectedVisit.branchId }) && <button className="min-h-11 rounded-xl bg-teal-600 px-4 py-2 text-sm font-semibold text-white" onClick={() => onOpenPos({patientId:selectedVisit.patientId,branchId:selectedVisit.branchId,visitId:selectedVisit.id})}>Create invoice from Visit</button>}
               {selectedVisit.documents && selectedVisit.documents.length > 0 && (
                 <section><h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-400">Documents</h3><div className="mt-3 flex flex-wrap gap-2">{selectedVisit.documents.map((url: string, index: number) => <a key={index} href={url} target="_blank" rel="noopener noreferrer" className="rounded-lg bg-teal-50 px-3 py-2 text-xs font-semibold text-teal-700 hover:bg-teal-100">Document {index + 1}</a>)}</div></section>
               )}

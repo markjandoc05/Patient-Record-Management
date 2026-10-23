@@ -1,3 +1,4 @@
+import { assertCurrentMigrationChain } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -38,7 +39,7 @@ const generic = (operations: any[], actor = 'admin') => request('/api/data/write
 try {
   check(Number((await pool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")).rows[0].count) === 0, 'category suite requires empty disposable database');
   await migrateDatabase(); await migrateDatabase();
-  check((await pool.query('SELECT count(*) FROM schema_migrations')).rows[0].count === '7', 'category management reuses existing001–007 schema without new migrations');
+  check(await assertCurrentMigrationChain(), 'complete current checksummed migration chain');
   check((await db.collection('inventory_categories').get()).empty, 'migrations do not automatically seed categories');
   for (const id of ['A', 'B']) await db.collection('branches').doc(id).set({ branchName: 'Synthetic category branch ' + id, status: 'Active' });
   for (const [id, fields] of Object.entries({

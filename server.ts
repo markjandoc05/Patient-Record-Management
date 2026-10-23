@@ -11,6 +11,7 @@ import { AppointmentSpecialPriceError, parseSpecialPriceCommand, appointmentSpec
 import { AppointmentBookingQuoteError, assertBookingQuoteServerOwned, appointmentBookingQuoteUpdates } from './backend/appointmentBookingQuote';
 import { VisitPricingError, parseVisitSpecialPriceCommand, assertExpectedBookingContext, visitPriceQuoteUpdates } from './backend/visitPricing';
 import { mountServices } from './backend/services';
+import { mountPos } from './backend/pos';
 import { mountPackageCatalogue } from './backend/packageCatalogue';
 import { mountClinicalCharts } from './backend/clinicalCharts';
 import { mountTreatmentLedger, applyVisitSessionUsage } from './backend/treatmentLedger';
@@ -77,6 +78,7 @@ mountAccessApi(app);
 mountInventory(app);
 mountServices(app);
 mountPackageCatalogue(app);
+mountPos(app);
 mountClinicalCharts(app);
 mountTreatmentLedger(app);
 app.get("/api/health", async (_req, res) => {

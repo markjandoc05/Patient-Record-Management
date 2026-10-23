@@ -36,7 +36,7 @@ async function oldRecords() {
 }
 try {
   check(Number((await pool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")).rows[0].count) === 0, 'migration suite requires empty disposable database');
-  const names = (await readdir('migrations')).filter(n => n.endsWith('.sql')).sort();
+  const names = (await readdir('migrations')).filter(n => n.endsWith('.sql') && n < '008_').sort();
   check(names.length === 7 && names[6] === '007_inventory_movements.sql', 'exact ordered migration chain 001–007');
   const sources = await Promise.all(names.map(n => readFile(path.join(original, 'migrations', n), 'utf8')));
   const expected = [
@@ -48,14 +48,16 @@ try {
     'c8397897fb344647368a7b50b4f88e0384649b4c20391671ea887a050b83ba8e',
   ];
   for (let i = 0; i < expected.length; i++) check(hash(sources[i]) === expected[i], names[i] + ' immutable checksum');
+  temporary = await mkdtemp(path.join(tmpdir(), 'vine-inventory-migrations-')); await mkdir(path.join(temporary, 'migrations'));
+  for (let i = 0; i < 7; i++) await writeFile(path.join(temporary, 'migrations', names[i]), sources[i]);
+  process.chdir(temporary);
   await migrateDatabase(); const fresh = await schema(), freshApplied = await applied();
   await migrateDatabase(); check(await schema() === fresh && await applied() === freshApplied, 'fresh migration rerun changes no schema/checksums');
   const inventoryTables = (await pool.query("SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'inventory_%' ORDER BY tablename")).rows;
   check(inventoryTables.length > 0, 'new inventory integrity tables exist');
   for (const { tablename } of inventoryTables) check((await pool.query(`SELECT count(*) FROM "${tablename}"`)).rows[0].count === '0', 'no automatic fixtures in ' + tablename);
   await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
-  temporary = await mkdtemp(path.join(tmpdir(), 'vine-inventory-migrations-')); await mkdir(path.join(temporary, 'migrations'));
-  for (let i = 0; i < 6; i++) await writeFile(path.join(temporary, 'migrations', names[i]), sources[i]);
+  await rm(path.join(temporary, 'migrations', names[6]));
   process.chdir(temporary); await migrateDatabase();
   const legacy = [
     ['branches', 'A', { branchName: 'Synthetic retained branch A', status: 'Active' }],

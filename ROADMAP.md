@@ -1,5 +1,14 @@
 # Vine incremental production roadmap
 
+## POS & Payments R1 — October 23 local
+
+Local drafts, posting, manual payments and clinic sales now connect frozen booking/Visit
+quotes, Services and funded package purchases. Existing balances and branch scope
+remain. Migration 008 is locally applied and uncommitted; committed 001–007 remain
+unchanged. Production was not inspected or changed. See [implementation and validation](docs/releases/2026-10-23-pos-payments-r1.md).
+Next: independent scoped commit-readiness review; mobile and ordinary-role browser
+acceptance remain pending.
+
 ## Inventory categories — October 22 local follow-up
 
 Manage categories adds create, rename and deactivate/reactivate actions using

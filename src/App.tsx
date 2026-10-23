@@ -20,6 +20,7 @@ import ProfileView from './components/ProfileView';
 import VisitHistoryDashboard from './components/VisitHistoryDashboard';
 import InsightsAnalyticsDashboard from './components/InsightsAnalyticsDashboard';
 import AppointmentsDashboard from './components/AppointmentsDashboard';
+import PosDashboard from './components/PosDashboard';
 import InventoryDashboard from './components/InventoryDashboard';
 import AuditTrailDashboard from './components/AuditTrailDashboard';
 import DeveloperDashboard, { DevTab } from './components/DeveloperDashboard';
@@ -91,6 +92,7 @@ const pageTitles: Record<string, string> = {
   Appointments: 'Appointments',
   VisitHistory: 'Visits',
   Inventory: 'Inventory',
+  POS: 'POS & Payments',
   Services: 'Services',
   Insights: 'Insights',
   Settings: 'Settings',
@@ -141,6 +143,7 @@ export default function App() {
   const setUserProfile = (value: any) => { publishPermissionProfile(value); setUserProfileState(value); };
   const [loading, setLoading] = useState(true);
   const [brandingLoaded, setBrandingLoaded] = useState(false);
+  const [posLaunch, setPosLaunch] = useState<any>(null);
   const [activeView, setActiveView] = useState('Records');
   const [devTab, setDevTab] = useState<DevTab>('system_overview');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -556,7 +559,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (userProfile && !canOpenView(userProfile, activeView)) setActiveView(['BranchDashboard', 'Records', 'Appointments', 'VisitHistory', 'Services', 'Insights', 'Inventory', 'Settings', 'AuditTrail', 'DeveloperTools', 'Profile'].find(view => canOpenView(userProfile, view)) || 'NoAccess');
+    if (userProfile && !canOpenView(userProfile, activeView)) setActiveView(['BranchDashboard', 'Records', 'Appointments', 'VisitHistory', 'Services', 'POS', 'Insights', 'Inventory', 'Settings', 'AuditTrail', 'DeveloperTools', 'Profile'].find(view => canOpenView(userProfile, view)) || 'NoAccess');
   }, [userProfile, activeView]);
 
   const currentPageTitle = pageTitles[activeView] || activeView;
@@ -682,6 +685,8 @@ export default function App() {
             {canOpenView(userProfile, 'Inventory') && (
               <SidebarNavButton label="Inventory" icon={Package} active={activeView === 'Inventory'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Inventory')} />
             )}
+
+            {canOpenView(userProfile, 'POS') && <SidebarNavButton label="POS & Payments" icon={Package} active={activeView === 'POS'} collapsed={isSidebarCollapsed} onClick={() => { setPosLaunch(null); navigateTo('POS'); }} />}
 
             {canOpenView(userProfile, 'Insights') && (<SidebarNavButton label="Insights" icon={Zap} active={activeView === 'Insights'} collapsed={isSidebarCollapsed} onClick={() => navigateTo('Insights')} />)}
 
@@ -822,9 +827,10 @@ export default function App() {
                 {activeView === 'BranchDashboard' && canOpenView(userProfile, 'BranchDashboard') && <BranchDashboard userProfile={userProfile} activeBranchId={activeBranchId} branches={availableBranches} onNavigate={navigateTo} overview={overview} />}
                 {activeView === 'Records' && canOpenView(userProfile, 'Records') && <PatientDashboard db={db} user={user} role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
                 {activeView === 'Appointments' && canOpenView(userProfile, 'Appointments') && <AppointmentsDashboard role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
-                {activeView === 'VisitHistory' && canOpenView(userProfile, 'VisitHistory') && <VisitHistoryDashboard db={db} role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} />}
+                {activeView === 'VisitHistory' && canOpenView(userProfile, 'VisitHistory') && <VisitHistoryDashboard db={db} role={userRole} userProfile={userProfile} activeBranchId={activeBranchId} onOpenPos={source => { setPosLaunch(source); navigateTo('POS'); }} />}
                 {activeView === 'Services' && canOpenView(userProfile, 'Services') && <ServicesDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
                 {activeView === 'Insights' && canOpenView(userProfile, 'Insights') && <InsightsAnalyticsDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
+                {activeView === 'POS' && canOpenView(userProfile, 'POS') && <PosDashboard userProfile={userProfile} activeBranchId={activeBranchId} launch={posLaunch} />}
                 {activeView === 'Inventory' && canOpenView(userProfile, 'Inventory') && <InventoryDashboard userProfile={userProfile} activeBranchId={activeBranchId} />}
                 {activeView === 'Inventory' && !canOpenView(userProfile, 'Inventory') && (
                   <div className="p-8 text-center"><p className="text-slate-500 font-medium">Access Denied: Inventory controls are restricted to administrators.</p></div>

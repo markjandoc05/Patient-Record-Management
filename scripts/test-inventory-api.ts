@@ -1,3 +1,4 @@
+import { assertCurrentMigrationChain } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -43,7 +44,7 @@ async function createItem(name = 'Synthetic clinic supply', extra: any = {}) {
 try {
   check(Number((await pool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")).rows[0].count) === 0, 'API suite requires empty disposable database');
   await migrateDatabase(); await migrateDatabase();
-  check((await pool.query('SELECT count(*) FROM schema_migrations')).rows[0].count === '7', 'complete checksummed migration chain001–007');
+  check(await assertCurrentMigrationChain(), 'complete current checksummed migration chain');
   for (const [id, branchStatus] of [['A', 'Active'], ['B', 'Active'], ['I', 'Inactive']]) await db.collection('branches').doc(id).set({ branchName: 'Synthetic branch ' + id, status: branchStatus });
   const grants = { 'inventory.view': 'allow', 'inventory.manage': 'allow', 'inventory.transfer': 'allow' };
   for (const [id, fields] of Object.entries({

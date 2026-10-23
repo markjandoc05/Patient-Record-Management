@@ -47,7 +47,7 @@ export default function VisitSessionUsagePicker(props: Props) {
   const visible = snapshot.scope === scope ? snapshot : { data: null, error: '' };
   const active = visible.data?.activeVisitUsages.find(usage => usage.visitId === visitId);
   const allLines = visible.data?.purchases.flatMap(purchase => purchase.lines.map(line => ({ purchase, line }))) || [];
-  const available = allLines.filter(({ line, purchase }) => line.serviceId === serviceId && line.remainingSessions > 0);
+  const available = allLines.filter(({ line, purchase }) => purchase.usable !== false && line.serviceId === serviceId && line.remainingSessions > 0);
   const selected = available.find(({ line }) => line.id === value?.lineId);
   const field = 'w-full min-h-10 rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-800 focus:outline-none focus:ring-4 focus:ring-teal-500/10 disabled:opacity-50';
   const select = (lineId: string, sessions = value?.sessions || 1) => {

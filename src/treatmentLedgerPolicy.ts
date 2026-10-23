@@ -17,6 +17,7 @@ export type TreatmentLine = {
   purchasedSessions: number; adjustmentSessions: number; usedSessions: number; remainingSessions: number; version: number;
 };
 export type TreatmentPurchase = {
+  usable?: boolean;
   id: string; patientId: string; packageName: string; purchaseDate: string; branchId: string;
   branchNameSnapshot: string; timezoneSnapshot: string; notes: string; orNumber: string | null;
   version: number; recordedAt: string; actor: TreatmentActor; lines: TreatmentLine[]; metadataRedacted: boolean;

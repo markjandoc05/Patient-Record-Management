@@ -30,6 +30,11 @@ export const permissionDefinitions = [
   ['treatment_ledger.purchase', 'Treatment Ledger', 'Record purchases and edit package notes', [...admin, 'staff', 'manager']],
   ['treatment_ledger.adjust', 'Treatment Ledger', 'Adjust sessions and reverse recorded usage', admin],
   ['treatment_ledger.reference', 'Treatment Ledger', 'Manage Admin OR references', admin],
+  ['pos.view', 'POS & Payments', 'View invoices and acknowledgments', [...admin, 'staff', 'manager']],
+  ['pos.manage', 'POS & Payments', 'Create and post invoices', [...admin, 'staff', 'manager']],
+  ['pos.collect', 'POS & Payments', 'Record payments', [...admin, 'staff', 'manager']],
+  ['pos.adjust', 'POS & Payments', 'Override prices and void unpaid invoices', admin],
+  ['pos.sales', 'POS & Payments', 'View clinic sales and collections', [...admin, 'manager']],
   ['clinical.view', 'Clinical', 'View clinical information', all],
   ['clinical.edit_draft', 'Clinical', 'Edit clinical documentation', clinical],
   ['clinical.finalize', 'Clinical', 'Finalize records (Clinical R1)', []],
@@ -100,7 +105,7 @@ export function hasCapability(actor: PermissionActor | null | undefined, id: Per
   if (overrides[id] !== 'allow' && !defaultAllows(actor, id)) return false;
   // Security administration and Developer safeguards are not delegable by a map.
   if (id === 'access.manage' && !(administrativeRoles as readonly string[]).includes(actor!.role!)) return false;
-  if (id === 'treatment_ledger.reference' && !(administrativeRoles as readonly string[]).includes(actor!.role!)) return false;
+  if ((id === 'treatment_ledger.reference' || id === 'pos.adjust') && !(administrativeRoles as readonly string[]).includes(actor!.role!)) return false;
   if (id === 'developer.access' && !(developerRoles as readonly string[]).includes(actor!.role!)) return false;
   return context.branchId === undefined || hasBranchScope(actor!, context.branchId);
 }
@@ -113,7 +118,7 @@ export function permissionScopeKey(actor?: PermissionActor | null): string {
 export const viewPermissions: Record<string, PermissionId> = {
   BranchDashboard: 'dashboard.view', Records: 'patients.view', Appointments: 'appointments.view',
   VisitHistory: 'visits.view', Services: 'services.view', Insights: 'reports.view',
-  Inventory: 'inventory.view', AuditTrail: 'audit.view', DeveloperTools: 'developer.access',
+  POS: 'pos.view', Inventory: 'inventory.view', AuditTrail: 'audit.view', DeveloperTools: 'developer.access',
 };
 export function canOpenView(actor: PermissionActor | null | undefined, view: string): boolean {
   if (view === 'Settings') return ['settings.view', 'users.manage', 'access.manage'].some(id => hasCapability(actor, id as PermissionId));

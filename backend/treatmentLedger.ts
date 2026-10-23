@@ -63,7 +63,7 @@ function assertVersion(current: number, expected: number, code = 'VERSION_CONFLI
   if (current !== expected) ledgerFail(409, code, 'The treatment ledger changed. Reload and review before saving.');
 }
 async function line(tx: RecordTransaction, lineId: string, patientId: string) {
-  const row = (await tx.sql(`SELECT l.*,p.patient_id,p.branch_id,p.id AS owner_purchase_id FROM treatment_ledger_lines l
+  const row = (await tx.sql(`SELECT l.*,p.patient_id,p.branch_id,p.id AS owner_purchase_id, pos_purchase_usable(p.id) AS usable FROM treatment_ledger_lines l
     JOIN treatment_ledger_purchases p ON p.id=l.purchase_id WHERE l.id=$1 FOR UPDATE OF l`, [lineId])).rows[0];
   if (!row || row.patient_id !== patientId) ledgerFail(404, 'NOT_FOUND', 'Treatment package Service line not found for this patient.');
   const totals = (await tx.sql('SELECT COALESCE(sum(sessions_delta),0)::integer AS adjustment,COALESCE(sum(used_delta),0)::integer AS used FROM treatment_ledger_events WHERE line_id=$1', [lineId])).rows[0];
@@ -131,7 +131,11 @@ export async function applyVisitSessionUsage(tx: RecordTransaction, actor: Actor
   if (actor.profile.role === 'doctor' && (prospectiveVisit.doctorId || prospectiveVisit.performedByUserId) !== actor.identity.uid) ledgerFail(403, 'FORBIDDEN', 'Doctors may record session usage only for their own Visits.');
   await patient(tx, ledgerRecordId(prospectiveVisit.patientId), true);
   if (prospectiveVisit.isArchived === true) ledgerFail(409, 'VISIT_ARCHIVED', 'Restore the Visit before recording session usage.');
+  const billed = (await tx.sql(`SELECT 1 FROM pos_source_claims c JOIN pos_invoices i ON i.id=c.invoice_id
+    WHERE i.state='posted' AND ((c.collection_path='visits' AND c.record_id=$1) OR (c.collection_path='appointments' AND c.record_id=$2)) LIMIT 1`, [visitId, prospectiveVisit.appointmentId || null])).rowCount;
+  if (billed) ledgerFail(409, 'VISIT_ALREADY_BILLED', 'This Visit or booking has a posted invoice. Resolve its billing before using package sessions.');
   const selectedLine = await line(tx, usage.lineId, prospectiveVisit.patientId);
+  if (!selectedLine.usable) ledgerFail(409, 'PACKAGE_UNPAID', 'This package is locked until its invoice is fully paid.');
   const requestHash = commandHash('usage', visitId, { ...usage, visit: treatmentVisitBinding(prospectiveVisit) });
   const prior = await replay(tx, actor, usage.commandId, requestHash);
   if (prior) {
@@ -163,7 +167,7 @@ export async function assertVisitUsageCompatible(tx: RecordTransaction, visitId:
 async function readLedger(tx: RecordTransaction, actor: Actor, patientId: string): Promise<TreatmentLedgerResponse> {
   assertRead(actor);
   const patientRecord = await patient(tx, patientId);
-  const purchases = (await tx.sql('SELECT p.*,p.purchase_date::text AS purchase_date FROM treatment_ledger_purchases p WHERE patient_id=$1 ORDER BY p.purchase_date DESC,p.recorded_at DESC,p.id', [patientId])).rows;
+  const purchases = (await tx.sql('SELECT p.*,pos_purchase_usable(p.id) AS usable,p.purchase_date::text AS purchase_date FROM treatment_ledger_purchases p WHERE patient_id=$1 ORDER BY p.purchase_date DESC,p.recorded_at DESC,p.id', [patientId])).rows;
   const ids = purchases.map(row => row.id);
   const lines = ids.length ? (await tx.sql(`SELECT l.*,COALESCE(sum(e.sessions_delta),0)::integer AS adjustment,COALESCE(sum(e.used_delta),0)::integer AS used
     FROM treatment_ledger_lines l LEFT JOIN treatment_ledger_events e ON e.line_id=l.id WHERE l.purchase_id=ANY($1::uuid[]) GROUP BY l.id ORDER BY l.id`, [ids])).rows : [];
@@ -175,11 +179,11 @@ async function readLedger(tx: RecordTransaction, actor: Actor, patientId: string
     patientId, patientName: typeof patientRecord.name === 'string' ? patientRecord.name : '',
     purchases: purchases.map(row => {
       const scoped = hasBranchScope(actor.profile, row.branch_id);
-      return { id: row.id, patientId: row.patient_id, packageName: row.package_name, purchaseDate: purchaseDate(row.purchase_date), branchId: row.branch_id,
+      return { usable: row.usable, id: row.id, patientId: row.patient_id, packageName: row.package_name, purchaseDate: purchaseDate(row.purchase_date), branchId: row.branch_id,
         catalogue: row.catalogue_package_id ? { packageId: row.catalogue_package_id, version: row.catalogue_package_version } : null,
         branchNameSnapshot: row.branch_name_snapshot, timezoneSnapshot: row.timezone_snapshot, notes: scoped ? row.notes : '', orNumber: scoped ? row.or_number : null,
         version: row.version, recordedAt: dateText(row.recorded_at), actor: row.actor, metadataRedacted: !scoped,
-        capabilities: { canEditNotes: scoped && hasCapability(actor.profile, 'treatment_ledger.purchase'), canAdjust: scoped && hasCapability(actor.profile, 'treatment_ledger.adjust'), canEditOrNumber: canEditTreatmentOrNumber(actor.profile, row.branch_id) },
+        capabilities: { canEditNotes: scoped && hasCapability(actor.profile, 'treatment_ledger.purchase'), canAdjust: row.usable && scoped && hasCapability(actor.profile, 'treatment_ledger.adjust'), canEditOrNumber: canEditTreatmentOrNumber(actor.profile, row.branch_id) },
         lines: lines.filter(item => item.purchase_id === row.id).map(item => ({ id: item.id, serviceId: item.service_id, serviceNameSnapshot: item.service_name_snapshot,
           serviceCatalogueVersion: item.service_catalogue_version, ...treatmentBalance(item.purchased_sessions, item.adjustment, item.used), version: item.version })),
       };
@@ -275,6 +279,7 @@ export function mountTreatmentLedger(app: express.Express) {
     const raw = ledgerObject(req.body, ['commandId', 'expectedLineVersion', 'delta', 'reason']);
     const p = { commandId: ledgerUuid(raw.commandId), expectedLineVersion: ledgerVersion(raw.expectedLineVersion), delta: ledgerSessions(raw.delta, true), reason: ledgerText(raw.reason, 1000, 'Adjustment reason', true) };
     const lineId = ledgerUuid(req.params.lineId), row = await line(tx, lineId, patientId);
+    if (!row.usable) ledgerFail(409, 'PACKAGE_UNPAID', 'Pay the invoice before adjusting these sessions.');
     assertCapability(actor.profile, 'treatment_ledger.adjust', { branchId: row.branch_id });
     assertBranch(actor, row.branch_id);
     const requestHash = commandHash('adjustment', lineId, p), prior = await replay(tx, actor, p.commandId, requestHash);
@@ -306,4 +311,25 @@ export function mountTreatmentLedger(app: express.Express) {
     await tx.sql('UPDATE treatment_ledger_lines SET version=version+1 WHERE id=$1', [row.id]);
     return result(tx, actor, patientId, p.commandId, reversalId, false);
   });
+}
+
+// Called only after authoritative POS catalogue resolution in the same transaction.
+// The link inserted by POS gates usage; no legacy purchases or balances are changed.
+export async function createPosLedgerPurchase(tx: RecordTransaction, actor: Actor, input: {
+ patientId: string; branchId: string; notes: string; terms: any;
+}) {
+ const { patientId, branchId, notes, terms } = input;
+ assertRead(actor); assertCapability(actor.profile, 'treatment_ledger.purchase', { branchId }); assertBranch(actor, branchId);
+ const clinic = await branch(tx, branchId), zone = await timezone(tx), purchaseId = randomUUID(), commandId = randomUUID();
+ const day = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+ await tx.sql(`INSERT INTO treatment_ledger_purchases(id,command_id,patient_id,branch_id,package_name,purchase_date,branch_name_snapshot,timezone_snapshot,notes,actor,catalogue_package_id,catalogue_package_version)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)`, [purchaseId,commandId,patientId,branchId,terms.packageName,day,String(clinic.branchName||''),zone,notes,JSON.stringify(actorSnapshot(actor)),terms.catalogue.packageId,terms.catalogue.version]);
+ const lines = [];
+ for (const l of terms.lines) {
+  const id = randomUUID();
+  await tx.sql('INSERT INTO treatment_ledger_lines(id,purchase_id,service_id,service_name_snapshot,service_catalogue_version,purchased_sessions) VALUES($1,$2,$3,$4,$5,$6)', [id,purchaseId,l.serviceId,l.serviceNameSnapshot,l.serviceCatalogueVersion,l.purchasedSessions]);
+  lines.push({id,serviceId:l.serviceId,serviceNameSnapshot:l.serviceNameSnapshot,serviceCatalogueVersion:l.serviceCatalogueVersion,purchasedSessions:l.purchasedSessions});
+ }
+ await addEvent(tx,actor,{commandId,requestHash:commandHash('pos-purchase',patientId,input),type:'purchase',purchaseId,branchId,metadata:{packageName:terms.packageName,purchaseDate:day,notes,lines,catalogue:terms.catalogue,source:'pos'}});
+ return purchaseId;
 }

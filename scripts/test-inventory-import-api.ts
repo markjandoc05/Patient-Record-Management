@@ -1,3 +1,4 @@
+import { assertCurrentMigrationChain } from './platform-test-support';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -48,7 +49,7 @@ async function ready(rows: any[]) {
 try {
   check(Number((await pool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")).rows[0].count) === 0, 'import suite requires empty disposable database');
   await migrateDatabase(); await migrateDatabase();
-  check((await pool.query('SELECT count(*) FROM schema_migrations')).rows[0].count === '7', 'import reuses complete001–007 migration chain');
+  check(await assertCurrentMigrationChain(), 'complete current checksummed migration chain');
   for (const id of ['A', 'B', 'inactive']) await db.collection('branches').doc(id).set({ branchName: 'Synthetic Excel branch ' + id, status: id === 'inactive' ? 'Inactive' : 'Active' });
   for (const [id, fields] of Object.entries({
     admin: { role: 'admin', assignedBranches: ['A', 'B'] },
