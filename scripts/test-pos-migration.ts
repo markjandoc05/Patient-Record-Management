@@ -36,23 +36,27 @@ async function retained() {
 }
 try {
     check(Number((await pool.query("SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")).rows[0].count) === 0, 'empty disposable database required');
-    const names = (await readdir('migrations')).filter(n => n.endsWith('.sql')).sort();
-    check(names.length === 8 && names[7] === '008_pos_payments.sql', 'additive 008');
+    const names = (await readdir('migrations')).filter(n => n.endsWith('.sql') && n < '009_').sort();
+    check(names.length === 8 && names[7] === '008_pos_payments.sql', 'focused ordered POS migration chain through008');
     const sources = await Promise.all(names.map(n => readFile(path.join(original, 'migrations', n), 'utf8')));
+    // Keep this release's fresh and upgrade schemas comparable when later migrations exist.
+    temporary = await mkdtemp(path.join(tmpdir(), 'vine-pos-migrations-'));
+    await mkdir(path.join(temporary, 'migrations'));
+    for (let i = 0; i < names.length; i++)
+        await writeFile(path.join(temporary, 'migrations', names[i]), sources[i]);
+    process.chdir(temporary);
     await migrateDatabase();
     const fresh = await schema(), freshApplied = await applied();
+    check(JSON.stringify(JSON.parse(freshApplied).map((row: any) => row.name)) === JSON.stringify(names), 'fresh baseline applies exactly001–008, excluding later workspace migrations');
     await migrateDatabase();
     check(await schema() === fresh && await applied() === freshApplied, 'fresh complete chain repeat is inert');
     const tables = (await pool.query("SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'pos_%'")).rows;
     for (const { tablename } of tables)
         check((await pool.query(`SELECT count(*) FROM "${tablename}"`)).rows[0].count === '0', 'no fixtures in ' + tablename);
     await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
-    temporary = await mkdtemp(path.join(tmpdir(), 'vine-pos-migrations-'));
-    await mkdir(path.join(temporary, 'migrations'));
-    for (let i = 0; i < 7; i++)
-        await writeFile(path.join(temporary, 'migrations', names[i]), sources[i]);
-    process.chdir(temporary);
+    await rm(path.join(temporary, 'migrations', names[7]));
     await migrateDatabase();
+    check(JSON.stringify(JSON.parse(await applied()).map((row: any) => row.name)) === JSON.stringify(names.slice(0, 7)), 'retained setup applies exactly001–007');
     const { randomUUID } = await import('node:crypto');
     const service = randomUUID(), purchase = randomUUID(), line = randomUUID();
     await pool.query(`INSERT INTO app_records(collection_path,id,data) VALUES('branches','A','{"branchName":"Synthetic retained clinic","status":"Active"}'),('patients','patient','{"name":"Synthetic retained patient","legacyText":"Keep"}'),('visits','old-visit','{"patientId":"patient","branchId":"A","notes":"Unsaved origin history","legacyTreatment":"Keep"}'),('appointments','booking','{"specialPrice":"100.00","bookingPricingRevision":2,"bookingQuote":{"total":"100.00"}}')`);

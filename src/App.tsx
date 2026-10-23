@@ -21,6 +21,7 @@ import VisitHistoryDashboard from './components/VisitHistoryDashboard';
 import InsightsAnalyticsDashboard from './components/InsightsAnalyticsDashboard';
 import AppointmentsDashboard from './components/AppointmentsDashboard';
 import PosDashboard from './components/PosDashboard';
+import type { VisitPosLaunch } from './utils/visitBilling';
 import InventoryDashboard from './components/InventoryDashboard';
 import AuditTrailDashboard from './components/AuditTrailDashboard';
 import DeveloperDashboard, { DevTab } from './components/DeveloperDashboard';
@@ -143,7 +144,7 @@ export default function App() {
   const setUserProfile = (value: any) => { publishPermissionProfile(value); setUserProfileState(value); };
   const [loading, setLoading] = useState(true);
   const [brandingLoaded, setBrandingLoaded] = useState(false);
-  const [posLaunch, setPosLaunch] = useState<any>(null);
+  const [posLaunch, setPosLaunch] = useState<VisitPosLaunch | null>(null);
   const [activeView, setActiveView] = useState('Records');
   const [devTab, setDevTab] = useState<DevTab>('system_overview');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);

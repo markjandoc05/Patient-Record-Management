@@ -11,6 +11,9 @@ import { readAppointmentBookingQuote } from '../src/utils/appointmentBookingQuot
 import { readVisitPriceQuote } from '../src/utils/visitPricingPolicy';
 import { appointmentPricingRevision } from '../src/utils/appointmentSpecialPrice';
 import { createPosLedgerPurchase } from './treatmentLedger';
+import { readVisitBilling, assertInvoiceVisitRelationship } from './visitBilling';
+import { readVisitBillingWorklist } from './visitBillingWorklist';
+import { readSalesOverview, readSalesRecords } from './salesOverview';
 type Actor = Awaited<ReturnType<typeof currentActor>>;
 const canonical = (value: any): any => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
@@ -114,9 +117,12 @@ async function invoice(tx: RecordTransaction, a: Actor, id: string) {
 async function detail(tx: RecordTransaction, a: Actor, id: string) {
     const i = await invoice(tx, a, id);
     const items = (await tx.sql('SELECT * FROM pos_invoice_items WHERE invoice_id=$1 ORDER BY position', [id])).rows;
-    const payments = (await tx.sql('SELECT * FROM pos_payments WHERE invoice_id=$1 ORDER BY recorded_at,id', [id])).rows;
+    const payments = (await tx.sql(`SELECT p.*,CASE WHEN r.id IS NULL THEN NULL ELSE
+        jsonb_build_object('id',r.id,'reason',r.reason,'actor',r.actor,'recorded_at',r.recorded_at) END AS reversal
+        FROM pos_payments p LEFT JOIN pos_payment_reversals r ON r.payment_id=p.id
+        WHERE p.invoice_id=$1 ORDER BY p.recorded_at,p.id`, [id])).rows;
     const events = (await tx.sql('SELECT * FROM pos_events WHERE invoice_id=$1 ORDER BY recorded_at,id', [id])).rows;
-    const paid = payments.reduce((sum, p) => sum + Number(p.amount_cents), 0);
+    const paid = Number((await tx.sql('SELECT pos_paid_cents($1) AS paid', [id])).rows[0].paid);
     return { ...i, total_cents: Number(i.total_cents), paid_cents: paid, outstanding_cents: i.state === 'void' ? 0 : Number(i.total_cents) - paid, items, payments, events };
 }
 async function replay(tx: RecordTransaction, a: Actor, commandId: string, requestHash: string) {
@@ -154,17 +160,22 @@ export function mountPos(app: express.Express) {
         });
     };
     route('get', '/branches', async (_req, tx, a) => ({ branches: (await tx.sql("SELECT id,data->>'branchName' AS name,data->>'status' AS status FROM app_records WHERE collection_path='branches' AND ($1 OR id=ANY($2::text[])) ORDER BY lower(data->>'branchName'),id", [hasGlobalBranchScope(a.profile), a.profile.assignedBranches || []])).rows }));
+    route('get', '/visit-billing', async (req, tx, a) => readVisitBilling(tx, a, req.query.visitIds));
+    route('get', '/visit-billing-worklist', async (req, tx, a) => readVisitBillingWorklist(tx, a, req.query));
+    route('get', '/sales-overview', async (req, tx, a) => readSalesOverview(tx, a, req.query));
+    route('get', '/sales-records', async (req, tx, a) => readSalesRecords(tx, a, req.query));
     route('get', '/options', async (req, tx, a) => {
         const branchId = ledgerRecordId(req.query.branchId);
         scoped(a, branchId);
         assertCapability(a.profile, 'patients.view');
         const q = ledgerText(req.query.q ?? '', 100, 'Search');
-        const patients = (await tx.sql("SELECT id,data->>'name' AS name FROM app_records WHERE collection_path='patients' AND COALESCE(data->>'isArchived','false')<>'true' AND position(lower($1) in lower(COALESCE(data->>'name','')||' '||COALESCE(data->>'patientID','')))>0 ORDER BY lower(data->>'name'),id LIMIT 30", [q])).rows;
+        const patientId = req.query.patientId === undefined || req.query.patientId === '' ? null : ledgerRecordId(req.query.patientId);
+        const patients = q.length >= 2 ? (await tx.sql("SELECT id,data->>'name' AS name,data->>'patientID' AS \"patientID\" FROM app_records WHERE collection_path='patients' AND COALESCE(data->>'isArchived','false')<>'true' AND position(lower($1) in lower(COALESCE(data->>'name','')||' '||COALESCE(data->>'patientID','')))>0 ORDER BY lower(data->>'name'),id LIMIT 30", [q])).rows : [];
+        const selectedPatient = patientId ? (await tx.sql("SELECT id,data->>'name' AS name,data->>'patientID' AS \"patientID\" FROM app_records WHERE collection_path='patients' AND id=$1 AND COALESCE(data->>'isArchived','false')<>'true'", [patientId])).rows[0] ?? null : null;
         const services = hasCapability(a.profile, 'services.view') ? (await tx.sql("SELECT s.id,s.name,s.version,COALESCE(b.price_override,s.standard_price)::text AS price FROM services s JOIN service_branch_settings b ON b.service_id=s.id AND b.branch_id=$1 WHERE s.active AND b.available AND COALESCE(b.price_override,s.standard_price) IS NOT NULL AND position(lower($2) in lower(s.name))>0 ORDER BY lower(s.name),s.id LIMIT 100", [branchId, String(req.query.itemSearch ?? '').slice(0, 100)])).rows : [];
         const packages = hasCapability(a.profile, 'packages.view') && hasCapability(a.profile, 'services.view') ? (await tx.sql('SELECT p.id,p.version,v.name FROM package_catalogue p JOIN package_catalogue_versions v ON v.package_id=p.id AND v.version=p.version WHERE v.active AND NOT EXISTS (SELECT 1 FROM package_catalogue_lines l JOIN services s ON s.id=l.service_id LEFT JOIN service_branch_settings b ON b.service_id=s.id AND b.branch_id=$2 WHERE l.package_id=p.id AND l.version=p.version AND (NOT s.active OR b.available IS DISTINCT FROM true OR COALESCE(b.price_override,s.standard_price) IS NULL)) AND position(lower($1) in lower(v.name))>0 ORDER BY lower(v.name),p.id LIMIT 100', [String(req.query.itemSearch ?? '').slice(0, 100), branchId])).rows : [];
         const sources: any[] = [];
-        if (req.query.patientId) {
-            const patientId = ledgerRecordId(req.query.patientId);
+        if (patientId) {
             for (const collection of ['visits', 'appointments']) {
                 if (!hasCapability(a.profile, collection === 'visits' ? 'visits.view' : 'appointments.view', { branchId }))
                     continue;
@@ -173,7 +184,7 @@ export function mountPos(app: express.Express) {
                     sources.push(sourceSummary(collection === 'visits' ? 'visit' : 'appointment', r.id, r.data));
             }
         }
-        return { patients, services, packages, sources };
+        return { patients, selectedPatient, services, packages, sources };
     });
     route('get', '/sources', async (req, tx, a) => {
         const kind = sourceKind(req.query.kind), { branchId, patientId, collection } = await sourceContext(req, tx, a, kind);
@@ -217,7 +228,7 @@ export function mountPos(app: express.Express) {
         const params: any[] = [hasGlobalBranchScope(a.profile), a.profile.assignedBranches || [], branchId, patientId];
         // Aggregate each invoice's allocations once. EXISTS searches payment references
         // without multiplying invoice rows or pagination totals by payment count.
-        const base = `FROM pos_invoices i LEFT JOIN LATERAL (SELECT COALESCE(sum(amount_cents),0)::bigint AS paid_cents FROM pos_payments WHERE invoice_id=i.id) p ON true WHERE ${scope}`;
+        const base = `FROM pos_invoices i LEFT JOIN LATERAL (SELECT pos_paid_cents(i.id) AS paid_cents) p ON true WHERE ${scope}`;
         const statusFilter: Record<string, string> = {
             all: 'true', draft: "i.state='draft'", void: "i.state='void'",
             unpaid: "i.state='posted' AND p.paid_cents=0 AND i.total_cents>0",
@@ -242,7 +253,10 @@ export function mountPos(app: express.Express) {
     });
     route('get', '/invoices/:id', async (req, tx, a) => {
         const patientId = req.query.patientId === undefined ? null : ledgerRecordId(req.query.patientId);
-        const value = await detail(tx, a, ledgerUuid(req.params.id));
+        const id = ledgerUuid(req.params.id);
+        if (req.query.visitId !== undefined)
+            await assertInvoiceVisitRelationship(tx, a, ledgerRecordId(req.query.visitId), id);
+        const value = await detail(tx, a, id);
         if (patientId && value.patient_id !== patientId)
             ledgerFail(403, 'PATIENT_SCOPE', 'This invoice belongs to another patient.');
         return value;
@@ -322,13 +336,38 @@ export function mountPos(app: express.Express) {
         version(i.version, p.expectedVersion);
         if (i.state !== 'posted')
             ledgerFail(409, 'NOT_POSTED', 'Post this invoice before collecting payment.');
-        const paid = Number((await tx.sql('SELECT COALESCE(sum(amount_cents),0) AS paid FROM pos_payments WHERE invoice_id=$1', [id])).rows[0].paid);
+        const paid = Number((await tx.sql('SELECT pos_paid_cents($1) AS paid', [id])).rows[0].paid);
         if (p.amount > Number(i.total_cents) - paid)
             ledgerFail(409, 'OVERPAYMENT', 'Payment exceeds the remaining balance. Cash tender may exceed payment; the excess is change.');
         const paymentId = randomUUID();
         await tx.sql('INSERT INTO pos_payments(id,invoice_id,amount_cents,tender_cents,method,reference,actor) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)', [paymentId, id, p.amount, p.tender, p.method, p.reference, JSON.stringify(who(a))]);
         await tx.sql('UPDATE pos_invoices SET version=version+1 WHERE id=$1', [id]);
         await event(tx, a, id, p.commandId, h, 'payment', { paymentId, amount: p.amount, change: p.tender - p.amount });
+        return detail(tx, a, id);
+    });
+    route('post', '/invoices/:id/payments/:paymentId/reversal', async (req, tx, a) => {
+        const p = ledgerObject(req.body, ['commandId', 'expectedVersion', 'reason']);
+        const commandId = ledgerUuid(p.commandId), expected = ledgerVersion(p.expectedVersion), reason = ledgerText(p.reason, 1000, 'Correction reason', true);
+        const id = ledgerUuid(req.params.id), paymentId = ledgerUuid(req.params.paymentId), i = await invoice(tx, a, id);
+        assertCapability(a.profile, 'pos.adjust', { branchId: i.branch_id });
+        const h = hash(['payment-reversal', id, paymentId, expected, reason]);
+        const prior = await replay(tx, a, commandId, h);
+        if (prior)
+            return prior;
+        version(i.version, expected);
+        if (i.state !== 'posted')
+            ledgerFail(409, 'NOT_POSTED', 'Only payments on a posted invoice may be corrected.');
+        const payment = (await tx.sql('SELECT * FROM pos_payments WHERE id=$1 AND invoice_id=$2', [paymentId, id])).rows[0];
+        if (!payment)
+            ledgerFail(404, 'PAYMENT_NOT_FOUND', 'Payment not found on this invoice.');
+        if ((await tx.sql('SELECT 1 FROM pos_payment_reversals WHERE payment_id=$1', [paymentId])).rowCount)
+            ledgerFail(409, 'PAYMENT_ALREADY_REVERSED', 'This payment entry has already been reversed.');
+        if ((await tx.sql("SELECT 1 FROM pos_package_purchases p JOIN pos_invoice_items i ON i.id=p.item_id JOIN treatment_ledger_events e ON e.purchase_id=p.purchase_id WHERE i.invoice_id=$1 AND e.type IN ('usage','adjustment') LIMIT 1", [id])).rowCount)
+            ledgerFail(409, 'PACKAGE_USED', 'Package usage or adjustment history prevents this payment correction. Existing sessions and history must be preserved.');
+        const reversalId = randomUUID();
+        await tx.sql('INSERT INTO pos_payment_reversals(id,payment_id,command_id,reason,actor) VALUES($1,$2,$3,$4,$5::jsonb)', [reversalId, paymentId, commandId, reason, JSON.stringify(who(a))]);
+        await tx.sql('UPDATE pos_invoices SET version=version+1 WHERE id=$1', [id]);
+        await event(tx, a, id, commandId, h, 'payment-reversal', { reversalId, paymentId, amount: Number(payment.amount_cents), reason });
         return detail(tx, a, id);
     });
     route('post', '/invoices/:id/void', async (req, tx, a) => {
@@ -341,7 +380,7 @@ export function mountPos(app: express.Express) {
             return prior;
         version(i.version, expected);
         if (i.state === 'void' || (await tx.sql('SELECT 1 FROM pos_payments WHERE invoice_id=$1', [id])).rowCount)
-            ledgerFail(409, 'CANNOT_VOID', 'Only unpaid invoices may be voided. Paid corrections require a separate refund workflow.');
+            ledgerFail(409, 'CANNOT_VOID', 'Only invoices without recorded payment history may be voided. A payment correction preserves that history.');
         // A free package may already have been redeemed; never strand that history.
         if ((await tx.sql("SELECT 1 FROM pos_package_purchases p JOIN pos_invoice_items i ON i.id=p.item_id JOIN treatment_ledger_events e ON e.purchase_id=p.purchase_id WHERE i.invoice_id=$1 AND e.type IN ('usage','adjustment') LIMIT 1", [id])).rowCount)
             ledgerFail(409, 'PACKAGE_USED', 'Package history prevents voiding this invoice.');
@@ -377,10 +416,12 @@ export function mountPos(app: express.Express) {
         const rows = [];
         for (const b of branches) {
             const sales = Number((await tx.sql("SELECT COALESCE(sum(total_cents),0) AS total FROM pos_invoices WHERE branch_id=$1 AND state='posted' AND (posted_at AT TIME ZONE 'Asia/Manila')::date BETWEEN $2::date AND $3::date", [b.id, from, to])).rows[0].total);
-            const collected = Number((await tx.sql("SELECT COALESCE(sum(p.amount_cents),0) AS total FROM pos_payments p JOIN pos_invoices i ON i.id=p.invoice_id WHERE i.branch_id=$1 AND (p.recorded_at AT TIME ZONE 'Asia/Manila')::date BETWEEN $2::date AND $3::date", [b.id, from, to])).rows[0].total);
-            const outstanding = Number((await tx.sql("SELECT COALESCE(sum(i.total_cents-COALESCE((SELECT sum(amount_cents) FROM pos_payments WHERE invoice_id=i.id),0)),0) AS total FROM pos_invoices i WHERE branch_id=$1 AND state='posted'", [b.id])).rows[0].total);
-            rows.push({ id: b.id, name: b.name, sales, collected, outstanding });
+            const received = Number((await tx.sql("SELECT COALESCE(sum(p.amount_cents),0) AS total FROM pos_payments p JOIN pos_invoices i ON i.id=p.invoice_id WHERE i.branch_id=$1 AND (p.recorded_at AT TIME ZONE 'Asia/Manila')::date BETWEEN $2::date AND $3::date", [b.id, from, to])).rows[0].total);
+            const reversed = Number((await tx.sql("SELECT COALESCE(sum(p.amount_cents),0) AS total FROM pos_payment_reversals r JOIN pos_payments p ON p.id=r.payment_id JOIN pos_invoices i ON i.id=p.invoice_id WHERE i.branch_id=$1 AND (r.recorded_at AT TIME ZONE 'Asia/Manila')::date BETWEEN $2::date AND $3::date", [b.id, from, to])).rows[0].total);
+            const collected = received - reversed;
+            const outstanding = Number((await tx.sql("SELECT COALESCE(sum(i.total_cents-pos_paid_cents(i.id)),0) AS total FROM pos_invoices i WHERE branch_id=$1 AND state='posted'", [b.id])).rows[0].total);
+            rows.push({ id: b.id, name: b.name, sales, received, reversed, collected, outstanding });
         }
-        return { from, to, timezone: 'Asia/Manila', branches: rows, totals: rows.reduce((s, r) => ({ sales: s.sales + r.sales, collected: s.collected + r.collected, outstanding: s.outstanding + r.outstanding }), { sales: 0, collected: 0, outstanding: 0 }) };
+        return { from, to, timezone: 'Asia/Manila', branches: rows, totals: rows.reduce((s, r) => ({ sales: s.sales + r.sales, received: s.received + r.received, reversed: s.reversed + r.reversed, collected: s.collected + r.collected, outstanding: s.outstanding + r.outstanding }), { sales: 0, received: 0, reversed: 0, collected: 0, outstanding: 0 }) };
     });
 }

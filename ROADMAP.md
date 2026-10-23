@@ -1,5 +1,66 @@
 # Vine incremental production roadmap
 
+## Visit billing improvements — October 24 local
+
+POS adds a paginated completed-Visit billing queue, defaults new clinical invoices
+to an explicit saved Visit quote, and labels catalogue Services as separate sales.
+Visit billing separates its recorded item amount from whole-invoice payments.
+Sales adds invoice-line source reconciliation and an aggregate Excel source sheet.
+Financial reads refresh on changes/return without replacing unsaved invoice fields.
+No schema or financial write rules changed. Existing pending POS work is retained.
+Tests and browser acceptance are skipped by user instruction; see the
+[implementation and schema report](docs/releases/2026-10-24-visit-billing-improvements.md).
+Next: independent scoped review and user acceptance of the combined local candidate.
+Nothing staged, committed, pushed or deployed.
+
+## Sales Overview R1 — October 24 local
+
+POS now includes authorized branch comparisons, overall KPIs, previous-period
+comparisons, daily trends, payment-method breakdown and Excel reporting. Source
+records open existing invoices while preserving report filters. All projections
+reuse posted invoice/payment history and current net balances; no financial writes
+or permission defaults changed. No schema change; existing pending009 is retained.
+Tests and browser acceptance were skipped at the user’s request; TypeScript/build
+and static review are recorded in the [implementation and schema report](docs/releases/2026-10-24-sales-overview-r1.md).
+Next: scoped review and user acceptance of the combined pending POS work before
+any separately authorized commit or release. Nothing staged, committed or deployed.
+
+## Visit prices and POS billing — October24 local
+
+Visits show saved quotes and authorized billing status. Details reuse exact Visit
+quotes to create invoices or open existing drafts/posted history, with package
+usage distinguished from Free or Paid. Visible-page reads check Visit and linked
+appointment sources and preserve net payments, frozen terms and branch scope.
+No new migration or financial write behavior; pending009 and prior POS work remain
+uncommitted. See [implementation and schema report](docs/releases/2026-10-24-visit-price-pos-billing.md).
+Next:independent scoped review including the pending prerequisites. No staging,
+commit, push, deployment or production action in this implementation.
+
+## Simpler New Invoice form — October23 local
+
+New drafts use explicit searchable patient selection, contextual item search,
+clear price sources, secondary Admin adjustments and a concise draft summary.
+Patient changes with items require confirmation and retain invoice notes.
+An additive authorized identity read preserves selected patients outside the
+first30 search matches. Quotes, exact calculations, package guards, correction
+history, Sales and branch policy remain unchanged. No schema change; pending009
+is untouched. See [implementation and validation](docs/releases/2026-10-23-pos-new-invoice-form.md).
+Next:independent scoped review of the current candidate. Previous review artifacts
+are superseded; no staging, commit, push or production action in this refinement.
+
+## POS R1B — Admin payment corrections, October23 local
+
+POS R1A is committed as `a012857` (invoice lookup and Patient Billing); the new
+correction work remains uncommitted. Main POS adds Admin/guarded Support full-entry
+payment reversals with a reason and attributed history. Original quotes, invoice
+terms, payments and session balances remain intact. Net payments drive balances,
+package funding and collections. Used/adjusted package history blocks correction.
+New additive migration009 is locally applied; committed history remains001–008.
+Production is unverified and untouched. No refunds, Daily Collections or retail
+sales in this step. See [implementation and schema report](docs/releases/2026-10-23-pos-r1b-payment-corrections.md).
+Next: scoped commit-readiness review of corrections, then separately authorized
+commit. Daily Clinic Collections follows as a separate feature.
+
 ## POS R1A — October23 local
 
 Invoice lookup adds patient/invoice/reference search, clinic/date/payment-status

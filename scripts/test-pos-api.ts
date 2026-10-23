@@ -62,6 +62,51 @@ try {
     check(branchList.branches.length === 1 && branchList.branches[0].id === 'A', 'only assigned branch visible');
     for (const endpoint of ['/options?branchId=B', '/invoices?branchId=B', '/sales?branchId=B&from=2020-01-01&to=2040-01-01'])
         status(await request('/api/pos' + endpoint, 'GET', undefined, 'manager'), 403, 'cross-branch read denied');
+    // Keep a selected patient's identity independent of the bounded search list.
+    for (let n = 0; n < 35; n++)
+        await db.collection('patients').doc(`picker-${n}`).set({ name: `Picker ${String(n).padStart(2, '0')}`, patientID: `PICK-${n}`, isArchived: false });
+    const selectedIdentity = { id: 'picker-selected', name: 'Zzz selected patient', patientID: 'ID-PICK-100%_' };
+    await db.collection('patients').doc(selectedIdentity.id).set({ name: selectedIdentity.name, patientID: selectedIdentity.patientID, isArchived: false,
+        dateOfBirth: '1990-01-01', phone: 'Synthetic private contact', medicalHistory: 'Synthetic private clinical history' });
+    await db.collection('patients').doc('picker-decoy').set({ name: 'Zzz similar identifier', patientID: 'ID-PICK-100XY', isArchived: false });
+    await db.collection('patients').doc('picker-archived').set({ name: 'Archived picker patient', patientID: 'ID-PICK-ARCHIVED', isArchived: true });
+    const pickerPatientsBefore = (await pool.query("SELECT id,data FROM app_records WHERE collection_path='patients' ORDER BY id")).rows;
+    const pickerBase = '/api/pos/options?branchId=A';
+    for (const query of ['', '&q=', '&q=%20%20%20', '&q=p', '&q=%20p%20']) {
+        const options = status(await request(pickerBase + query, 'GET', undefined, 'staffA'), 200, 'patient choices require two search characters');
+        check(options.patients.length === 0 && options.selectedPatient === null, 'missing, blank, whitespace and one-character searches do not preload patients');
+    }
+    const pickerOptions = status(await request(pickerBase + '&q=pi', 'GET', undefined, 'staffA'), 200, 'patient picker options');
+    check(pickerOptions.patients.length === 30 && !pickerOptions.patients.some((p: any) => p.id === selectedIdentity.id), 'selected patient setup falls outside the first thirty results');
+    check(pickerOptions.selectedPatient === null && pickerOptions.patients.every((p: any) => Object.keys(p).sort().join(',') === 'id,name,patientID'), 'patient options expose only identity fields and no implicit selection');
+    const trimmedName = status(await request(pickerBase + '&q=%20%20pIcKeR%2000%20%20', 'GET', undefined, 'staffA'), 200, 'trimmed name search');
+    check(trimmedName.patients.length === 1 && trimmedName.patients[0].id === 'picker-0', 'two or more search characters match names case insensitively after trimming');
+    const shortPatientId = status(await request(pickerBase + '&q=10', 'GET', undefined, 'staffA'), 200, 'two-character patientID search');
+    check(shortPatientId.patients.some((p: any) => p.id === selectedIdentity.id), 'two-character patientID search returns matching identities');
+    const emptySelection = status(await request(pickerBase + '&patientId=', 'GET', undefined, 'staffA'), 200, 'compatible empty patient selection');
+    check(emptySelection.selectedPatient === null, 'empty patient selection remains supported');
+    const selectedOptions = status(await request(pickerBase + '&patientId=' + selectedIdentity.id, 'GET', undefined, 'staffA'), 200, 'selected patient outside first thirty');
+    check(selectedOptions.patients.length === 0 && JSON.stringify(selectedOptions.selectedPatient) === JSON.stringify(selectedIdentity), 'exact selected patient exposes only its saved identity without loading patients');
+    for (const query of ['&q=', '&q=%20%20', '&q=%20p%20']) {
+        const options = status(await request(pickerBase + '&patientId=' + selectedIdentity.id + query, 'GET', undefined, 'staffA'), 200, 'short search preserves selected patient');
+        check(options.patients.length === 0 && JSON.stringify(options.selectedPatient) === JSON.stringify(selectedIdentity), 'blank and short searches retain the independent exact selected identity');
+    }
+    const searchedOptions = status(await request(pickerBase + '&patientId=' + selectedIdentity.id + '&q=Picker%2000&itemSearch=no-match', 'GET', undefined, 'staffA'), 200, 'search preserves selected patient');
+    check(searchedOptions.patients.length === 1 && searchedOptions.patients[0].id === 'picker-0' && JSON.stringify(searchedOptions.selectedPatient) === JSON.stringify(selectedIdentity), 'patient and catalogue searches preserve an independent selected identity');
+    const literalPatientId = status(await request(pickerBase + '&q=' + encodeURIComponent('id-pick-100%_'), 'GET', undefined, 'staffA'), 200, 'literal patientID search');
+    check(literalPatientId.patients.length === 1 && literalPatientId.patients[0].id === selectedIdentity.id && literalPatientId.patients[0].patientID === selectedIdentity.patientID, 'patientID search is case insensitive and treats percent and underscore literally');
+    const legacyIdentity = status(await request(pickerBase + '&patientId=patient', 'GET', undefined, 'staffA'), 200, 'legacy identity without patientID');
+    check(JSON.stringify(legacyIdentity.selectedPatient) === JSON.stringify({ id: 'patient', name: 'Synthetic POS patient', patientID: null }), 'existing patients without patientID still load');
+    const archivedIdentity = status(await request(pickerBase + '&patientId=picker-archived&q=ID-PICK-ARCHIVED', 'GET', undefined, 'staffA'), 200, 'archived patient identity excluded');
+    check(archivedIdentity.selectedPatient === null && archivedIdentity.patients.length === 0, 'archived patient cannot appear in new draft identity choices');
+    const missingIdentity = status(await request(pickerBase + '&patientId=picker-missing', 'GET', undefined, 'staffA'), 200, 'missing selected patient identity');
+    check(missingIdentity.selectedPatient === null, 'missing selected identity is null');
+    for (const actor of ['anonymous', 'doctor', 'noPatients', 'staffB', 'noBranches'])
+        for (const query of ['', '&q=pi'])
+            status(await request(pickerBase + '&patientId=' + selectedIdentity.id + query, 'GET', undefined, actor), actor === 'anonymous' ? 401 : 403, 'suppressed and matching searches retain patient, POS and branch guards');
+    for (const patientQuery of ['patientId=invalid%2Fid', 'patientId=patient&patientId=picker-selected'])
+        status(await request(pickerBase + '&' + patientQuery, 'GET', undefined, 'staffA'), 400, 'nonempty selected patient identifier validated');
+    check(JSON.stringify((await pool.query("SELECT id,data FROM app_records WHERE collection_path='patients' ORDER BY id")).rows) === JSON.stringify(pickerPatientsBefore), 'options identity reads preserve patient records');
     const service = status(await request('/api/services', 'POST', { id: randomUUID(), name: 'Synthetic POS service', description: '', defaultDurationMinutes: 30, standardPrice: { mode: 'priced', amount: '100.10' }, branchSettings: [{ branchId: 'A', available: true, price: { mode: 'inherit' } }, { branchId: 'B', available: true, price: { mode: 'priced', amount: '200.20' } }] }), 201, 'service');
     const item = { kind: 'service', id: service.id, expectedVersion: service.version };
     const original = { commandId: command(), expectedVersion: 0, patientId: 'patient', branchId: 'A', notes: 'Original notes', items: [item] };
@@ -346,6 +391,126 @@ try {
     check(afterCollection.summary.invoicedCents === 350000 && afterCollection.summary.paidCents === 13500 && afterCollection.summary.outstandingCents === 336500, 'later collection updates complete patient summary without changing quoted sales');
     const ledgerAfterLookup = status(await request('/api/records/patients/patient/treatment-ledger', 'GET', undefined, 'staffA'), 200, 'existing patient ledger after invoice lookup');
     check(ledgerAfterLookup.purchases.some((p: any) => p.id === purchase.id && p.lines[0].remainingSessions === 2 && p.usable === true), 'lookup and patient collections preserve existing package funding/session balances');
+    // Page-sized Visit billing is a read-only projection of frozen source bindings.
+    // None of these synthetic records leave this guarded disposable database.
+    const visitBillingBase = '/api/pos/visit-billing?visitIds=';
+    const addBillingVisit = async (id: string, extra: any = {}) => db.collection('visits').doc(id).set({ ...visitData, appointmentId: null, ...extra });
+    const visitBilling = async (ids: string[], actor = 'staffA') => status(await request(visitBillingBase + ids.map(encodeURIComponent).join(','), 'GET', undefined, actor), 200, 'Visit billing projection').visits;
+    const seedLinkedInvoice = async (visitId: string, extra: { state?: 'draft' | 'posted' | 'void'; patientId?: string; branchId?: string; cents?: number; otherCents?: number; source?: any; claim?: { collection: string; id: string }; payments?: number[] } = {}) => {
+        const id = randomUUID(), cents = extra.cents ?? 7000, total = cents + (extra.otherCents ?? 0);
+        const row = (await pool.query("INSERT INTO pos_invoices(id,patient_id,branch_id,patient_name,branch_name,total_cents,actor) VALUES($1,$2,$3,'Synthetic billing patient',$3,$4,$5::jsonb) RETURNING *", [id, extra.patientId ?? 'patient', extra.branchId ?? 'A', total, seededActor])).rows[0];
+        await pool.query("INSERT INTO pos_invoice_items(id,invoice_id,position,kind,name,amount_cents,snapshot) VALUES($1,$2,0,'visit','Frozen synthetic Visit',$3,$4::jsonb)", [randomUUID(), id, cents, JSON.stringify({ source: extra.source ?? { collection: 'visits', id: visitId, appointmentId: null, quote: { ...quote, total: (cents / 100).toFixed(2) } } })]);
+        if (extra.otherCents)
+            await pool.query("INSERT INTO pos_invoice_items(id,invoice_id,position,kind,name,amount_cents,snapshot) VALUES($1,$2,1,'service','Other synthetic treatment',$3,'{}'::jsonb)", [randomUUID(), id, extra.otherCents]);
+        if (extra.state !== 'draft')
+            await pool.query("UPDATE pos_invoices SET state='posted',version=2,posted_at=now() WHERE id=$1", [id]);
+        if (extra.state === 'void')
+            await pool.query("UPDATE pos_invoices SET state='void',version=3 WHERE id=$1", [id]);
+        if (extra.claim)
+            await pool.query('INSERT INTO pos_source_claims(collection_path,record_id,invoice_id) VALUES($1,$2,$3)', [extra.claim.collection, extra.claim.id, id]);
+        for (const cents of extra.payments ?? [])
+            await pool.query("INSERT INTO pos_payments(id,invoice_id,amount_cents,tender_cents,method,actor) VALUES($1,$2,$3,$3,'cash',$4::jsonb)", [randomUUID(), id, cents, seededActor]);
+        return row;
+    };
+    for (const id of ['billing-open', 'billing-free', 'billing-missing', 'billing-drafts', 'billing-shared', 'billing-void', 'billing-reversed', 'billing-overflow', 'billing-incompatible', 'billing-claim', 'billing-archived'])
+        await addBillingVisit(id, id === 'billing-free' ? { visitQuote: { ...visitData.visitQuote, specialPrice: '0.00', total: '0.00' } } : id === 'billing-missing' ? { visitQuote: null } : id === 'billing-archived' ? { isArchived: true } : {});
+    const initialBilling = await visitBilling(['billing-open', 'billing-free', 'billing-missing', 'billing-archived']);
+    check(initialBilling.length === 4 && initialBilling.every((r: any) => r.invoices.length === 0 && !r.billingUnavailable && !r.packageSessionUsed), 'new, Free, missing quote and archived Visits retain separate empty billing states');
+    check(initialBilling.slice(0, 3).every((r: any) => r.canCreateInvoice) && !initialBilling[3].canCreateInvoice, 'eligible active Visits can start draft review, archived Visits cannot');
+    check(!(await visitBilling(['billing-open'], 'readOnly'))[0].canCreateInvoice, 'read-only POS sees billing without create authority');
+    const archivedBillingInvoice = await seedLinkedInvoice('billing-archived');
+    const archivedVisitBilling = (await visitBilling(['billing-archived']))[0];
+    check(archivedVisitBilling.invoices[0].id === archivedBillingInvoice.id && !archivedVisitBilling.canCreateInvoice, 'archived Visits keep historical invoice links readable');
+    const draftOne = await seedLinkedInvoice('billing-drafts', { state: 'draft', cents: 7000 });
+    const draftTwo = await seedLinkedInvoice('billing-drafts', { state: 'draft', cents: 6000 });
+    let draftBilling = (await visitBilling(['billing-drafts']))[0];
+    check(draftBilling.invoices.length === 2 && draftBilling.invoices.every((r: any) => r.state === 'draft' && r.paymentStatus === null) && !draftBilling.canCreateInvoice, 'all matching draft snapshots appear without creating an extra draft');
+    check(draftBilling.invoices.some((r: any) => r.id === draftOne.id && r.visitLineCents === 7000) && draftBilling.invoices.some((r: any) => r.id === draftTwo.id && r.visitLineCents === 6000), 'each draft preserves its frozen quote separately');
+    let shared = await seedLinkedInvoice('billing-shared', { otherCents: 3000, payments: [2500] });
+    let sharedBilling = (await visitBilling(['billing-shared']))[0];
+    check(sharedBilling.invoices[0].visitLineCents === 7000 && sharedBilling.invoices[0].totalCents === 10000 && sharedBilling.invoices[0].paidCents === 2500 && sharedBilling.invoices[0].outstandingCents === 7500 && sharedBilling.invoices[0].paymentStatus === 'partial', 'shared invoice totals remain distinct from the frozen Visit line');
+    const sharedDetail = status(await request(`/api/pos/invoices/${shared.id}?patientId=patient&visitId=billing-shared`, 'GET', undefined, 'staffA'), 200, 'Visit-bound invoice detail');
+    shared = await pay(sharedDetail, '75');
+    sharedBilling = (await visitBilling(['billing-shared']))[0];
+    check(sharedBilling.invoices[0].paymentStatus === 'paid' && sharedBilling.invoices[0].outstandingCents === 0 && !sharedBilling.canCreateInvoice, 'later collection immediately updates summary from payment records');
+    const freeInvoice = await seedLinkedInvoice('billing-free', { cents: 0 });
+    const freeBilling = (await visitBilling(['billing-free']))[0];
+    check(freeBilling.invoices[0].id === freeInvoice.id && freeBilling.invoices[0].paymentStatus === 'paid' && freeBilling.invoices[0].totalCents === 0, 'explicit Free posted invoice is paid without invented payment');
+    const voidInvoice = await seedLinkedInvoice('billing-void', { state: 'void' });
+    const voidBilling = (await visitBilling(['billing-void']))[0];
+    check(voidBilling.invoices[0].id === voidInvoice.id && voidBilling.invoices[0].paymentStatus === null && voidBilling.invoices[0].outstandingCents === 0 && voidBilling.canCreateInvoice, 'void history remains readable and does not block a replacement draft');
+    const reversedInvoice = await seedLinkedInvoice('billing-reversed', { payments: [7000] });
+    const reversedDetail = status(await request(`/api/pos/invoices/${reversedInvoice.id}`, 'GET', undefined, 'admin'), 200, 'reversal fixture detail');
+    status(await request(`/api/pos/invoices/${reversedInvoice.id}/payments/${reversedDetail.payments[0].id}/reversal`, 'POST', { commandId: command(), expectedVersion: reversedDetail.version, reason: 'Synthetic duplicate payment' }, 'admin'), 200, 'correct linked Visit payment');
+    const reversedBilling = (await visitBilling(['billing-reversed']))[0];
+    check(reversedBilling.invoices[0].paidCents === 0 && reversedBilling.invoices[0].outstandingCents === 7000 && reversedBilling.invoices[0].paymentStatus === 'unpaid', 'billing status uses net payments after immutable correction');
+    await db.collection('appointments').doc('billing-prepaid-booking').set({ patientId: 'patient', branchId: 'A' });
+    const billedBeforeVisit = await seedLinkedInvoice('unused-source-id', { source: { collection: 'appointments', id: 'billing-prepaid-booking' }, claim: { collection: 'appointments', id: 'billing-prepaid-booking' } });
+    await addBillingVisit('billing-after-booking', { appointmentId: 'billing-prepaid-booking' });
+    const preBilled = (await visitBilling(['billing-after-booking']))[0];
+    check(preBilled.invoices.length === 1 && preBilled.invoices[0].id === billedBeforeVisit.id && !preBilled.canCreateInvoice, 'appointment billed before Visit is linked once by claim and frozen source');
+    status(await request(`/api/pos/invoices/${billedBeforeVisit.id}?visitId=billing-after-booking`, 'GET', undefined, 'staffA'), 200, 'pre-Visit appointment invoice opens from related Visit');
+    const claimOnly = await seedLinkedInvoice('not-the-claim-source', { claim: { collection: 'visits', id: 'billing-claim' } });
+    const claimBilling = (await visitBilling(['billing-claim']))[0];
+    check(claimBilling.invoices.length === 1 && claimBilling.invoices[0].id === claimOnly.id && claimBilling.invoices[0].visitLineCents === 0 && !claimBilling.canCreateInvoice, 'retained claim still blocks duplicate billing when a legacy line has no source snapshot');
+    const originalBinding = await seedLinkedInvoice('billing-sibling-source', { state: 'draft', source: { collection: 'visits', id: 'other-visit', appointmentId: 'billing-prepaid-booking' } });
+    check((await visitBilling(['billing-after-booking']))[0].invoices.some((r: any) => r.id === originalBinding.id), 'frozen linked appointment reference discovers drafts from the same care');
+    for (let n = 0; n < 22; n++)
+        await seedLinkedInvoice('billing-overflow', { state: n === 0 ? 'posted' : n === 1 ? 'void' : 'draft', cents: n });
+    const overflow = (await visitBilling(['billing-overflow']))[0];
+    check(overflow.invoices.length === 20 && overflow.hasMoreInvoices && overflow.invoices[0].state === 'posted' && overflow.invoices.slice(1).every((r: any) => r.state === 'draft'), 'billing summary is capped at twenty with posted then draft then void priority');
+    check(JSON.stringify((await visitBilling(['billing-overflow']))[0]) === JSON.stringify(overflow), 'bounded invoice ordering is deterministic');
+    const overflowHidden = (await pool.query("SELECT id FROM pos_invoices WHERE state='void' AND id IN (SELECT invoice_id FROM pos_invoice_items WHERE snapshot->'source'->>'id'='billing-overflow')")).rows[0].id;
+    status(await request(`/api/pos/invoices/${overflowHidden}?visitId=billing-overflow`, 'GET', undefined, 'staffA'), 200, 'direct relation guard does not depend on first twenty summary invoices');
+    const incompatibleB = await seedLinkedInvoice('billing-incompatible', { branchId: 'B', cents: 999999 });
+    const incompatiblePatient = await seedLinkedInvoice('billing-incompatible', { patientId: 'invoice-other', cents: 888888 });
+    const blocked = (await visitBilling(['billing-incompatible']))[0];
+    check(blocked.billingUnavailable && !blocked.canCreateInvoice && blocked.invoices.length === 0 && !JSON.stringify(blocked).includes(incompatibleB.id) && !JSON.stringify(blocked).includes(incompatiblePatient.id), 'incompatible historical source billing fails closed without amounts or invoice IDs');
+    check((await visitBilling(['billing-incompatible'], 'admin'))[0].billingUnavailable, 'global branch access never makes a different patient or Visit clinic compatible');
+    await addBillingVisit('billing-branch-B', { branchId: 'B' });
+    for (const actor of ['anonymous', 'doctor', 'noPatients', 'noVisits', 'staffB', 'noBranches'])
+        status(await request(visitBillingBase + 'billing-shared', 'GET', undefined, actor), actor === 'anonymous' ? 401 : 403, 'Visit billing requires POS, patient, Visit and branch authority');
+    status(await request(visitBillingBase + 'billing-shared,billing-branch-B', 'GET', undefined, 'staffA'), 403, 'mixed authorized/unauthorized Visit page is entirely denied');
+    status(await request(visitBillingBase + 'billing-shared,missing-visit', 'GET', undefined, 'staffA'), 404, 'mixed existing/missing Visit page is entirely denied');
+    const beforeGuardedRead = db.runTransaction.bind(db);
+    let unauthorizedFinancialReads = 0;
+    db.runTransaction = callback => beforeGuardedRead(async (tx) => {
+        const sql = tx.sql.bind(tx);
+        tx.sql = ((query: string, args?: any[]) => { if (/pos_|treatment_ledger_/.test(query)) unauthorizedFinancialReads++; return sql(query, args); }) as any;
+        return callback(tx);
+    });
+    try { status(await request(visitBillingBase + 'billing-shared,billing-branch-B', 'GET', undefined, 'staffA'), 403, 'authorize complete Visit page before financial lookup'); }
+    finally { db.runTransaction = beforeGuardedRead; }
+    check(unauthorizedFinancialReads === 0, 'mixed-scope rejection executes no financial reads');
+    const usageFixture = (await pool.query('SELECT visit_id FROM treatment_ledger_visit_usage LIMIT 1')).rows[0];
+    const usedBilling = (await visitBilling([usageFixture.visit_id], 'staffB'))[0];
+    check(usedBilling.packageSessionUsed && !usedBilling.canCreateInvoice && !usedBilling.billingUnavailable && usedBilling.invoices.length === 0, 'package session usage is distinct from invoice paid or Free and cannot be billed again');
+    const usageVisit = (await db.collection('visits').doc(usageFixture.visit_id).get()).data()!;
+    await db.collection('visits').doc(usageFixture.visit_id).update({ branchId: 'A' });
+    const inconsistentUsage = (await visitBilling([usageFixture.visit_id]))[0];
+    check(inconsistentUsage.packageSessionUsed && inconsistentUsage.billingUnavailable && !inconsistentUsage.canCreateInvoice, 'incompatible retained package Visit binding fails closed');
+    await db.collection('visits').doc(usageFixture.visit_id).update({ branchId: usageVisit.branchId });
+    await db.collection('patients').doc('billing-archived-patient').set({ name: 'Synthetic retained patient', isArchived: true });
+    await addBillingVisit('billing-patient-archived', { patientId: 'billing-archived-patient' });
+    check(!(await visitBilling(['billing-patient-archived']))[0].canCreateInvoice, 'archived patients retain readable Visit billing without new billing');
+    await db.collection('branches').doc('billing-inactive-branch').set({ branchName: 'Synthetic inactive branch', status: 'Inactive' });
+    await addBillingVisit('billing-branch-inactive', { branchId: 'billing-inactive-branch' });
+    check(!(await visitBilling(['billing-branch-inactive'], 'admin'))[0].canCreateInvoice, 'inactive clinic preserves history without new billing');
+    for (const route of ['/api/pos/visit-billing', visitBillingBase, visitBillingBase + 'billing-open,billing-open', visitBillingBase + 'bad.id', visitBillingBase + 'bad%2Fid', visitBillingBase + 'billing-open,', visitBillingBase + 'billing-open&visitIds=billing-free', visitBillingBase + Array.from({ length: 51 }, (_, n) => 'page-' + n).join(',')])
+        status(await request(route, 'GET', undefined, 'staffA'), 400, 'missing, malformed, duplicate and oversized Visit requests rejected');
+    for (let n = 0; n < 50; n++) await addBillingVisit('billing-page-' + n);
+    check((await visitBilling(Array.from({ length: 50 }, (_, n) => 'billing-page-' + n))).length === 50, 'maximum page of fifty Visits is supported');
+    for (const [invoiceId, visitId, actor, expected] of [[shared.id, 'billing-open', 'staffA', 403], [incompatibleB.id, 'billing-incompatible', 'staffA', 403], [incompatiblePatient.id, 'billing-incompatible', 'admin', 403], [shared.id, 'billing-shared', 'staffB', 403], [shared.id, 'billing-shared', 'noVisits', 403], [shared.id, 'missing-visit', 'staffA', 404]] as const)
+        status(await request(`/api/pos/invoices/${invoiceId}?visitId=${visitId}`, 'GET', undefined, actor), expected, 'Visit-bound detail rejects unrelated invoice, patient, branch and capability');
+    status(await request(`/api/pos/invoices/${shared.id}?visitId=bad.id`, 'GET', undefined, 'staffA'), 400, 'Visit-bound detail validates identifier');
+    status(await request(`/api/pos/invoices/${shared.id}?visitId=billing-shared&visitId=billing-open`, 'GET', undefined, 'staffA'), 400, 'Visit-bound detail rejects duplicate identifier parameters');
+    const billingFinancialBefore = await financialSnapshot();
+    const billingReversalsBefore = (await pool.query('SELECT to_jsonb(r) AS row FROM pos_payment_reversals r ORDER BY id')).rows;
+    const billingSourceBefore = (await pool.query("SELECT collection_path,id,data FROM app_records WHERE collection_path IN ('visits','appointments','patients') ORDER BY collection_path,id")).rows;
+    const preservedBilling = await visitBilling(['visit', 'historical-quote', 'billing-free', 'billing-missing', 'billing-shared', 'billing-archived']);
+    check(preservedBilling[0].invoices.some((r: any) => r.id === v.id && r.visitLineCents === 7000) && preservedBilling[1].invoices.some((r: any) => r.id === frozen.id && r.visitLineCents === 7000), 'billing projection retains Special Price and frozen historical quote after catalogue repricing');
+    check(JSON.stringify(await financialSnapshot()) === JSON.stringify(billingFinancialBefore) && JSON.stringify((await pool.query('SELECT to_jsonb(r) AS row FROM pos_payment_reversals r ORDER BY id')).rows) === JSON.stringify(billingReversalsBefore), 'Visit billing projection performs no invoice, payment, reversal, package, balance or history writes');
+    check(JSON.stringify((await pool.query("SELECT collection_path,id,data FROM app_records WHERE collection_path IN ('visits','appointments','patients') ORDER BY collection_path,id")).rows) === JSON.stringify(billingSourceBefore), 'Visit billing reads preserve saved quotes, old records and patient data');
     const originalTx = db.runTransaction.bind(db);
     const beforeInvoices = (await pool.query('SELECT count(*) FROM pos_invoices')).rows[0].count;
     db.runTransaction = callback => originalTx(async (tx) => { const create = tx.create.bind(tx); tx.create = ((ref: any, data: any) => { if (ref.collectionPath === 'audit_logs')

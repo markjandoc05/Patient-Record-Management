@@ -1,4 +1,3 @@
-import { hasCapability } from '../permissions';
 import { uiCan, uiRecordPermission } from '../permissionState';
 import { performedServiceLabel, isVisitClinicallySealed } from '../utils/visitServicePolicy';
 import { visitPerformerName } from '../utils/visitPerformerPolicy';
@@ -13,6 +12,8 @@ import { getAccessibleBranches, subscribeToBranchScopedCollection, subscribeToSh
 import { archiveRecord, restoreRecord } from '../utils/recordApi';
 import { auth } from '../platform';
 import { getActiveDatePrefix } from '../utils/timezone';
+import VisitBilling, { VisitSavedPrice, useVisitBilling } from './VisitBilling';
+import type { VisitPosLaunch } from '../utils/visitBilling';
 
 function visitInitials(name?: string) {
   return String(name || 'Patient')
@@ -31,7 +32,7 @@ function visitStatusClass(status?: string) {
   return 'bg-blue-50 text-blue-700 ring-blue-600/10';
 }
 
-export default function VisitHistoryDashboard({ db, role, userProfile, activeBranchId, onOpenPos }: { db: any, role: string | null, userProfile: any, activeBranchId?: string, onOpenPos?: (source: {patientId:string;branchId:string;visitId:string}) => void }) {
+export default function VisitHistoryDashboard({ db, role, userProfile, activeBranchId, onOpenPos }: { db: any, role: string | null, userProfile: any, activeBranchId?: string, onOpenPos?: (source: VisitPosLaunch) => void }) {
   const [visits, setVisits] = useState<any[]>([]);
   const [appointments, setAppointments] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
@@ -126,6 +127,13 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
   const safeCurrentPage = Math.min(currentPage, totalPages);
   const startIndex = (safeCurrentPage - 1) * itemsPerPage;
   const paginatedVisits = filteredVisits.slice(startIndex, startIndex + itemsPerPage);
+  const billing = useVisitBilling(paginatedVisits, userProfile, activeBranchId);
+  // Details may stay open while filters/pages change. Fetch that one Visit
+  // separately rather than expanding the visible-page request above 50 IDs.
+  const freshSelectedVisit = selectedVisit && visits.find(visit => visit.id === selectedVisit.id);
+  const selectedOnPage = freshSelectedVisit && paginatedVisits.some(visit => visit.id === freshSelectedVisit.id);
+  const selectedBilling = useVisitBilling(freshSelectedVisit && !selectedOnPage ? [freshSelectedVisit] : [], userProfile, activeBranchId);
+  const detailBilling = selectedOnPage ? billing : selectedBilling;
   const defaultBranchFilter = activeBranchId || 'All';
   const hasActiveFilters = Boolean(searchTerm || filterBranch !== defaultBranchFilter || filterVisitType !== 'All' || filterStatus !== 'All' || filterOutcome !== 'All');
 
@@ -199,6 +207,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
             <p className="mt-0.5 text-xs text-slate-500">{totalItems} {totalItems === 1 ? 'visit' : 'visits'} shown · Clinical history for authorized teams</p>
           </div>
           <div className="flex flex-wrap gap-2">
+            {billing.status !== 'unavailable' && <button type="button" onClick={billing.retry} disabled={billing.status === 'loading'} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"><RotateCcw className="h-4 w-4" />{billing.status === 'error' ? 'Retry billing' : billing.status === 'loading' ? 'Loading billing…' : 'Refresh billing'}</button>}
             {canArchive && (
               <button onClick={() => { setShowArchived(value => !value); setCurrentPage(1); }} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
                 {showArchived ? <RotateCcw className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
@@ -249,7 +258,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
 
                   <div className="grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
                     <div className="flex min-w-0 items-center gap-2"><Stethoscope className="h-3.5 w-3.5 shrink-0 text-slate-400" /><span className="truncate">{doctorName(v)}</span></div>
-                    <div className="flex min-w-0 items-center gap-2"><Activity className="h-3.5 w-3.5 shrink-0 text-slate-400" /><span className="truncate">{performedServiceLabel(v, v.diagnosis || 'Service not recorded')}</span></div>
+                    <div className="min-w-0"><div className="flex min-w-0 items-center gap-2"><Activity className="h-3.5 w-3.5 shrink-0 text-slate-400" /><span className="truncate">{performedServiceLabel(v, v.diagnosis || 'Service not recorded')}</span></div><VisitSavedPrice visit={v} userProfile={userProfile} /><VisitBilling visit={v} userProfile={userProfile} read={billing} compact /></div>
                   </div>
 
                   {(v.visitOutcome || v.followUpRequired) && (
@@ -294,7 +303,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
                 paginatedVisits.map(v => (
                   <tr key={v.id} className="transition-colors hover:bg-slate-50/70">
                     <td className="px-5 py-4"><p className="font-medium text-slate-800">{formatDateTime(v.visitDate)}</p><p className="mt-0.5 text-xs text-slate-400">Newest visits first</p></td>
-                    <td className="px-5 py-4"><div className="flex items-center gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700">{visitInitials(v.patientName)}</div><div className="min-w-0"><p className="max-w-48 truncate font-semibold text-slate-950">{v.patientName || 'Unnamed patient'}</p><p className="mt-0.5 max-w-48 truncate text-xs text-slate-400">{performedServiceLabel(v, v.visitType || 'Clinic visit')}</p></div></div></td>
+                    <td className="px-5 py-4"><div className="flex items-center gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700">{visitInitials(v.patientName)}</div><div className="min-w-0"><p className="max-w-48 truncate font-semibold text-slate-950">{v.patientName || 'Unnamed patient'}</p><p className="mt-0.5 max-w-48 truncate text-xs text-slate-400">{performedServiceLabel(v, v.visitType || 'Clinic visit')}</p><VisitSavedPrice visit={v} userProfile={userProfile} /><VisitBilling visit={v} userProfile={userProfile} read={billing} compact /></div></div></td>
                     <td className="px-5 py-4"><p className="max-w-40 truncate font-medium text-slate-700">{doctorName(v)}</p><p className="mt-0.5 max-w-40 truncate text-xs text-slate-400">{v.visitSource || 'Source not recorded'}</p></td>
                     <td className="px-5 py-4"><p className="max-w-40 truncate font-medium text-slate-700">{v.visitOutcome || 'Not recorded'}</p><p className="mt-0.5 max-w-40 truncate text-xs text-slate-400">{v.diagnosis || 'No diagnosis recorded'}</p></td>
                     <td className="px-5 py-4">
@@ -393,7 +402,7 @@ export default function VisitHistoryDashboard({ db, role, userProfile, activeBra
                 </section>
               )}
 
-              {onOpenPos && !selectedVisit.isArchived && hasCapability(userProfile, 'pos.view', { branchId: selectedVisit.branchId }) && hasCapability(userProfile, 'pos.manage', { branchId: selectedVisit.branchId }) && <button className="min-h-11 rounded-xl bg-teal-600 px-4 py-2 text-sm font-semibold text-white" onClick={() => onOpenPos({patientId:selectedVisit.patientId,branchId:selectedVisit.branchId,visitId:selectedVisit.id})}>Create invoice from Visit</button>}
+              {freshSelectedVisit && <><VisitSavedPrice visit={freshSelectedVisit} userProfile={userProfile} detailed /><VisitBilling visit={freshSelectedVisit} userProfile={userProfile} read={detailBilling} onOpenPos={onOpenPos} /></>}
               {selectedVisit.documents && selectedVisit.documents.length > 0 && (
                 <section><h3 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-400">Documents</h3><div className="mt-3 flex flex-wrap gap-2">{selectedVisit.documents.map((url: string, index: number) => <a key={index} href={url} target="_blank" rel="noopener noreferrer" className="rounded-lg bg-teal-50 px-3 py-2 text-xs font-semibold text-teal-700 hover:bg-teal-100">Document {index + 1}</a>)}</div></section>
               )}

@@ -33,7 +33,7 @@ export const permissionDefinitions = [
   ['pos.view', 'POS & Payments', 'View invoices and acknowledgments', [...admin, 'staff', 'manager']],
   ['pos.manage', 'POS & Payments', 'Create and post invoices', [...admin, 'staff', 'manager']],
   ['pos.collect', 'POS & Payments', 'Record payments', [...admin, 'staff', 'manager']],
-  ['pos.adjust', 'POS & Payments', 'Override prices and void unpaid invoices', admin],
+  ['pos.adjust', 'POS & Payments', 'Override prices, correct payment entries and void unpaid invoices', admin],
   ['pos.sales', 'POS & Payments', 'View clinic sales and collections', [...admin, 'manager']],
   ['clinical.view', 'Clinical', 'View clinical information', all],
   ['clinical.edit_draft', 'Clinical', 'Edit clinical documentation', clinical],
