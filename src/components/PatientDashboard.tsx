@@ -508,7 +508,7 @@ export default function PatientDashboard({ db, user, role, userProfile, activeBr
   
       {showAddForm && <PatientForm db={db} user={user} users={users} patients={patients} branches={accessibleBranches} userProfile={userProfile} defaultBranchId={activeBranchId !== 'All' ? activeBranchId : undefined} lookupWarning={lookupErrors.patients} onOpenExisting={existing => { setShowAddForm(false); setSelectedPatient(existing); }} onClose={() => setShowAddForm(false)} onSave={() => { setShowAddForm(false); setSaveNotice('Patient registered successfully. The shared record is available to both clinics.'); }} />}
       {editingPatient && <PatientForm db={db} user={user} users={users} patients={patients} branches={branches.filter(branch => branch.status === 'Active' || branch.id === editingPatient.homeBranchId)} userProfile={userProfile} patient={editingPatient} defaultBranchId={activeBranchId !== 'All' ? activeBranchId : undefined} onClose={() => setEditingPatient(null)} onSave={() => { setEditingPatient(null); setSaveNotice('Patient changes saved successfully.'); }} />}
-      {selectedPatient && <PatientProfile patient={selectedPatient} onClose={() => setSelectedPatient(null)} userRole={role ?? undefined} users={users} branches={branches} visits={visits} appointments={appointments} />}
+      {selectedPatient && <PatientProfile patient={selectedPatient} onClose={() => setSelectedPatient(null)} userRole={role ?? undefined} userProfile={userProfile} users={users} branches={branches} visits={visits} appointments={appointments} />}
     </div>
   );
 }

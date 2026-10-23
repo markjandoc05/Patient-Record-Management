@@ -197,13 +197,56 @@ export function mountPos(app: express.Express) {
         return { source: sourceSummary(kind, id, saved) };
     });
     route('get', '/invoices', async (req, tx, a) => {
-        const branchId = ledgerRecordId(req.query.branchId);
-        scoped(a, branchId);
-        const page = Math.max(1, Math.min(100000, Number(req.query.page) || 1));
-        const rows = (await tx.sql(`SELECT i.*,COALESCE((SELECT sum(amount_cents) FROM pos_payments WHERE invoice_id=i.id),0)::text AS paid_cents FROM pos_invoices i WHERE branch_id=$1 ORDER BY created_at DESC,id LIMIT 30 OFFSET $2`, [branchId, (Math.floor(page) - 1) * 30])).rows;
-        return { invoices: rows, page, total: Number((await tx.sql('SELECT count(*) FROM pos_invoices WHERE branch_id=$1', [branchId])).rows[0].count) };
+        const branchId = req.query.branchId === undefined || req.query.branchId === 'all' || req.query.branchId === 'All' ? null : ledgerRecordId(req.query.branchId);
+        if (branchId)
+            scoped(a, branchId);
+        const patientId = req.query.patientId === undefined ? null : ledgerRecordId(req.query.patientId);
+        if (patientId)
+            await record(tx, 'patients', patientId); // Historical billing remains readable for archived patients.
+        const q = ledgerText(req.query.q ?? '', 100, 'Invoice search');
+        const state = req.query.status === undefined ? 'all' : req.query.status;
+        if (typeof state !== 'string' || !['all', 'draft', 'unpaid', 'partial', 'paid', 'void', 'outstanding'].includes(state))
+            ledgerFail(400, 'INVALID_STATUS', 'Select a valid invoice status.');
+        const from = req.query.from === undefined ? null : ledgerDate(req.query.from), to = req.query.to === undefined ? null : ledgerDate(req.query.to);
+        if (from && to && from > to)
+            ledgerFail(400, 'INVALID_DATE_RANGE', 'The end date must be on or after the start date.');
+        const page = req.query.page === undefined ? 1 : typeof req.query.page === 'string' && /^[1-9]\d*$/.test(req.query.page) ? Number(req.query.page) : NaN;
+        if (!Number.isSafeInteger(page) || page < 1 || page > 100000)
+            ledgerFail(400, 'INVALID_PAGE', 'Enter a valid invoice page.');
+        const scope = '($1::boolean OR i.branch_id=ANY($2::text[])) AND ($3::text IS NULL OR i.branch_id=$3) AND ($4::text IS NULL OR i.patient_id=$4)';
+        const params: any[] = [hasGlobalBranchScope(a.profile), a.profile.assignedBranches || [], branchId, patientId];
+        // Aggregate each invoice's allocations once. EXISTS searches payment references
+        // without multiplying invoice rows or pagination totals by payment count.
+        const base = `FROM pos_invoices i LEFT JOIN LATERAL (SELECT COALESCE(sum(amount_cents),0)::bigint AS paid_cents FROM pos_payments WHERE invoice_id=i.id) p ON true WHERE ${scope}`;
+        const statusFilter: Record<string, string> = {
+            all: 'true', draft: "i.state='draft'", void: "i.state='void'",
+            unpaid: "i.state='posted' AND p.paid_cents=0 AND i.total_cents>0",
+            partial: "i.state='posted' AND p.paid_cents>0 AND p.paid_cents<i.total_cents",
+            paid: "i.state='posted' AND p.paid_cents=i.total_cents",
+            outstanding: "i.state='posted' AND p.paid_cents<i.total_cents"
+        };
+        const filter = ` AND (${statusFilter[state]})
+            AND ($5::text='' OR position(lower($5) in lower(i.patient_name||' '||i.patient_id||' '||i.number::text||' '||COALESCE((SELECT r.data->>'patientID' FROM app_records r WHERE r.collection_path='patients' AND r.id=i.patient_id),'')))>0
+                OR EXISTS(SELECT 1 FROM pos_payments payment WHERE payment.invoice_id=i.id AND position(lower($5) in lower(payment.reference))>0))
+            AND ($6::date IS NULL OR (i.created_at AT TIME ZONE 'Asia/Manila')::date>=$6::date)
+            AND ($7::date IS NULL OR (i.created_at AT TIME ZONE 'Asia/Manila')::date<=$7::date)`;
+        const filteredParams = [...params, q, from, to];
+        const rows = (await tx.sql(`SELECT i.*,p.paid_cents,CASE WHEN i.state='void' THEN 0 ELSE i.total_cents-p.paid_cents END AS outstanding_cents ${base}${filter} ORDER BY i.created_at DESC,i.id DESC LIMIT 30 OFFSET $8`, [...filteredParams, (page - 1) * 30])).rows;
+        const total = Number((await tx.sql(`SELECT count(*) ${base}${filter}`, filteredParams)).rows[0].count);
+        const result: Record<string, any> = { invoices: rows.map(i => ({ ...i, total_cents: Number(i.total_cents), paid_cents: Number(i.paid_cents), outstanding_cents: Number(i.outstanding_cents) })), page, total };
+        if (patientId) {
+            const summary = (await tx.sql(`SELECT COALESCE(sum(i.total_cents),0) AS invoiced,COALESCE(sum(p.paid_cents),0) AS paid,COALESCE(sum(i.total_cents-p.paid_cents),0) AS outstanding ${base} AND i.state='posted'`, params)).rows[0];
+            result.summary = { invoicedCents: Number(summary.invoiced), paidCents: Number(summary.paid), outstandingCents: Number(summary.outstanding) };
+        }
+        return result;
     });
-    route('get', '/invoices/:id', async (req, tx, a) => detail(tx, a, ledgerUuid(req.params.id)));
+    route('get', '/invoices/:id', async (req, tx, a) => {
+        const patientId = req.query.patientId === undefined ? null : ledgerRecordId(req.query.patientId);
+        const value = await detail(tx, a, ledgerUuid(req.params.id));
+        if (patientId && value.patient_id !== patientId)
+            ledgerFail(403, 'PATIENT_SCOPE', 'This invoice belongs to another patient.');
+        return value;
+    });
     const saveDraft = async (req: express.Request, tx: RecordTransaction, a: Actor) => {
         const p = parsePosDraft(req.body);
         assertCapability(a.profile, 'pos.manage', { branchId: p.branchId });

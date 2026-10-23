@@ -100,7 +100,8 @@
     "test:pos-policy": "node --import tsx scripts/test-pos-policy.ts",
     "test:pos-api": "node --import tsx scripts/test-pos-api.ts",
     "test:pos-migration": "node --import tsx scripts/test-pos-migration.ts",
-    "test:pos-ui": "node --import tsx scripts/test-pos-ui.ts"
+    "test:pos-ui": "node --import tsx scripts/test-pos-ui.ts",
+    "test:patient-billing-profile": "node --import tsx scripts/test-patient-billing-profile.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

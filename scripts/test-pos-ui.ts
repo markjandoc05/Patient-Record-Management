@@ -109,19 +109,106 @@ try {
         assert.equal(staleSources.field('Invoice notes').props.value,'KEEP UNSAVED NOTES');
         checks++;
     } finally { staleSources.stop(); }
+    const row = { id:'invoice-b', number:52, patient_id:'p', patient_name:'Synthetic patient', branch_id:'B', branch_name:'Synthetic B', state:'posted', version:2, total_cents:10000, paid_cents:2500, outstanding_cents:7500, created_at:'2035-02-01T16:30:00Z' };
+    const listing = new Fixture();
+    try {
+        await listing.init();
+        await listing.click('Refresh');
+        listing.requests.filter(r=>r.url.includes('/invoices?')).at(-1).deliver({invoices:[row],total:35,page:1}); await listing.settle();
+        await listing.click('Next');
+        let req=listing.requests.filter(r=>r.url.includes('/invoices?')).at(-1);
+        assert.equal(new URL(req.url,'https://test.invalid').searchParams.get('page'),'2');
+        req.deliver({invoices:[row],total:35,page:2}); await listing.settle();
+        await listing.change('Search invoices','payment%_ref');
+        req=listing.requests.filter(r=>r.url.includes('/invoices?')).at(-1);
+        assert.equal(new URL(req.url,'https://test.invalid').searchParams.get('page'),'1');
+        assert.equal(new URL(req.url,'https://test.invalid').searchParams.get('q'),'payment%_ref');
+        await listing.change('Invoice status','partial');
+        await listing.change('Invoice date from','2035-02-02');
+        let singleBound=new URL(listing.requests.filter(r=>r.url.includes('/invoices?')).at(-1).url,'https://test.invalid').searchParams;
+        assert.equal(singleBound.get('from'),'2035-02-02');assert.equal(singleBound.has('to'),false);
+        await listing.change('Invoice date to','2035-02-02');
+        req=listing.requests.filter(r=>r.url.includes('/invoices?')).at(-1);
+        const params=new URL(req.url,'https://test.invalid').searchParams;
+        assert.equal(params.get('status'),'partial'); assert.equal(params.get('from'),'2035-02-02'); assert.equal(params.get('to'),'2035-02-02');
+        await listing.click('Clear invoice filters');
+        req=listing.requests.filter(r=>r.url.includes('/invoices?')).at(-1);
+        assert.equal(new URL(req.url,'https://test.invalid').searchParams.get('status'),'all');
+        assert.equal(new URL(req.url,'https://test.invalid').searchParams.has('from'),false);assert.equal(new URL(req.url,'https://test.invalid').searchParams.has('to'),false);
+        await listing.click('Outstanding balances');
+        assert.equal(new URL(listing.requests.filter(r=>r.url.includes('/invoices?')).at(-1).url,'https://test.invalid').searchParams.get('status'),'outstanding');
+        await listing.change('Clinic','All');
+        req=listing.requests.filter(r=>r.url.includes('/invoices?')).at(-1);
+        assert.equal(new URL(req.url,'https://test.invalid').searchParams.has('branchId'),false);
+        assert.ok(listing.button('New invoice').props.disabled,'all-clinic lookup requires a specific clinic for new drafts');
+        assert.equal(listing.requests.filter(r=>r.init.method!=='GET').length,0,'filters perform no writes');
+        checks++;
+    } finally {listing.stop();}
+    const billing = new Fixture();
+    try {
+        billing.props.patientContext={id:'p',name:'Synthetic patient'};billing.props.embedded=true;
+        await billing.init();
+        let req=billing.requests.find(r=>r.url.includes('/invoices?'));
+        let params=new URL(req.url,'https://test.invalid').searchParams;
+        assert.equal(params.get('patientId'),'p');assert.equal(params.has('branchId'),false);assert.equal(params.has('from'),false);assert.equal(params.has('to'),false);
+        assert.ok(!find(billing.renderer.tree,n=>n.type==='button' && ['New invoice','Clinic sales'].includes(text(n))));
+        await billing.click('Refresh');
+        billing.requests.filter(r=>r.url.includes('/invoices?')).at(-1).deliver({invoices:[row],page:1,total:1,summary:{invoicedCents:10000,paidCents:2500,outstandingCents:7500}});await billing.settle();
+        assert.ok(text(billing.renderer.tree).includes('75.00'));
+        assert.ok(find(billing.renderer.tree,n=>n.type==='section'&&n.props['aria-label']==='Patient billing totals'));
+        await billing.click('Open');
+        req=billing.requests.at(-1);assert.equal(req.url,'/api/pos/invoices/invoice-b?patientId=p');
+        const detail={...row,items:[],payments:[],events:[],notes:''};req.deliver(detail);await billing.settle();
+        await billing.change('Payment amount (PHP)','25');await billing.change('Cash tendered (PHP)','30');
+        req=await billing.submit();assert.equal(req.url,'/api/pos/invoices/invoice-b/payments');
+        const body=JSON.parse(req.init.body);assert.equal(body.expectedVersion,2);assert.equal(body.amount,'25');assert.equal(body.tender,'30');
+        req.deliver({...detail,version:3,paid_cents:5000,outstanding_cents:5000,payments:[{id:'payment-ack',amount_cents:2500,tender_cents:3000,method:'cash',reference:'',actor:{name:'Synthetic staff'},recorded_at:'2035-02-02T10:00:00Z'}]});await billing.settle();
+        assert.ok(text(billing.renderer.tree).includes('50.00'));assert.ok(text(billing.renderer.tree).includes('Change'));
+        assert.equal(billing.requests.filter(r=>r.init.method==='POST'&&r.url==='/api/pos/invoices').length,0,'later collection never creates another invoice');
+        billing.requests.filter(r=>r.url.includes('/invoices?')).at(-1).deliver({invoices:[{...row,paid_cents:5000,outstanding_cents:5000}],total:1,page:1,summary:{invoicedCents:10000,paidCents:5000,outstandingCents:5000}});await billing.settle();
+        await billing.click('Back to invoices');assert.ok(text(billing.renderer.tree).includes('50.00'));
+        checks++;
+    } finally {billing.stop();}
+    const staleFilter = new Fixture();
+    try {
+        await staleFilter.init();await staleFilter.change('Search invoices','obsolete');
+        const old=staleFilter.requests.filter(r=>r.url.includes('/invoices?')).at(-1);
+        await staleFilter.change('Search invoices','current');
+        staleFilter.requests.filter(r=>r.url.includes('/invoices?')).at(-1).deliver({invoices:[row],total:1,page:1});await staleFilter.settle();
+        const before=globals.servicesTestInvalidations;
+        old.deliver({error:'Obsolete invoice-filter denial'},403);await staleFilter.settle();
+        assert.equal(globals.servicesTestInvalidations,before);assert.ok(!text(staleFilter.renderer.tree).includes('Obsolete invoice-filter denial'));
+        assert.ok(text(staleFilter.renderer.tree).includes('Synthetic patient'));checks++;
+    } finally {staleFilter.stop();}
+    const allSales = new Fixture();
+    try {
+        allSales.profile={...allSales.profile,role:'manager'};allSales.props={...allSales.props,userProfile:allSales.profile};h.modules.PosDashboard.publishPermissionProfile(allSales.profile);
+        await allSales.init();await allSales.change('Clinic','All');await allSales.click('Clinic sales');
+        const req=allSales.requests.at(-1);assert.ok(req.url.startsWith('/api/pos/sales?'));
+        assert.equal(new URL(req.url,'https://test.invalid').searchParams.has('branchId'),false,'All clinic selection must not be sent as a real branch ID to sales');checks++;
+    } finally {allSales.stop();}
+    const readOnly = new Fixture();
+    try {
+        readOnly.profile={...readOnly.profile,permissionOverrides:{'pos.collect':'deny','pos.manage':'deny','pos.adjust':'deny'}};
+        readOnly.props={...readOnly.props,userProfile:readOnly.profile,patientContext:{id:'p'},embedded:true};h.modules.PosDashboard.publishPermissionProfile(readOnly.profile);
+        await readOnly.init();await readOnly.click('Refresh');
+        readOnly.requests.filter(r=>r.url.includes('/invoices?')).at(-1).deliver({invoices:[row],total:1,page:1});await readOnly.settle();await readOnly.click('Open');
+        readOnly.requests.at(-1).deliver({...row,items:[],payments:[],events:[],notes:''});await readOnly.settle();
+        assert.ok(!find(readOnly.renderer.tree,n=>n.type==='form'),'read-only billing has no mutation form');checks++;
+    } finally {readOnly.stop();}
     let loading = new Fixture();
     try {
         loading.renderer.render(loading.props); await loading.settle();
         assert.ok(text(loading.renderer.tree).includes('Loading clinic records'));
-        assert.ok(!text(loading.renderer.tree).includes('No invoices in this clinic'));
+        assert.ok(!text(loading.renderer.tree).includes('No matching invoices'));
         loading.requests.find(r => r.url.includes('/invoices?')).deliver({ error: 'Synthetic read failure' }, 500);
         await loading.settle();
         assert.ok(text(loading.renderer.tree).includes('Synthetic read failure'));
-        assert.ok(!text(loading.renderer.tree).includes('No invoices in this clinic'));
+        assert.ok(!text(loading.renderer.tree).includes('No matching invoices'));
         await loading.click('Refresh');
         loading.requests.filter(r => r.url.includes('/invoices?')).at(-1).deliver({ invoices: [], total: 0 });
         await loading.settle();
-        assert.ok(text(loading.renderer.tree).includes('No invoices in this clinic'));
+        assert.ok(text(loading.renderer.tree).includes('No matching invoices'));
         checks++;
     } finally { loading.stop(); }
     let f = new Fixture();
@@ -198,7 +285,7 @@ try {
     finally {
         f.stop();
     }
-    console.log(`POS controlled UI: ${checks} scenarios passed (saved quote paging/search/exact launch, stale responses, retry, draft preservation and sales permission)`);
+    console.log(`POS controlled UI: ${checks} scenarios passed (invoice lookup, patient collections, saved quotes, stale responses, retries and permissions)`);
 }
 finally {
     await h.cleanup();

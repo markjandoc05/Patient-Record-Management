@@ -46,7 +46,7 @@ try {
     check(await assertCurrentMigrationChain(), 'current chain');
     for (const id of ['A', 'B'])
         await db.collection('branches').doc(id).set({ branchName: 'Synthetic ' + id, status: 'Active' });
-    for (const [id, fields] of Object.entries({ admin: { role: 'admin' }, staffA: { role: 'staff', staffDesignation: 'Nurse', assignedBranches: ['A'] }, staffB: { role: 'staff', staffDesignation: 'Nurse', assignedBranches: ['B'] }, manager: { role: 'manager', assignedBranches: ['A'] }, doctor: { role: 'doctor', assignedBranches: ['A'] }, denied: { role: 'staff', assignedBranches: ['A'], permissionOverrides: { 'pos.collect': 'deny' } }, noClinical: { role: 'staff', assignedBranches: ['A'], permissionOverrides: { 'clinical.view': 'deny' } }, noVisits: { role: 'staff', assignedBranches: ['A'], permissionOverrides: { 'visits.view': 'deny' } }, noAppointments: { role: 'staff', assignedBranches: ['A'], permissionOverrides: { 'appointments.view': 'deny' } }, noPatients: { role: 'staff', assignedBranches: ['A'], permissionOverrides: { 'patients.view': 'deny' } } })) {
+    for (const [id, fields] of Object.entries({ admin: { role: 'admin' }, staffA: { role: 'staff', staffDesignation: 'Nurse', assignedBranches: ['A'] }, staffB: { role: 'staff', staffDesignation: 'Nurse', assignedBranches: ['B'] }, manager: { role: 'manager', assignedBranches: ['A'] }, doctor: { role: 'doctor', assignedBranches: ['A'] }, denied: { role: 'staff', assignedBranches: ['A'], permissionOverrides: { 'pos.collect': 'deny' } }, noClinical: { role: 'staff', assignedBranches: ['A'], permissionOverrides: { 'clinical.view': 'deny' } }, noVisits: { role: 'staff', assignedBranches: ['A'], permissionOverrides: { 'visits.view': 'deny' } }, noAppointments: { role: 'staff', assignedBranches: ['A'], permissionOverrides: { 'appointments.view': 'deny' } }, noPatients: { role: 'staff', assignedBranches: ['A'], permissionOverrides: { 'patients.view': 'deny' } }, readOnly: { role: 'staff', assignedBranches: ['A'], permissionOverrides: { 'pos.manage': 'deny', 'pos.collect': 'deny' } }, noBranches: { role: 'staff', assignedBranches: [] } })) {
         await db.collection('users').doc(id).set({ active: true, fullName: 'Synthetic ' + id, ...fields });
         const token = randomBytes(32).toString('base64url'), csrf = randomBytes(32).toString('base64url');
         await pool.query('INSERT INTO auth_identities(google_subject,user_id,email) VALUES($1,$1,$2)', [id, id + '@example.invalid']);
@@ -254,6 +254,98 @@ try {
         status(await request('/api/pos/sources?branchId=A&patientId=source-history&kind=visit&page=' + page, 'GET', undefined, 'staffA'), 400, 'invalid source page rejected');
     check(JSON.stringify((await pool.query("SELECT collection_path,id,data FROM app_records WHERE collection_path IN ('visits','appointments') ORDER BY collection_path,id")).rows) === JSON.stringify(sourceRowsBefore), 'source paging/search/direct reads preserve saved quotes and historical data');
     check(JSON.stringify(await financialSnapshot()) === JSON.stringify(financialBefore), 'source discovery preserves all invoices, payments, package purchases, balances and usage history');
+    // Invoice lookup and Patient Billing use existing immutable financial records.
+    // These fixtures are created only inside this suite's guarded empty database.
+    await db.collection('patients').doc('invoice-history').set({ name: 'Current renamed patient', patientID: 'ID-LOOKUP-100%_', isArchived: false });
+    await db.collection('patients').doc('invoice-other').set({ name: 'Other synthetic patient', isArchived: false });
+    const seededActor = JSON.stringify({ uid: 'admin', name: 'Synthetic admin', role: 'admin' });
+    const seedInvoice = async ({ patientId = 'invoice-history', branchId = 'A', state = 'posted', cents = 10000, created = '2038-05-01T01:00:00Z', payments = [] }: { patientId?: string; branchId?: string; state?: 'draft' | 'posted' | 'void'; cents?: number; created?: string; payments?: { cents: number; reference: string }[] } = {}) => {
+        const id = randomUUID();
+        const row = (await pool.query("INSERT INTO pos_invoices(id,patient_id,branch_id,patient_name,branch_name,total_cents,created_at,actor) VALUES($1,$2,$3,'Synthetic Lookup Patient',$3,$4,$5,$6::jsonb) RETURNING *", [id, patientId, branchId, cents, created, seededActor])).rows[0];
+        await pool.query("INSERT INTO pos_invoice_items(id,invoice_id,position,kind,name,amount_cents,snapshot) VALUES($1,$2,0,'service','Synthetic retained quote',$3,$4::jsonb)", [randomUUID(), id, cents, JSON.stringify({ source: { quote: { total: (cents / 100).toFixed(2), source: 'special' } } })]);
+        if (state !== 'draft')
+            await pool.query("UPDATE pos_invoices SET state='posted',version=2,posted_at='2038-06-15T00:00:00Z' WHERE id=$1", [id]);
+        if (state === 'void')
+            await pool.query("UPDATE pos_invoices SET state='void',version=3 WHERE id=$1", [id]);
+        for (const p of payments)
+            await pool.query("INSERT INTO pos_payments(id,invoice_id,amount_cents,tender_cents,method,reference,actor,recorded_at) VALUES($1,$2,$3,$3,'bank',$4,$5::jsonb,'2038-07-01T00:00:00Z')", [randomUUID(), id, p.cents, p.reference, seededActor]);
+        return row;
+    };
+    const lookupRows = [];
+    for (let n = 0; n < 35; n++)
+        lookupRows.push(await seedInvoice({ created: n === 0 ? '2038-04-30T15:59:59Z' : n === 1 ? '2038-04-30T16:00:00Z' : '2038-05-01T01:00:00Z', payments: n === 0 ? [{ cents: 4000, reference: 'Trace 100%_ repeated' }, { cents: 6000, reference: 'Trace 100%_ repeated' }] : n === 1 ? [{ cents: 2500, reference: 'Partial reference' }] : [] }));
+    const lookupDraft = await seedInvoice({ state: 'draft' }), lookupVoid = await seedInvoice({ state: 'void' }), lookupFree = await seedInvoice({ cents: 0 });
+    const lookupB = await seedInvoice({ branchId: 'B', cents: 20000, payments: [{ cents: 5000, reference: 'PRIVATE-B-ONLY' }] });
+    const lookupOther = await seedInvoice({ patientId: 'invoice-other', cents: 900000 });
+    const lookupBase = '/api/pos/invoices?patientId=invoice-history';
+    const lookupReadSnapshot = await financialSnapshot();
+    const lookupSourcesSnapshot = (await pool.query("SELECT collection_path,id,data FROM app_records WHERE collection_path IN ('visits','appointments') ORDER BY collection_path,id")).rows;
+    const page1 = status(await request(lookupBase + '&page=1', 'GET', undefined, 'staffA'), 200, 'patient invoice page1'), page2 = status(await request(lookupBase + '&page=2', 'GET', undefined, 'staffA'), 200, 'patient invoice page2');
+    check(page1.invoices.length === 30 && page2.invoices.length === 8 && page1.total === 38 && page2.total === 38, 'invoice lookup pages beyond thirty with accurate totals');
+    const pagedIds = [...page1.invoices, ...page2.invoices].map((r: any) => r.id);
+    check(new Set(pagedIds).size === 38 && !pagedIds.includes(lookupB.id) && !pagedIds.includes(lookupOther.id), 'invoice paging has no duplicate, unauthorized branch or other-patient rows');
+    check(JSON.stringify((await request(lookupBase + '&page=1', 'GET', undefined, 'staffA')).body.invoices) === JSON.stringify(page1.invoices), 'invoice date/id ordering is deterministic');
+    check(page1.invoices.every((r: any) => typeof r.total_cents === 'number' && typeof r.paid_cents === 'number' && typeof r.outstanding_cents === 'number'), 'invoice list money values are numeric cents');
+    const expectedA = { invoicedCents: 350000, paidCents: 12500, outstandingCents: 337500 };
+    check(JSON.stringify(page1.summary) === JSON.stringify(expectedA), 'patient summary excludes drafts/voids and uses payment allocations');
+    const allAdmin = status(await request(lookupBase + '&branchId=all', 'GET', undefined, 'admin'), 200, 'Admin all clinics patient history');
+    check(allAdmin.total === 39 && JSON.stringify(allAdmin.summary) === JSON.stringify({ invoicedCents: 370000, paidCents: 17500, outstandingCents: 352500 }), 'Admin patient summary includes both authorized clinics only for this patient');
+    check((await request(lookupBase + '&branchId=All', 'GET', undefined, 'staffA')).body.total === 38, 'all clinic sentinel is still branch scoped');
+    check((await request(lookupBase + '&branchId=A', 'GET', undefined, 'admin')).body.total === 38, 'explicit branch filter restricts global Admin');
+    const bOnly = status(await request(lookupBase, 'GET', undefined, 'staffB'), 200, 'branch B patient history');
+    check(bOnly.total === 1 && bOnly.invoices[0].id === lookupB.id && bOnly.summary.outstandingCents === 15000, 'branch B summary never exposes branch A totals');
+    const noBranches = status(await request(lookupBase, 'GET', undefined, 'noBranches'), 200, 'no assigned clinics');
+    check(noBranches.total === 0 && noBranches.summary.invoicedCents === 0 && noBranches.summary.paidCents === 0 && noBranches.summary.outstandingCents === 0, 'no-branch scope reveals no balances');
+    for (const term of ['SYNTHETIC LOOKUP', 'invoice-HISTORY', 'ID-LOOKUP-100%_']) {
+        const found = status(await request(lookupBase + '&q=' + encodeURIComponent(term), 'GET', undefined, 'staffA'), 200, 'patient snapshot/id search');
+        check(found.total === 38, 'case-insensitive literal patient search covers complete history');
+    }
+    for (const term of ['trace 100%_', '%_ repeated']) {
+        const found = status(await request(lookupBase + '&q=' + encodeURIComponent(term), 'GET', undefined, 'staffA'), 200, 'payment reference search');
+        check(found.total === 1 && found.invoices[0].id === lookupRows[0].id && found.invoices[0].paid_cents === 10000, 'multiple matching payments return one invoice with exact allocation');
+    }
+    const invoiceNumber = status(await request(lookupBase + '&q=' + lookupRows[34].number, 'GET', undefined, 'staffA'), 200, 'invoice number search');
+    check(invoiceNumber.invoices.some((r: any) => r.id === lookupRows[34].id), 'invoice number is searchable beyond initial page');
+    check((await request(lookupBase + '&q=PRIVATE-B-ONLY', 'GET', undefined, 'staffA')).body.total === 0, 'payment reference search cannot reveal unauthorized clinic');
+    for (const [state, expected, ids] of [['draft', 1, [lookupDraft.id]], ['void', 1, [lookupVoid.id]], ['paid', 2, [lookupRows[0].id, lookupFree.id]], ['partial', 1, [lookupRows[1].id]], ['unpaid', 33, []], ['outstanding', 34, []]] as const) {
+        const found = status(await request(lookupBase + '&status=' + state, 'GET', undefined, 'staffA'), 200, state + ' filter');
+        check(found.total === expected && ids.every(id => found.invoices.some((r: any) => r.id === id)), 'derived payment status ' + state);
+        check(JSON.stringify(found.summary) === JSON.stringify(expectedA), 'patient summary ignores ' + state + ' list filter');
+    }
+    const noMatch = status(await request(lookupBase + '&q=not-present&status=void&from=2039-01-01&to=2039-01-02&page=2', 'GET', undefined, 'staffA'), 200, 'combined empty list filters');
+    check(noMatch.total === 0 && noMatch.invoices.length === 0 && JSON.stringify(noMatch.summary) === JSON.stringify(expectedA), 'summary remains complete when all list filters are empty');
+    const manilaBefore = status(await request(lookupBase + '&from=2038-04-30&to=2038-04-30', 'GET', undefined, 'staffA'), 200, 'invoice date before Manila midnight');
+    check(manilaBefore.total === 1 && manilaBefore.invoices[0].id === lookupRows[0].id, 'created date is inclusive and uses Asia/Manila');
+    check((await request(lookupBase + '&from=2038-05-01&to=2038-05-01', 'GET', undefined, 'staffA')).body.total === 37, 'Manila midnight includes next-day invoice; posting date does not affect lookup');
+    const general = status(await request('/api/pos/invoices?branchId=A', 'GET', undefined, 'staffA'), 200, 'general clinic invoice lookup');
+    check(!Object.hasOwn(general, 'summary'), 'Staff general invoice lookup does not receive clinic sales summary');
+    const readonly = status(await request(lookupBase, 'GET', undefined, 'readOnly'), 200, 'read-only invoice lookup');
+    check(readonly.total === 38 && readonly.summary.outstandingCents === expectedA.outstandingCents, 'read-only POS user can view scoped patient balance');
+    status(await request('/api/pos/invoices', 'POST', { ...original, commandId: command() }, 'readOnly'), 403, 'read-only POS cannot create');
+    status(await request(`/api/pos/invoices/${lookupRows[2].id}/payments`, 'POST', { commandId: command(), expectedVersion: 2, method: 'cash', amount: '1', tender: '1' }, 'readOnly'), 403, 'read-only POS cannot collect');
+    for (const actor of ['anonymous', 'doctor', 'noPatients'])
+        status(await request(lookupBase, 'GET', undefined, actor), actor === 'anonymous' ? 401 : 403, 'invoice lookup capability required');
+    status(await request(lookupBase + '&branchId=B', 'GET', undefined, 'staffA'), 403, 'patient billing explicit unauthorized clinic rejected');
+    status(await request(`/api/pos/invoices/${lookupB.id}?patientId=invoice-history`, 'GET', undefined, 'staffA'), 403, 'patient detail retains branch enforcement');
+    status(await request(`/api/pos/invoices/${lookupRows[2].id}?patientId=invoice-other`, 'GET', undefined, 'staffA'), 403, 'patient detail rejects mismatched patient');
+    status(await request(`/api/pos/invoices/${lookupRows[2].id}?patientId=invoice-history`, 'GET', undefined, 'staffA'), 200, 'patient-bound invoice detail');
+    status(await request('/api/pos/invoices?patientId=does-not-exist', 'GET', undefined, 'staffA'), 404, 'missing patient rejected');
+    for (const query of ['q=' + 'x'.repeat(101), 'q=a&q=b', 'status=posted', 'status=paid&status=void', 'from=2038-02-30', 'from=', 'to=not-a-date', 'from=2038-05-02&to=2038-05-01', 'page=0', 'page=-1', 'page=1.5', 'page=1e1', 'page=100001', 'page=Infinity', 'page=1&page=2', 'patientId=bad.id', 'branchId=bad.id'])
+        status(await request('/api/pos/invoices?' + query, 'GET', undefined, 'staffA'), 400, 'invalid invoice lookup parameter rejected');
+    check(JSON.stringify(await financialSnapshot()) === JSON.stringify(lookupReadSnapshot), 'lookup/search/filter/detail reads never alter payments, package balances or financial history');
+    check(JSON.stringify((await pool.query("SELECT collection_path,id,data FROM app_records WHERE collection_path IN ('visits','appointments') ORDER BY collection_path,id")).rows) === JSON.stringify(lookupSourcesSnapshot), 'invoice lookup preserves all historical quotes');
+    // Archived patients retain history. Later collections use the unchanged payment path
+    // and update current balance independently of invoice date/status filters.
+    await db.collection('patients').doc('invoice-history').update({ isArchived: true });
+    const archived = status(await request(lookupBase, 'GET', undefined, 'staffA'), 200, 'archived patient billing remains readable');
+    check(archived.total === 38 && JSON.stringify(archived.summary) === JSON.stringify(expectedA), 'archive preserves patient billing balances');
+    status(await request(`/api/pos/invoices/${lookupRows[2].id}?patientId=invoice-history`, 'GET', undefined, 'staffA'), 200, 'archived patient invoice detail');
+    const collected = status(await request(`/api/pos/invoices/${lookupRows[2].id}/payments`, 'POST', { commandId: command(), expectedVersion: 2, method: 'cash', amount: '10', tender: '20' }, 'staffA'), 200, 'later collection on retained patient invoice');
+    check(collected.paid_cents === 1000 && collected.outstanding_cents === 9000 && Number(collected.payments[0].tender_cents) === 2000, 'later payment preserves cash tender/change');
+    const afterCollection = status(await request(lookupBase + '&status=draft&from=2039-01-01', 'GET', undefined, 'staffA'), 200, 'current patient balance after later payment');
+    check(afterCollection.summary.invoicedCents === 350000 && afterCollection.summary.paidCents === 13500 && afterCollection.summary.outstandingCents === 336500, 'later collection updates complete patient summary without changing quoted sales');
+    const ledgerAfterLookup = status(await request('/api/records/patients/patient/treatment-ledger', 'GET', undefined, 'staffA'), 200, 'existing patient ledger after invoice lookup');
+    check(ledgerAfterLookup.purchases.some((p: any) => p.id === purchase.id && p.lines[0].remainingSessions === 2 && p.usable === true), 'lookup and patient collections preserve existing package funding/session balances');
     const originalTx = db.runTransaction.bind(db);
     const beforeInvoices = (await pool.query('SELECT count(*) FROM pos_invoices')).rows[0].count;
     db.runTransaction = callback => originalTx(async (tx) => { const create = tx.create.bind(tx); tx.create = ((ref: any, data: any) => { if (ref.collectionPath === 'audit_logs')

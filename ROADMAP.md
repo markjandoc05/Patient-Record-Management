@@ -1,5 +1,15 @@
 # Vine incremental production roadmap
 
+## POS R1A — October23 local
+
+Invoice lookup adds patient/invoice/reference search, clinic/date/payment-status
+filters and an Outstanding view. Patient Profile Billing reuses authorized invoice
+details and later collections, with complete patient totals for the selected clinic
+scope. Quotes and financial write paths remain unchanged. No schema change;
+committed001–008 remain the target. See [implementation and schema report](docs/releases/2026-10-23-pos-r1a-invoice-lookup-patient-billing.md).
+Next: independent scoped commit-readiness review. No staging, commit, push or
+production action; full mobile/ordinary-role browser acceptance remains pending.
+
 ## POS & Payments R1 — October 23 local
 
 Local drafts, posting, manual payments and clinic sales now connect frozen booking/Visit

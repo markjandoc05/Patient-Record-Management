@@ -1,4 +1,4 @@
-import { uiCan } from '../permissionState';
+import { currentPermissionProfile, uiCan } from '../permissionState';
 import { clinicalFindingLabel } from '../utils/clinicalFindings';
 import { patientHistoryLabel } from '../utils/patientMedicalHistory';
 import { birthMode, patientBirthLabel } from '../utils/patientBirth';
@@ -27,8 +27,9 @@ import AppointmentForm from './AppointmentForm';
 import PatientMediaTab from './PatientMediaTab';
 import ClinicalChartsTab from './ClinicalChartsTab';
 import TreatmentLedgerTab from './TreatmentLedgerTab';
+import PosDashboard from './PosDashboard';
 
-type ProfileTab = 'visits' | 'appointments' | 'notes' | 'media' | 'charts' | 'ledger';
+type ProfileTab = 'visits' | 'appointments' | 'notes' | 'media' | 'charts' | 'ledger' | 'billing';
 
 function displayValue(value: unknown, fallback = 'Not provided') {
   if (value === null || value === undefined || value === '') return fallback;
@@ -59,6 +60,7 @@ export default function PatientProfile({
   patient,
   onClose,
   userRole,
+  userProfile,
   users,
   branches,
   visits,
@@ -67,13 +69,16 @@ export default function PatientProfile({
   patient: any;
   onClose: () => void;
   userRole?: string;
+  userProfile?: any;
   users: any[];
   branches: any[];
   visits: any[];
   appointments: any[];
 }) {
   const [showAddAppointment, setShowAddAppointment] = useState(false);
-  const clinicalAccess = uiCan(userRole, 'clinical.view');
+  const permissionFallback = userProfile || userRole;
+  const clinicalAccess = uiCan(permissionFallback, 'clinical.view');
+  const billingAccess = uiCan(permissionFallback, 'pos.view') && uiCan(permissionFallback, 'patients.view');
   const [activeTab, setActiveTab] = useState<ProfileTab>(clinicalAccess ? 'visits' : 'appointments');
 
   useEffect(() => {
@@ -128,12 +133,17 @@ export default function PatientProfile({
   const tabs: Array<{ id: ProfileTab; label: string; count?: number; icon: typeof Activity }> = [
     { id: 'visits', label: 'Visits', count: patientVisits.length, icon: Activity },
     { id: 'ledger', label: 'Treatment Ledger', icon: ClipboardList },
+    { id: 'billing', label: 'Billing', icon: ClipboardList },
     { id: 'appointments', label: 'Appointments', count: patientAppointments.length, icon: CalendarDays },
     { id: 'notes', label: 'Notes', icon: StickyNote },
     { id: 'media', label: 'Gallery', icon: Images },
     { id: 'charts', label: 'Clinical Charts', icon: MapPinned },
-  ].filter(tab => (clinicalAccess || tab.id === 'appointments') && (tab.id !== 'charts' || uiCan(userRole, 'visits.view'))
+  ].filter(tab => (clinicalAccess || tab.id === 'appointments' || tab.id === 'billing') && (tab.id !== 'billing' || billingAccess)
+    && (tab.id !== 'charts' || uiCan(userRole, 'visits.view'))
     && (tab.id !== 'ledger' || uiCan(userRole, 'treatment_ledger.view') && uiCan(userRole, 'patients.view') && uiCan(userRole, 'visits.view'))) as typeof tabs;
+  // Permission changes can arrive while a protected tab is open. Choose the
+  // visible tab during render so its old content cannot survive one more frame.
+  const visibleTab = tabs.some(tab => tab.id === activeTab) ? activeTab : tabs[0]?.id;
 
   return (
     <>
@@ -279,7 +289,7 @@ export default function PatientProfile({
                   <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap" role="tablist" aria-label="Patient record sections">
                     {tabs.map(tab => {
                       const Icon = tab.icon;
-                      const isActive = activeTab === tab.id;
+                      const isActive = visibleTab === tab.id;
                       return (
                         <button
                           key={tab.id}
@@ -307,15 +317,17 @@ export default function PatientProfile({
                 </div>
 
                 <div className="min-h-56 p-4 sm:p-5">
-                  {activeTab === 'visits' ? (
+                  {visibleTab === 'billing' && billingAccess ? (
+                    <PosDashboard key={patient.id} userProfile={currentPermissionProfile() || userProfile} patientContext={{ id: patient.id, name: patient.name }} embedded />
+                  ) : visibleTab === 'visits' ? (
                     <PatientTimeline patientId={patient.id} users={users} branches={branches} visits={visits} userRole={userRole} />
-                  ) : activeTab === 'appointments' ? (
+                  ) : visibleTab === 'appointments' ? (
                     <PatientAppointments patientId={patient.id} users={users} branches={branches} appointments={appointments} />
-                  ) : activeTab === 'notes' ? (
+                  ) : visibleTab === 'notes' ? (
                     <NotesTab patient={patient} userRole={userRole} />
-                  ) : activeTab === 'charts' ? (
+                  ) : visibleTab === 'charts' ? (
                     <ClinicalChartsTab patientId={patient.id} visits={visits} users={users} userRole={userRole} />
-                  ) : activeTab === 'ledger' ? (
+                  ) : visibleTab === 'ledger' ? (
                     <TreatmentLedgerTab patient={patient} userRole={userRole} />
                   ) : (
                     <PatientMediaTab patientId={patient.id} users={users} branches={branches} visits={visits} userRole={userRole} patientArchived={patient.isArchived} />
